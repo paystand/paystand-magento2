@@ -13,7 +13,7 @@ define([
   'Magento_Checkout/js/model/error-processor',
   checkoutjs_module
 ], function (require, $, Component, quote, errorProcessor, paystand) {
-'use strict';
+  'use strict';
 
   /**
    * Load the Paystand checkout
@@ -43,35 +43,25 @@ define([
     };
     PayStandCheckout.init({
       "publishableKey": publishable_key,
-      "checkout_domain": "https://checkout."+core_domain+"/v2/",
+      "checkout_domain": "https://checkout."+core_domain+"/v3/",
       "domain": "https://api."+core_domain,
-      "template": "default",
-      "theme": "default",
-      "total": price,
+      "payment": {
+        "amount": price
+      },
       "currency": "USD",
-      "features": {
-        "cards": true,
-        "echeck": {
-          "enabled": true
-        }
-      },
-      "ui": {
-        "billing": {
-          "show": true
-        }
-      },
+      "paymentMethods": [
+        'echeck',
+        'card'
+      ],
       "meta": {
         "source":"magento 2",
         "quote": quoteId
       }
-    },null,400);
+    },null,520);
 
     // stop observing for mutation events
     window.observer.disconnect();
   };
-
-  // select the target node
-  var target = $('.payment-method').parent().get( 0 );
 
 // create an observer instance
   window.observer = new MutationObserver(function(mutations) {
@@ -88,11 +78,33 @@ define([
     });
   });
 
-// configuration of the observer:
-  var config = { attributes: true, childList: true, characterData: true }
+  // configuration of the observer:
+  var config = { attributes: true, childList: true, characterData: true };
 
-// pass in the target node, as well as the observer options
-  observer.observe(target, config);
+  // pass in the target node, as well as the observer options
+  var total_timeout = 0;
+  var recursivelyObserve = function(){
+    window.setTimeout(function(){
+      total_timeout += 10;
+
+      if(total_timeout < 1000){
+        // select the target node
+        var target = $('.payment-method').parent().get( 0 );
+
+        if(typeof target == "Node"){
+          observer.observe(target, config);
+        }
+        else {
+          recursivelyObserve();
+        }
+      }
+      else {
+        loadPaystandCheckout();
+      }
+    }, 10);
+  };
+
+  recursivelyObserve();
 
   return this;
 });
