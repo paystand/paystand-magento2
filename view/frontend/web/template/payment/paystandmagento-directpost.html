@@ -11,15 +11,6 @@
     <div class="payment-method-content">
         <div class="actions-toolbar">
             <div id="paystand_checkout"></div>
-            <iframe width="0"
-                    height="0"
-                    data-bind="src: getSource(), attr: {id: getCode() + '-transparent-iframe', 'data-container': getCode() + '-transparent-iframe'}"
-                    allowtransparency="true"
-                    frameborder="0"
-                    name="iframeTransparent"
-                    style="display:none;width:100%;background-color:transparent">
-
-            </iframe>
             <form class="form paystand-checkout-form" action="#" method="post">
                 <input class="submit-trigger" type="hidden" data-bind="click: placeOrder, enable: (getCode() == isChecked())"/>
             </form>
