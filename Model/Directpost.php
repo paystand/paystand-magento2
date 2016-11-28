@@ -4,14 +4,14 @@ namespace PayStand\PayStandMagento\Model;
 
 class Directpost extends \Magento\Payment\Model\Method\AbstractMethod
 {
-    const METHOD_CODE = 'paystandmagento_directpost';
+    const METHOD_CODE = 'paystandmagento';
 
     /**
      * Payment code
      *
      * @var string
      */
-    protected $_code = 'paystandmagento_directpost'; // Not worth it creating a constructor to just assign $_code to METHOD_CODE
+    protected $_code = 'paystandmagento'; // Not worth it creating a constructor to just assign $_code to METHOD_CODE
 
     /**
      * Availability option
@@ -28,7 +28,8 @@ class Directpost extends \Magento\Payment\Model\Method\AbstractMethod
      */
     public function isAvailable(\Magento\Quote\Api\Data\CartInterface $quote = null)
     {
-        return true;
+        return parent::isAvailable($quote)
+        && $this->getConfigData('publishable_key', $quote ? $quote->getStoreId() : null);
     }
-    
+
 }

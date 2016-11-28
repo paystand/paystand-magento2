@@ -14,12 +14,12 @@ class PayStandConfigProvider implements ConfigProviderInterface
   /**
    * publishable key config path
    */
-  const PUBLISHABLE_KEY = 'payment/paystand_paystandmagento/publishable_key';
+  const PUBLISHABLE_KEY = 'payment/paystandmagento/publishable_key';
 
   /**
    * use sandbox config path
    */
-  const USE_SANDBOX = 'payment/paystand_paystandmagento/use_sandbox';
+  const USE_SANDBOX = 'payment/paystandmagento/use_sandbox';
 
   /**
    * @param ScopeConfig $scopeConfig

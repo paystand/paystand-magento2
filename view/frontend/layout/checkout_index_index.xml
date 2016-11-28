@@ -20,7 +20,7 @@
                                                                 <item name="paystandmagento" xsi:type="array">
                                                                     <item name="component" xsi:type="string">PayStand_PayStandMagento/js/view/payment/paymentmethod</item>
                                                                     <item name="methods" xsi:type="array">
-                                                                        <item name="paystandmagento_directpost" xsi:type="array">
+                                                                        <item name="paystandmagento" xsi:type="array">
                                                                             <item name="isBillingAddressRequired" xsi:type="boolean">true</item>
                                                                         </item>
                                                                     </item>

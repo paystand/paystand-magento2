@@ -12,7 +12,7 @@ define(
         'use strict';
         rendererList.push(
             {
-                type: 'paystandmagento_directpost',
+                type: 'paystandmagento',
                 component: 'PayStand_PayStandMagento/js/view/payment/method-renderer/paystandmagento-directpost'
             }
         );
