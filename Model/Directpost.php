@@ -31,5 +31,4 @@ class Directpost extends \Magento\Payment\Model\Method\AbstractMethod
         return parent::isAvailable($quote)
         && $this->getConfigData('publishable_key', $quote ? $quote->getStoreId() : null);
     }
-
 }
