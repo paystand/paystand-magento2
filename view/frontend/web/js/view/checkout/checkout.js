@@ -37,7 +37,8 @@ define([
       console.log("custom checkout failed:", data);
     };
 
-    function initCheckout(countryISO3) {
+    function initCheckout(countryISO3)
+    {
       PayStandCheckout.init({
         "publishableKey": publishable_key,
         "checkout_domain": "https://checkout." + core_domain + "/v3/",
@@ -71,18 +72,18 @@ define([
       window.observer.disconnect();
     }
 
-    if(billing.countryId) {
+    if (billing.countryId) {
       $.ajax({
-        beforeSend: function(request) {
+        beforeSend: function (request) {
           request.setRequestHeader("x-publishable-key", publishable_key);
         },
         dataType: "text",
         contentType: "application/json; charset=utf-8",
         url: "https://api." + core_domain + "/v3/addresses/countries/iso?code=" + billing.countryId,
-        success: function(data) {
+        success: function (data) {
           initCheckout(JSON.parse(data).iso3);
         },
-        error: function(error) {
+        error: function (error) {
           console.log('Unable to get ISO3 code from PayStand!');
         },
       });
@@ -121,12 +122,10 @@ define([
 
         if (typeof target == "Node") {
           observer.observe(target, config);
-        }
-        else {
+        } else {
           recursivelyObserve();
         }
-      }
-      else {
+      } else {
         loadPaystandCheckout();
       }
     }, 10);
