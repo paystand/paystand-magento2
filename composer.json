@@ -1,7 +1,10 @@
 {
     "name": "paystand/paystandmagento",
     "description": "Enables the PayStand payment method",
-    "require": {
+    "platform": {
+            "php": "7.1"
+      },
+     "require": {
         "magento/module-sales": ">=100.0",
         "magento/module-store": ">=100.0",
         "magento/module-quote": ">=100.0",
