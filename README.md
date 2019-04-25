@@ -1,12 +1,12 @@
 #  PayStand Payment Gateway Magento 2.0 Extension
 
-Accept Credit Card, eCheck, and eCash payments using PayStand Payment Gateway's robust and modern checkout.
+Accept Credit Card, eCheck, and ACH payments using PayStand Payment Gateway's robust and modern checkout.
 
-Use of the extension requires a PayStand account offering fully-featured plans starting at **$99/mo**.  To learn more and create your own account, visit us at [PayStand.com](http://www.paystand.com), or contact us at (800) 708-6413.
+Use of the extension requires a PayStand account offering fully-featured plans.  To learn more and create your own account, visit us at [PayStand.com](http://www.paystand.com), or contact us at support@paystand.com.
 
 ##  Create a PayStand Account
 
-1.  Contact PayStand at (800) 708-6413 to set up a Merchant account and be issued a publishable_key.
+1.  Contact PayStand at support@paysand.com to set up a Merchant account and be issued a publishable_key.
 2.  If you have a test server and would like to enable Sandbox Mode, request to also be issued a Sandbox publishable_key.
 3.  Provide PayStand with your magento website address so you can be registered to receive webhooks, providing you with timely order status updates when payments clear.
 
@@ -26,6 +26,6 @@ If you have any further questions, please email [support@paystand.com](support@p
 
 ### About PayStand
 
-PayStand is a next-generation payment & eCommerce checkout system that enables any organization to receive money in their Website, Social Network, or Web Application in a flat-rate SaaS model with no transaction markups. We are the first multi-payment gateway to accept credit cards (Visa/MasterCard/Amex/Discover), eCheck (ACH/debit), and eCash (Bitcoin) in a single interface. Thousands of merchants are using PayStand for their online payments, shopping cart, donation management, subscriptions, eCommerce integrations, recurring payments, checkout experience and more.
+PayStand is a next-generation payment & eCommerce checkout system that enables any organization to receive money in their Website, Social Network, or Web Application in a flat-rate SaaS model with no transaction markups. We are the first multi-payment gateway to accept credit cards (Visa/MasterCard/Amex/Discover), eCheck, and ACH in a single interface. Thousands of merchants are using PayStand for their online payments, shopping cart, donation management, subscriptions, eCommerce integrations, recurring payments, checkout experience and more.
 
-You can choose which payment rails to activate in your PayStand account dashboard, or let your customers decide which method to use when checking out. Additionally, we pass our wholesale rates on credit cards direct to you, and automatically lower them as we're able to negotiate lower rates on your behalf. We also offer eCheck and eCash at 0%.
+You can choose which payment rails to activate in your PayStand account dashboard, or let your customers decide which method to use when checking out. Additionally, we pass our wholesale rates on credit cards direct to you, and automatically lower them as we're able to negotiate lower rates on your behalf. 
