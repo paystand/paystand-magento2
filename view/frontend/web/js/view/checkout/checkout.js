@@ -29,19 +29,19 @@ define([
     var quoteId = quote.getQuoteId();
     var billing = quote.billingAddress();
 
-    PayStandCheckout.checkoutComplete = function (data, iframe) {
+    psCheckout.onComplete(function(data){
       console.log("custom checkout complete:", data);
       $(".submit-trigger").click();
-    };
-    PayStandCheckout.checkoutFailed = function (data) {
-      console.log("custom checkout failed:", data);
-    };
+    });
+    psCheckout.onError(function(data){
+      console.log("custom checkout error:", data);
+    });
 
     function initCheckout(countryISO3)
     {
-      PayStandCheckout.init({
+      psCheckout.reboot({
         "publishableKey": publishable_key,
-        "checkout_domain": "https://checkout." + core_domain + "/v3/",
+        "checkout_domain": "https://checkout." + core_domain + "/v4/",
         "domain": "https://api." + core_domain,
         "payment": {
           "amount": price
@@ -67,7 +67,7 @@ define([
           "quote": quoteId,
           "quoteDetails" : quote.totals()
         }
-      }, null, 520);
+      });
       // stop observing for mutation events
       window.observer.disconnect();
     }
