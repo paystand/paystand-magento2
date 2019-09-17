@@ -39,6 +39,10 @@ define([
 
     function initCheckout(countryISO3)
     {
+      psCheckout.onceLoaded(function (data) {
+        psCheckout.showCheckout();
+      });
+
       psCheckout.reboot({
         "publishableKey": publishable_key,
         "checkout_domain": "https://checkout." + core_domain + "/v4/",
