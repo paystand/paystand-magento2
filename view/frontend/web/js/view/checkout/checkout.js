@@ -1,4 +1,4 @@
-var checkoutjs_module = 'paystand-prod';
+var checkoutjs_module = 'paystand';
 var core_domain = 'paystand.com';
 var env = 'live';
 var use_sandbox = window.checkoutConfig.payment.paystandmagento.use_sandbox;
