@@ -1,9 +1,11 @@
 var checkoutjs_module = 'paystand';
 var core_domain = 'paystand.com';
+var env = 'live';
 var use_sandbox = window.checkoutConfig.payment.paystandmagento.use_sandbox;
 if (use_sandbox == '1') {
   checkoutjs_module = 'paystand-sandbox';
   core_domain = 'paystand.co';
+  env = 'sandbox';
 }
 
 /*jshint browser:true jquery:true*/
@@ -46,6 +48,7 @@ define([
       psCheckout.reboot({
         "publishableKey": publishable_key,
         "checkout_domain": "https://checkout." + core_domain + "/v4/",
+        "env": env,
         "domain": "https://api." + core_domain,
         "payment": {
           "amount": price
