@@ -13,7 +13,7 @@
                 <!--<can_capture>0</can_capture>-->
                 <!--<can_authorize>0</can_authorize>-->
                 <!--<test>1</test>-->
-                <title>PayStand</title>
+                <title>Paystand</title>
                 <payment_action>true</payment_action>
                 <!--<trans_key backend_model="Magento\Config\Model\Config\Backend\Encrypted" />-->
                 <!--<trans_md5 backend_model="Magento\Config\Model\Config\Backend\Encrypted" />-->

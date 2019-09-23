@@ -58,6 +58,8 @@ define([
         "checkout_domain": "https://" + checkout_domain + "/v4/",
         "env": env,
         "domain": "https://" + core_domain,
+        "viewClose": false,
+        "viewLogo": false,
         "payment": {
           "amount": price
         },
