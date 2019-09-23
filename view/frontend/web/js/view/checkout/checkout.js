@@ -8,7 +8,7 @@ if (use_sandbox == '1') {
   // api_domain = 'api.paystand.co';
   // checkout_domain = 'checkout.paystand.co';
   // env = 'sandbox';
-  api_domain = 'localhost:3001';
+  api_domain = 'localhost:3001/api';
   checkout_domain = 'localhost:3002';
   env = 'local';
 }
