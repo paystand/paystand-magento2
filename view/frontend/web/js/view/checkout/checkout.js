@@ -56,7 +56,6 @@ define([
         },
         "viewReceipt": "close",
         "viewCheckout": "mobile",
-        "viewLogo": false,
         "currency": "USD",
         "paymentMethods": [
           'echeck',
