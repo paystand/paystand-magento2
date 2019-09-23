@@ -10,7 +10,7 @@ if (use_sandbox == '1') {
   // checkout_domain = 'checkout.paystand.co';
   core_domain = 'localhost:3001';
   api_domain = 'localhost:3001/api';
-  checkout_domain = 'localhost:3002';
+  checkout_domain = 'localhost:3003';
 }
 
 /*jshint browser:true jquery:true*/
