@@ -54,7 +54,7 @@ define([
 
       var config = {
         "publishableKey": publishable_key,
-        "checkout_domain": "https://" + checkout_domain + "/v4/",
+        "checkout_domain": "https://" + checkout_domain + "/v4",
         "env": env,
         "domain": "https://" + core_domain,
         "payment": {
