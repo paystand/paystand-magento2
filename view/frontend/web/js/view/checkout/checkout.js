@@ -46,49 +46,51 @@ define([
     function initCheckout(countryISO3)
     {
       psCheckout.onceLoaded(function (data) {
+
+        var config = {
+          "publishableKey": publishable_key,
+          "payment": {
+            "amount": price
+          },
+          "viewReceipt": "close",
+          "viewCheckout": "mobile",
+          "currency": "USD",
+          "paymentMethods": [
+            'echeck',
+            'card'
+          ],
+          "payer": {
+            "name": billing.firstname + ' ' + billing.lastname,
+            "email": quote.guestEmail
+          },
+          "payerAddressCounty": countryISO3,
+          "meta": {
+            "source": "magento 2",
+            "quote": quoteId,
+            "quoteDetails" : quote.totals()
+          }
+        };
+
+        if (billing.street && billing.street.length > 0) {
+          config.payerAddressStreet = billing.street[0];
+        }
+        if (billing.city) {
+          config.payerAddressCity = billing.city;
+        }
+        if (billing.postcode) {
+          config.payerAddressPostal = billing.postcode;
+        }
+        if (billing.regionCode) {
+          config.payerAddressState = billing.regionCode;
+        }
+
+        console.log("rebooting checkout with config", config);
+
+        psCheckout.reboot(config);
+
         psCheckout.showCheckout();
       });
 
-      var config = {
-        "publishableKey": publishable_key,
-        "payment": {
-          "amount": price
-        },
-        "viewReceipt": "close",
-        "viewCheckout": "mobile",
-        "currency": "USD",
-        "paymentMethods": [
-          'echeck',
-          'card'
-        ],
-        "payer": {
-          "name": billing.firstname + ' ' + billing.lastname,
-          "email": quote.guestEmail
-        },
-        "payerAddressCounty": countryISO3,
-        "meta": {
-          "source": "magento 2",
-          "quote": quoteId,
-          "quoteDetails" : quote.totals()
-        }
-      };
-
-      if (billing.street && billing.street.length > 0) {
-        config.payerAddressStreet = billing.street[0];
-      }
-      if (billing.city) {
-        config.payerAddressCity = billing.city;
-      }
-      if (billing.postcode) {
-        config.payerAddressPostal = billing.postcode;
-      }
-      if (billing.regionCode) {
-        config.payerAddressState = billing.regionCode;
-      }
-
-      console.log("rebooting checkout with config", config);
-
-      psCheckout.reboot(config);
       // stop observing for mutation events
       window.observer.disconnect();
     }
