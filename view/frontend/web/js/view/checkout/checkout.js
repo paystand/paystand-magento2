@@ -39,19 +39,25 @@ define([
     var quoteId = quote.getQuoteId();
     var billing = quote.billingAddress();
 
-    psCheckout.onComplete(function(data){
+    psCheckout.onComplete(function (data) {
       console.log("custom checkout complete:", data);
       $(".submit-trigger").click();
     });
-    psCheckout.onError(function(data){
+    psCheckout.onError(function (data) {
       console.log("custom checkout error:", data);
     });
 
-    function initCheckout(countryISO3)
-    {
+    function initCheckout(countryISO3) {
       psCheckout.onceLoaded(function (data) {
         psCheckout.showCheckout();
       });
+
+      console.log("billing",billing);
+
+      var street = "";
+      if (billing.street && billing.street.length > 0) {
+        street = billing.street[0];
+      }
 
       var config = {
         "publishableKey": publishable_key,
@@ -73,7 +79,7 @@ define([
           "email": quote.guestEmail
         },
         "billing": {
-          "street": billing.street[0],
+          "street": street,
           "city": billing.city,
           "postalCode": billing.postcode,
           "subdivisionCode": billing.regionCode,
@@ -82,7 +88,7 @@ define([
         "meta": {
           "source": "magento 2",
           "quote": quoteId,
-          "quoteDetails" : quote.totals()
+          "quoteDetails": quote.totals()
         }
       };
 
