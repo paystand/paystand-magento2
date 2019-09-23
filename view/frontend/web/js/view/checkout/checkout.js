@@ -52,20 +52,11 @@ define([
         psCheckout.showCheckout();
       });
 
-      console.log("billing",billing);
-
-      var street = "";
-      if (billing.street && billing.street.length > 0) {
-        street = billing.street[0];
-      }
-
       var config = {
         "publishableKey": publishable_key,
         "checkout_domain": "https://" + checkout_domain + "/v4/",
         "env": env,
         "domain": "https://" + core_domain,
-        "viewClose": false,
-        "viewLogo": false,
         "payment": {
           "amount": price
         },
@@ -78,19 +69,26 @@ define([
           "name": billing.firstname + ' ' + billing.lastname,
           "email": quote.guestEmail
         },
-        "billing": {
-          "street": street,
-          "city": billing.city,
-          "postalCode": billing.postcode,
-          "subdivisionCode": billing.regionCode,
-          "countryCode": countryISO3
-        },
+        "payerAddressCountry": countryISO3,
         "meta": {
           "source": "magento 2",
           "quote": quoteId,
           "quoteDetails": quote.totals()
         }
       };
+
+      if (billing.street && billing.street.length > 0) {
+        config.payerAddressStreet = billing.street[0];
+      }
+      if (billing.city) {
+        config.payerAddressCity = billing.city;
+      }
+      if (billing.postcode) {
+        config.payerAddressPostal = billing.postcode;
+      }
+      if (billing.regionCode) {
+        config.payerAddressState = billing.regionCode;
+      }
 
       console.log(config);
 
