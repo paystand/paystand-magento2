@@ -50,7 +50,7 @@ define([
         psCheckout.showCheckout();
       });
 
-      psCheckout.reboot({
+      var config = {
         "publishableKey": publishable_key,
         "checkout_domain": "https://" + checkout_domain + "/v4/",
         "env": env,
@@ -79,7 +79,11 @@ define([
           "quote": quoteId,
           "quoteDetails" : quote.totals()
         }
-      });
+      };
+
+      console.log(config);
+
+      psCheckout.reboot(config);
       // stop observing for mutation events
       window.observer.disconnect();
     }
