@@ -1,12 +1,15 @@
 var checkoutjs_module = 'paystand';
-var core_domain = 'paystand.com';
+var api_domain = 'api.paystand.com';
+var checkout_domain = 'checkout.paystand.com';
 var env = 'live';
 var use_sandbox = window.checkoutConfig.payment.paystandmagento.use_sandbox;
 if (use_sandbox == '1') {
   checkoutjs_module = 'paystand-sandbox';
-  // core_domain = 'paystand.co';
+  // api_domain = 'api.paystand.co';
+  // checkout_domain = 'checkout.paystand.co';
   // env = 'sandbox';
-  core_domain = 'localhost:3002';
+  api_domain = 'localhost:3001';
+  checkout_domain = 'localhost:3002';
   env = 'local';
 }
 
@@ -49,9 +52,9 @@ define([
 
       psCheckout.reboot({
         "publishableKey": publishable_key,
-        "checkout_domain": "https://checkout." + core_domain + "/v4/",
+        "checkout_domain": "https://" + checkout_domain + "/v4/",
         "env": env,
-        "domain": "https://api." + core_domain,
+        "domain": "https://" + api_domain,
         "payment": {
           "amount": price
         },
@@ -88,7 +91,7 @@ define([
         },
         dataType: "text",
         contentType: "application/json; charset=utf-8",
-        url: "https://api." + core_domain + "/v3/addresses/countries/iso?code=" + billing.countryId,
+        url: "https://" + api_domain + "/v3/addresses/countries/iso?code=" + billing.countryId,
         success: function (data) {
           initCheckout(JSON.parse(data).iso3);
         },
