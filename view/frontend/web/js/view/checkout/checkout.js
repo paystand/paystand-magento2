@@ -2,18 +2,15 @@ var checkoutjs_module = 'paystand';
 var core_domain = 'paystand.com';
 var api_domain = 'api.paystand.com';
 var checkout_domain = 'checkout.paystand.com';
-var env = 'live';
 var use_sandbox = window.checkoutConfig.payment.paystandmagento.use_sandbox;
 if (use_sandbox == '1') {
   checkoutjs_module = 'paystand-sandbox';
   // core_domain = 'paystand.co';
   // api_domain = 'api.paystand.co';
   // checkout_domain = 'checkout.paystand.co';
-  // env = 'sandbox';
   core_domain = 'localhost:3001';
   api_domain = 'localhost:3001/api';
   checkout_domain = 'localhost:3002';
-  env = 'local';
 }
 
 /*jshint browser:true jquery:true*/
@@ -33,7 +30,6 @@ define([
   var loadPaystandCheckout = function () {
 
     var publishable_key = window.checkoutConfig.payment.paystandmagento.publishable_key;
-    console.log("publishable key = " + publishable_key);
 
     var price = quote.totals().grand_total.toString();
     var quoteId = quote.getQuoteId();
@@ -55,9 +51,6 @@ define([
 
       var config = {
         "publishableKey": publishable_key,
-        "checkout_domain": "https://" + checkout_domain + "/v4/",
-        "env": env,
-        "domain": "https://" + core_domain,
         "payment": {
           "amount": price
         },
@@ -70,19 +63,26 @@ define([
           "name": billing.firstname + ' ' + billing.lastname,
           "email": quote.guestEmail
         },
-        "billing": {
-          "street": billing.street[0],
-          "city": billing.city,
-          "postalCode": billing.postcode,
-          "subdivisionCode": billing.regionCode,
-          "countryCode": countryISO3
-        },
+        "payerAddressCounty": countryISO3,
         "meta": {
           "source": "magento 2",
           "quote": quoteId,
           "quoteDetails" : quote.totals()
         }
       };
+
+      if (billing.street && billing.street.length > 0) {
+        config.payerAddressStreet = billing.street[0];
+      }
+      if (billing.city) {
+        config.payerAddressCity = billing.city;
+      }
+      if (billing.postcode) {
+        config.payerAddressPostal = billing.postcode;
+      }
+      if (billing.regionCode) {
+        config.payerAddressState = billing.regionCode;
+      }
 
       console.log(config);
 
