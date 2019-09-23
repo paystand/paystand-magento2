@@ -39,22 +39,23 @@ define([
     var quoteId = quote.getQuoteId();
     var billing = quote.billingAddress();
 
-    psCheckout.onComplete(function (data) {
+    psCheckout.onComplete(function(data){
       console.log("custom checkout complete:", data);
       $(".submit-trigger").click();
     });
-    psCheckout.onError(function (data) {
+    psCheckout.onError(function(data){
       console.log("custom checkout error:", data);
     });
 
-    function initCheckout(countryISO3) {
+    function initCheckout(countryISO3)
+    {
       psCheckout.onceLoaded(function (data) {
         psCheckout.showCheckout();
       });
 
       var config = {
         "publishableKey": publishable_key,
-        "checkout_domain": "https://" + checkout_domain + "/v4",
+        "checkout_domain": "https://" + checkout_domain + "/v4/",
         "env": env,
         "domain": "https://" + core_domain,
         "payment": {
@@ -69,26 +70,19 @@ define([
           "name": billing.firstname + ' ' + billing.lastname,
           "email": quote.guestEmail
         },
-        "payerAddressCountry": countryISO3,
+        "billing": {
+          "street": billing.street[0],
+          "city": billing.city,
+          "postalCode": billing.postcode,
+          "subdivisionCode": billing.regionCode,
+          "countryCode": countryISO3
+        },
         "meta": {
           "source": "magento 2",
           "quote": quoteId,
-          "quoteDetails": quote.totals()
+          "quoteDetails" : quote.totals()
         }
       };
-
-      if (billing.street && billing.street.length > 0) {
-        config.payerAddressStreet = billing.street[0];
-      }
-      if (billing.city) {
-        config.payerAddressCity = billing.city;
-      }
-      if (billing.postcode) {
-        config.payerAddressPostal = billing.postcode;
-      }
-      if (billing.regionCode) {
-        config.payerAddressState = billing.regionCode;
-      }
 
       console.log(config);
 
