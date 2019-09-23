@@ -4,8 +4,10 @@ var env = 'live';
 var use_sandbox = window.checkoutConfig.payment.paystandmagento.use_sandbox;
 if (use_sandbox == '1') {
   checkoutjs_module = 'paystand-sandbox';
-  core_domain = 'paystand.co';
-  env = 'sandbox';
+  // core_domain = 'paystand.co';
+  // env = 'sandbox';
+  core_domain = 'localhost:3002';
+  env = 'local';
 }
 
 /*jshint browser:true jquery:true*/
