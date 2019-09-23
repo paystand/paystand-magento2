@@ -54,6 +54,9 @@ define([
         "payment": {
           "amount": price
         },
+        "viewReceipt": "close",
+        "viewCheckout": "mobile",
+        "viewLogo": false,
         "currency": "USD",
         "paymentMethods": [
           'echeck',
