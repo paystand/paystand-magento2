@@ -5,12 +5,12 @@ var checkout_domain = 'checkout.paystand.com';
 var use_sandbox = window.checkoutConfig.payment.paystandmagento.use_sandbox;
 if (use_sandbox == '1') {
   checkoutjs_module = 'paystand-sandbox';
-  core_domain = 'paystand.co';
-  api_domain = 'api.paystand.co';
-  checkout_domain = 'checkout.paystand.co';
-  // core_domain = 'localhost:3001';
-  // api_domain = 'localhost:3001/api';
-  // checkout_domain = 'localhost:3003';
+  // core_domain = 'paystand.co';
+  // api_domain = 'api.paystand.co';
+  // checkout_domain = 'checkout.paystand.co';
+  core_domain = 'localhost:3001';
+  api_domain = 'localhost:3001/api';
+  checkout_domain = 'localhost:3002';
 }
 
 /*jshint browser:true jquery:true*/
@@ -48,22 +48,16 @@ define([
 
       var config = {
         "publishableKey": publishable_key,
-        "payment": {
-          "amount": price
-        },
+        "paymentAmount": price,
+        "fixedAmount": true,
         "viewReceipt": "close",
         "viewCheckout": "mobile",
-        "currency": "USD",
-        "paymentMethods": [
-          'echeck',
-          'card'
-        ],
-        "payer": {
-          "name": billing.firstname + ' ' + billing.lastname,
-          "email": quote.guestEmail
-        },
+        "paymentCurrency": "USD",
+        "viewFunds": "echeck,card",
+        "payerName": billing.firstname + ' ' + billing.lastname,
+        "payerEmail": quote.guestEmail,
         "payerAddressCounty": countryISO3,
-        "meta": {
+        "paymentMeta": {
           "source": "magento 2",
           "quote": quoteId,
           "quoteDetails" : quote.totals()
