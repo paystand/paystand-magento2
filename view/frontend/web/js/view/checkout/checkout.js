@@ -86,8 +86,6 @@ define([
         config.payerAddressState = billing.regionCode;
       }
 
-      console.log(config);
-
       psCheckout.reboot(config);
       // stop observing for mutation events
       window.observer.disconnect();
