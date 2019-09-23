@@ -45,7 +45,7 @@ define([
 
     function initCheckout(countryISO3)
     {
-      psCheckout.onceLoaded(function (data) {
+      psCheckout.onReady(function (data) {
 
         psCheckout.onceLoaded(function (data) {
           psCheckout.showCheckout();
