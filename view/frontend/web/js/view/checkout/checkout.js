@@ -47,6 +47,10 @@ define([
     {
       psCheckout.onceLoaded(function (data) {
 
+        psCheckout.onceLoaded(function (data) {
+          psCheckout.showCheckout();
+        });
+
         var config = {
           "publishableKey": publishable_key,
           "payment": {
@@ -88,7 +92,6 @@ define([
 
         psCheckout.reboot(config);
 
-        psCheckout.showCheckout();
       });
 
       // stop observing for mutation events
