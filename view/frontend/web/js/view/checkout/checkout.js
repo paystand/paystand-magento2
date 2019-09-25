@@ -1,9 +1,16 @@
 var checkoutjs_module = 'paystand';
 var core_domain = 'paystand.com';
+var api_domain = 'api.paystand.com';
+var checkout_domain = 'checkout.paystand.com';
 var use_sandbox = window.checkoutConfig.payment.paystandmagento.use_sandbox;
 if (use_sandbox == '1') {
   checkoutjs_module = 'paystand-sandbox';
   core_domain = 'paystand.co';
+  api_domain = 'api.paystand.co';
+  checkout_domain = 'checkout.paystand.co';
+  // core_domain = 'localhost:3001';
+  // api_domain = 'localhost:3001/api';
+  // checkout_domain = 'localhost:3003';
 }
 
 /*jshint browser:true jquery:true*/
@@ -23,51 +30,64 @@ define([
   var loadPaystandCheckout = function () {
 
     var publishable_key = window.checkoutConfig.payment.paystandmagento.publishable_key;
-    console.log("publishable key = " + publishable_key);
 
     var price = quote.totals().grand_total.toString();
     var quoteId = quote.getQuoteId();
     var billing = quote.billingAddress();
 
-    PayStandCheckout.checkoutComplete = function (data, iframe) {
+    psCheckout.onComplete(function(data){
       console.log("custom checkout complete:", data);
       $(".submit-trigger").click();
-    };
-    PayStandCheckout.checkoutFailed = function (data) {
-      console.log("custom checkout failed:", data);
-    };
+    });
+    psCheckout.onError(function(data){
+      console.log("custom checkout error:", data);
+    });
 
     function initCheckout(countryISO3)
     {
-      PayStandCheckout.init({
+
+      var config = {
         "publishableKey": publishable_key,
-        "checkout_domain": "https://checkout." + core_domain + "/v3/",
-        "domain": "https://api." + core_domain,
-        "payment": {
-          "amount": price
-        },
-        "currency": "USD",
-        "paymentMethods": [
-          'echeck',
-          'card'
-        ],
-        "payer": {
-          "name": billing.firstname + ' ' + billing.lastname,
-          "email": quote.guestEmail
-        },
-        "billing": {
-          "street": billing.street[0],
-          "city": billing.city,
-          "postalCode": billing.postcode,
-          "subdivisionCode": billing.regionCode,
-          "countryCode": countryISO3
-        },
-        "meta": {
+        "paymentAmount": price,
+        "fixedAmount": true,
+        "viewReceipt": "close",
+        "viewCheckout": "mobile",
+        "paymentCurrency": "USD",
+        "viewFunds": "echeck,card",
+        "payerName": billing.firstname + ' ' + billing.lastname,
+        "payerEmail": quote.guestEmail,
+        "payerAddressCounty": countryISO3,
+        "paymentMeta": {
           "source": "magento 2",
           "quote": quoteId,
           "quoteDetails" : quote.totals()
         }
-      }, null, 520);
+      };
+
+      if (billing.street && billing.street.length > 0) {
+        config.payerAddressStreet = billing.street[0];
+      }
+      if (billing.city) {
+        config.payerAddressCity = billing.city;
+      }
+      if (billing.postcode) {
+        config.payerAddressPostal = billing.postcode;
+      }
+      if (billing.regionCode) {
+        config.payerAddressState = billing.regionCode;
+      }
+
+      console.log("rebooting checkout with config", config);
+
+      psCheckout.onceLoaded(function (data) {
+        psCheckout.onceLoaded(function (data) {
+          psCheckout.showCheckout();
+        });
+        psCheckout.reboot(config);
+      });
+
+      psCheckout.reboot(config);
+
       // stop observing for mutation events
       window.observer.disconnect();
     }
@@ -79,7 +99,7 @@ define([
         },
         dataType: "text",
         contentType: "application/json; charset=utf-8",
-        url: "https://api." + core_domain + "/v3/addresses/countries/iso?code=" + billing.countryId,
+        url: "https://" + api_domain + "/v3/addresses/countries/iso?code=" + billing.countryId,
         success: function (data) {
           initCheckout(JSON.parse(data).iso3);
         },

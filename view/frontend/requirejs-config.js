@@ -1,7 +1,8 @@
 var config = {
   paths: {
-    "paystand": "https://checkout.paystand.com/v3/js/paystand.checkout",
-    "paystand-sandbox": "https://checkout.paystand.co/v3/js/paystand.checkout",
+    "paystand": "https://checkout.paystand.com/v4/js/paystand.checkout.js?env=live",
+    "paystand-sandbox": "https://checkout.paystand.co/v4/js/paystand.checkout.js?env=sandbox",
+    // "paystand-sandbox": "https://localhost:3003/js/paystand.checkout.js?env=local",
     "paystand-checkout": "./PayStand_PayStandMagento/js/view/checkout/checkout"
   }
 };
