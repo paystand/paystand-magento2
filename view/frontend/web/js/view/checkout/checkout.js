@@ -86,7 +86,7 @@ define([
         psCheckout.reboot(config);
       });
 
-      psCheckout.reboot(config);
+      psCheckout.init();
 
       // stop observing for mutation events
       window.observer.disconnect();
