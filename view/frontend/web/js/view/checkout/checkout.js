@@ -79,14 +79,17 @@ define([
 
       console.log("rebooting checkout with config", config);
 
-      psCheckout.onceLoaded(function (data) {
+      psCheckout.onReady(function () {
+
+        // wait for reboot to complete before showing checkout
         psCheckout.onceLoaded(function (data) {
           psCheckout.showCheckout();
         });
-        psCheckout.reboot(config);
-      });
 
-      psCheckout.reboot(config);
+        // reboot checkout with a new config
+        psCheckout.reboot(config);
+
+      });
 
       // stop observing for mutation events
       window.observer.disconnect();
