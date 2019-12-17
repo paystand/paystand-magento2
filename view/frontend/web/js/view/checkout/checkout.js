@@ -53,7 +53,6 @@ define([
         "viewReceipt": "close",
         "viewCheckout": "mobile",
         "paymentCurrency": "USD",
-        "viewFunds": "echeck,card",
         "payerName": billing.firstname + ' ' + billing.lastname,
         "payerEmail": quote.guestEmail,
         "payerAddressCounty": countryISO3,
