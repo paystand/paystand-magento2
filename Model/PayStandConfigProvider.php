@@ -41,6 +41,8 @@ class PayStandConfigProvider implements ConfigProviderInterface
         'payment' => [
         'paystandmagento' => [
           'publishable_key' => $this->scopeConfig->getValue(self::PUBLISHABLE_KEY, $storeScope),
+          'client_id' => $this->scopeConfig->getValue(self::CLIENT_ID, $storeScope),
+          'client_secret' => $this->scopeConfig->getValue(self::CLIENT_SECRET, $storeScope),
           'use_sandbox' => $this->scopeConfig->getValue(self::USE_SANDBOX, $storeScope)
         ]
         ]

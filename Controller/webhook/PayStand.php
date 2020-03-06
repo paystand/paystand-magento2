@@ -93,7 +93,9 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 }
 
                 $url = $base_url . "/events/" . $json->id . "/verify";
-                $auth_header = ["x-publishable-key: ".$this->scopeConfig->getValue(self::PUBLISHABLE_KEY, $storeScope)];
+                $auth_header = ["x-publishable-key: ".$this->scopeConfig->getValue(self::PUBLISHABLE_KEY, $storeScope)
+                                "client_id: ".$this->scopeConfig->getValue(self::CLIENT_ID, $storeScope)
+                                "client_secret: ".$this->scopeConfig->getValue(self::CLIENT_SECRET, $storeScope)];
 
                 $curl = $this->buildCurl("POST", $url, json_encode($json), $auth_header);
                 $response = $this->runCurl($curl);
