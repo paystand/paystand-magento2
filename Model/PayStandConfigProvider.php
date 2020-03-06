@@ -18,6 +18,16 @@ class PayStandConfigProvider implements ConfigProviderInterface
     const PUBLISHABLE_KEY = 'payment/paystandmagento/publishable_key';
 
   /**
+   * client id config path
+   */
+    const CLIENT_ID = 'payment/paystandmagento/client_id';
+
+  /**
+   * client secret config path
+   */
+    const CLIENT_SECRET = 'payment/paystandmagento/client_secret';
+
+  /**
    * use sandbox config path
    */
     const USE_SANDBOX = 'payment/paystandmagento/use_sandbox';
