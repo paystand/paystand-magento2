@@ -13,22 +13,22 @@ class Paystand extends \Magento\Framework\App\Action\Action
   /**
    * publishable key config path
    */
-    const PUBLISHABLE_KEY = 'payment/paystand_paystandmagento/publishable_key';
+    const PUBLISHABLE_KEY = 'payment/paystandmagento/publishable_key';
 
   /**
    * client id config path
    */
-    const CLIENT_ID = 'payment/paystand_paystandmagento/client_id';
+    const CLIENT_ID = 'payment/paystandmagento/client_id';
 
   /**
    * client secret config path
    */
-    const CLIENT_SECRET = 'payment/paystand_paystandmagento/client_secret';
+    const CLIENT_SECRET = 'payment/paystandmagento/client_secret';
 
   /**
    * use sandbox config path
    */
-    const USE_SANDBOX = 'payment/paystand_paystandmagento/use_sandbox';
+    const USE_SANDBOX = 'payment/paystandmagento/use_sandbox';
 
   /** @var \Psr\Log\LoggerInterface  */
     protected $_logger;
@@ -104,10 +104,11 @@ class Paystand extends \Magento\Framework\App\Action\Action
 
                 $url = $base_url . "/events/" . $json->id . "/verify";
                 $auth_header = ["x-publishable-key: ".$this->scopeConfig->getValue(self::PUBLISHABLE_KEY, $storeScope)];
-                $client_id_secret = ["client_id: ".$this->scopeConfig->getValue(self::CLIENT_ID, $storeScope),
-                                     "client_secret: ".$this->scopeConfig->getValue(self::CLIENT_SECRET, $storeScope)];
 
-                $curl = $this->buildCurl("POST", $url, json_encode($json), $auth_header, $client_id_secret);
+                $json->client_id = $this->scopeConfig->getValue(self::CLIENT_ID, $storeScope);
+                $json->client_secret = $this->scopeConfig->getValue(self::CLIENT_SECRET, $storeScope);
+
+                $curl = $this->buildCurl("POST", $url, json_encode($json), $auth_header);
                 $response = $this->runCurl($curl);
 
                 $this->_logger->addDebug("http_response_code is ".$this->http_response_code);
@@ -146,7 +147,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
         }
     }
 
-    private function buildCurl($verb = "POST", $url, $body = "", $extheaders = null, $client_id_secret = null)
+    private function buildCurl($verb = "POST", $url, $body = "", $extheaders = null)
     {
         $headers = [
         "Content-Type: application/json",
@@ -155,10 +156,6 @@ class Paystand extends \Magento\Framework\App\Action\Action
 
         if (null != $extheaders) {
             $headers = array_merge($headers, $extheaders);
-        }
-
-        if (null != $client_id_secret) {
-            $body = array_merge($body, $client_id_secret);
         }
 
         $curl = curl_init();
