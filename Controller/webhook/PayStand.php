@@ -16,6 +16,11 @@ class Paystand extends \Magento\Framework\App\Action\Action
     const PUBLISHABLE_KEY = 'payment/paystandmagento/publishable_key';
 
   /**
+   * client secret config path
+   */
+    const CUSTOMER_ID = 'payment/paystandmagento/customer_id';
+
+  /**
    * client id config path
    */
     const CLIENT_ID = 'payment/paystandmagento/client_id';
