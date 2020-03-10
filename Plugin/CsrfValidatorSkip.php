@@ -1,5 +1,5 @@
 <?php
-namespace PayStand\PayStandMagento\Plugin\CsrfValidatorSkip;
+namespace PayStand\PayStandMagento\Plugin;
 
 class CsrfValidatorSkip
 {
