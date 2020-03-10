@@ -133,6 +133,13 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 $this->http_response_code = "0"; //Restart http response
                 $url = $base_url . "/events/" . $json->id . "/verify";
 
+                // Clean up json before sending for verification
+                unset($json->sent);
+                unset($json->lastAttemptSent);
+                unset($json->attempts);
+                unset($json->sourceId);
+                unset($json->sourceType);
+
                 $curl = $this->buildCurl("POST", $url, json_encode($json), $auth_header);
                 $response = $this->runCurl($curl);
 
@@ -142,8 +149,8 @@ class Paystand extends \Magento\Framework\App\Action\Action
                     if ($json->resource->object = "payment") {
                         switch ($json->resource->status) {
                             case 'posted':
-                                $state = 'pending';
-                                $status = 'pending';
+                                $state = 'processing';
+                                $status = 'processing';
                                 break;
                             case 'paid':
                                 $state = 'processing';
