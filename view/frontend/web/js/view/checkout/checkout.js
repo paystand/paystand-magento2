@@ -9,7 +9,7 @@ if (use_sandbox == '1') {
   // api_domain = 'api.paystand.co';
   // checkout_domain = 'checkout.paystand.co';
   core_domain = 'localhost:3001';
-  api_domain = 'localhost:3001/api/v3';
+  api_domain = 'localhost:3001/api';
   checkout_domain = 'localhost:3003';
 }
 
@@ -32,7 +32,7 @@ define([
     var publishable_key = window.checkoutConfig.payment.paystandmagento.publishable_key;
 
     var price = quote.totals().grand_total.toString();
-    var quoteId = quote.getId();
+    var quoteId = quote.getQuoteId();
     var billing = quote.billingAddress();
 
     psCheckout.onComplete(function(data){

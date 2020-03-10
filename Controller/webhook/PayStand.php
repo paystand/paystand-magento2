@@ -4,6 +4,7 @@ namespace PayStand\PayStandMagento\Controller\Webhook;
 
 use \Magento\Framework\App\Config\ScopeConfigInterface as ScopeConfig;
 use \Magento\Quote\Model\QuoteFactory as QuoteFactory;
+use \Magento\Quote\Model\QuoteIdMaskFactory as QuoteIdMaskFactory;
 
 /**
  * Webhook Receiver Controller for Paystand
@@ -40,7 +41,10 @@ class Paystand extends \Magento\Framework\App\Action\Action
     protected $_logger;
 
   /** @var \Magento\Quote\Model\QuoteFactory  */
-      protected $_quoteFactory;
+    protected $_quoteFactory;
+
+  /** @var \Magento\Quote\Model\QuoteIdMaskFactory  */
+    protected $_quoteIdMaskFactory;
 
   /** @var \Magento\Framework\App\Request\Http */
     protected $_request;
@@ -64,11 +68,13 @@ class Paystand extends \Magento\Framework\App\Action\Action
         \Psr\Log\LoggerInterface $logger,
         \Magento\Framework\App\Request\Http $request,
         QuoteFactory $quoteFactory,
+        QuoteIdMaskFactory $quoteIdMaskFactory,
         ScopeConfig $scopeConfig
     ) {
         $this->_logger = $logger;
         $this->_request = $request;
         $this->_quoteFactory = $quoteFactory;
+        $this->_quoteIdMaskFactory = $quoteIdMaskFactory;
         $this->scopeConfig = $scopeConfig;
         parent::__construct($context);
     }
@@ -89,7 +95,10 @@ class Paystand extends \Magento\Framework\App\Action\Action
             $quoteId = $json->resource->meta->quote;
             $this->_logger->addDebug('magento 2 webhook identified with quote id = '.$quoteId);
 
-            $quote = $this->_quoteFactory->create()->load($quoteId); //TODO: pending to fix, quoteId is not set correctly on checkout
+            $quoteIdMask = $this->_quoteIdMaskFactory->create()->load($quoteId, 'masked_id');
+            $id = $quoteIdMask->getQuoteId();
+
+            $quote = $this->_quoteFactory->create()->load($id);
             $objectManager = \Magento\Framework\App\ObjectManager::getInstance();
             $order = $objectManager->create('Magento\Sales\Model\Order')->load($quote->getReservedOrderId());
 
