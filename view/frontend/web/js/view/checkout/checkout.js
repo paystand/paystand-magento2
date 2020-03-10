@@ -60,7 +60,8 @@ define([
           "source": "magento 2",
           "quote": quoteId,
           "quoteDetails" : quote.totals()
-        }
+        },
+        "viewclose": "hide"
       };
 
       if (billing.street && billing.street.length > 0) {
