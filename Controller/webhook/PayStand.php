@@ -3,6 +3,7 @@
 namespace PayStand\PayStandMagento\Controller\Webhook;
 
 use \Magento\Framework\App\Config\ScopeConfigInterface as ScopeConfig;
+use \Magento\Quote\Model\QuoteFactory as QuoteFactory;
 
 /**
  * Webhook Receiver Controller for Paystand
@@ -38,8 +39,8 @@ class Paystand extends \Magento\Framework\App\Action\Action
   /** @var \Psr\Log\LoggerInterface  */
     protected $_logger;
 
-  /** @var \Magento\Sales\Model\Order  */
-    protected $_order;
+  /** @var \Magento\Quote\Model\QuoteFactory  */
+      protected $_quoteFactory;
 
   /** @var \Magento\Framework\App\Request\Http */
     protected $_request;
@@ -61,13 +62,13 @@ class Paystand extends \Magento\Framework\App\Action\Action
     public function __construct(
         \Magento\Framework\App\Action\Context $context,
         \Psr\Log\LoggerInterface $logger,
-        \Magento\Sales\Model\Order $order,
         \Magento\Framework\App\Request\Http $request,
+        QuoteFactory $quoteFactory,
         ScopeConfig $scopeConfig
     ) {
         $this->_logger = $logger;
-        $this->_order = $order;
         $this->_request = $request;
+        $this->_quoteFactory = $quoteFactory;
         $this->scopeConfig = $scopeConfig;
         parent::__construct($context);
     }
@@ -86,32 +87,42 @@ class Paystand extends \Magento\Framework\App\Action\Action
 
         if (isset($json->resource->meta->source) && ($json->resource->meta->source == "magento 2")) {
             $quoteId = $json->resource->meta->quote;
-
             $this->_logger->addDebug('magento 2 webhook identified with quote id = '.$quoteId);
-            $this->_order->loadByAttribute('quote_id', $quoteId);
 
-            if (!empty($this->_order->getIncrementId())) {
-                $this->_logger->addDebug('current order increment id = '.$this->_order->getIncrementId());
+            $quote = $this->_quoteFactory->create()->load($quoteId); //TODO: pending to fix, quoteId is not set correctly on checkout
+            $objectManager = \Magento\Framework\App\ObjectManager::getInstance();
+            $order = $objectManager->create('Magento\Sales\Model\Order')->load($quote->getReservedOrderId());
 
-                $state = $this->_order->getState();
+            if (!empty($order->getIncrementId())) {
+                $this->_logger->addDebug('current order increment id = '.$order->getIncrementId());
+
+                $state = $order->getState();
                 $this->_logger->addDebug('current order state = '.$state);
 
-                $status = $this->_order->getStatus();
+                $status = $order->getStatus();
                 $this->_logger->addDebug('current order status = '.$status);
 
                 $storeScope = \Magento\Store\Model\ScopeInterface::SCOPE_STORE;
 
                 if ($this->scopeConfig->getValue(self::USE_SANDBOX, $storeScope)) {
-                    $base_url = 'https://api.paystand.co/v3';
+                    $base_url = 'https://legacy:3001/api/v3';
                 } else {
                     $base_url = 'https://api.paystand.com/v3';
                 }
 
-                $url = $base_url . "/events/" . $json->id . "/verify";
-                $auth_header = ["x-publishable-key: ".$this->scopeConfig->getValue(self::PUBLISHABLE_KEY, $storeScope)];
+                $oauthUrl = $base_url . '/oauth/token';
+                $oauth_credentials = [
+                                    'grant_type' => "client_credentials",
+                                    'scope' => "auth",
+                                    'client_id' => $this->scopeConfig->getValue(self::CLIENT_ID, $storeScope),
+                                    'client_secret' => $this->scopeConfig->getValue(self::CLIENT_SECRET, $storeScope)
+                                    ];
+                $authResponse = $this->runCurl($this->buildCurl("POST", $oauthUrl, json_encode($oauth_credentials)));
+                $auth_header = ["Authorization: Bearer ".$authResponse->access_token,
+                                "x-customer-id: ".$this->scopeConfig->getValue(self::CUSTOMER_ID, $storeScope)];
 
-                $json->client_id = $this->scopeConfig->getValue(self::CLIENT_ID, $storeScope);
-                $json->client_secret = $this->scopeConfig->getValue(self::CLIENT_SECRET, $storeScope);
+                $this->http_response_code = "0"; //Restart http response
+                $url = $base_url . "/events/" . $json->id . "/verify";
 
                 $curl = $this->buildCurl("POST", $url, json_encode($json), $auth_header);
                 $response = $this->runCurl($curl);
@@ -140,14 +151,16 @@ class Paystand extends \Magento\Framework\App\Action\Action
                         }
                     }
 
-                    $this->_order->setState($state);
-                    $this->_order->setStatus($status);
-                    $this->_order->save();
+                    $order->setState($state);
+                    $order->setStatus($status);
+                    $order->save();
                     $this->_logger->addDebug('new order state = '.$state);
                     $this->_logger->addDebug('new order status = '.$status);
                 } else {
                     $this->_logger->addDebug('event verify failed');
                 }
+            } else {
+                $this->_logger->addDebug('Could not retrieve order from quoteId');
             }
         }
     }
