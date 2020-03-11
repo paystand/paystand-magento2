@@ -5,6 +5,7 @@ namespace PayStand\PayStandMagento\Controller\Webhook;
 use \Magento\Framework\App\Config\ScopeConfigInterface as ScopeConfig;
 use \Magento\Quote\Model\QuoteFactory as QuoteFactory;
 use \Magento\Quote\Model\QuoteIdMaskFactory as QuoteIdMaskFactory;
+use \stdClass;
 
 /**
  * Webhook Receiver Controller for Paystand
@@ -134,11 +135,10 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 $url = $base_url . "/events/" . $json->id . "/verify";
 
                 // Clean up json before sending for verification
-                unset($json->sent);
-                unset($json->lastAttemptSent);
-                unset($json->attempts);
-                unset($json->sourceId);
-                unset($json->sourceType);
+                $attributeWhitelist = ["id","object","resource","diff","urls","created"
+                                        ,"lastUpdated","status","sent","lastAttemptSent"
+                                        ,"attempts","sourceId","sourceType"];
+                $json = $this->cleanObject($json,$attributeWhitelist);
 
                 $curl = $this->buildCurl("POST", $url, json_encode($json), $auth_header);
                 $response = $this->runCurl($curl);
@@ -215,5 +215,14 @@ class Paystand extends \Magento\Framework\App\Action\Action
         $this->raw_response = $raw_response;
         $this->http_response_code = curl_getinfo($curl, CURLINFO_HTTP_CODE);
         return $response;
+    }
+
+    private function cleanObject($obj, $whitelist)
+    {
+        $ret = new stdClass;
+        foreach ($whitelist as $prop) {
+            $ret->$prop = $obj->$prop;
+        }
+        return $ret;
     }
 }
