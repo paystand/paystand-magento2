@@ -141,8 +141,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
 
                 // Clean up json before sending for verification
                 $attributeWhitelist = ["id","object","resource","diff","urls","created"
-                                        ,"lastUpdated","status","sent","lastAttemptSent"
-                                        ,"attempts","sourceId","sourceType"];
+                                                        ,"lastUpdated","status"];
                 $json = $this->cleanObject($json,$attributeWhitelist);
 
                 $curl = $this->buildCurl("POST", $url, json_encode($json), $auth_header);
