@@ -5,12 +5,12 @@ var checkout_domain = 'checkout.paystand.com';
 var use_sandbox = window.checkoutConfig.payment.paystandmagento.use_sandbox;
 if (use_sandbox == '1') {
   checkoutjs_module = 'paystand-sandbox';
-  // core_domain = 'paystand.co';
-  // api_domain = 'api.paystand.co';
-  // checkout_domain = 'checkout.paystand.co';
-  core_domain = 'localhost:3001';
-  api_domain = 'localhost:3001/api';
-  checkout_domain = 'localhost:3003';
+  core_domain = 'paystand.co';
+  api_domain = 'api.paystand.co';
+  checkout_domain = 'checkout.paystand.co';
+  // core_domain = 'localhost:3001';
+  // api_domain = 'localhost:3001/api';
+  // checkout_domain = 'localhost:3003';
 }
 
 /*jshint browser:true jquery:true*/
@@ -61,8 +61,7 @@ define([
           "source": "magento 2",
           "quote": quoteId,
           "quoteDetails" : quote.totals()
-        },
-        "viewclose": "hide"
+        }
       };
 
       if (billing.street && billing.street.length > 0) {

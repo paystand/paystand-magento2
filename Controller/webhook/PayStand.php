@@ -120,7 +120,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 $storeScope = \Magento\Store\Model\ScopeInterface::SCOPE_STORE;
 
                 if ($this->scopeConfig->getValue(self::USE_SANDBOX, $storeScope)) {
-                    $base_url = 'https://legacy:3001/api/v3';
+                    $base_url = 'https://api.paystand.co/v3';
                 } else {
                     $base_url = 'https://api.paystand.com/v3';
                 }
