@@ -50,6 +50,9 @@ class Paystand extends \Magento\Framework\App\Action\Action
   /** @var \Magento\Framework\App\Request\Http */
     protected $_request;
 
+  /** @var \Magento\Framework\Controller\Result\JsonFactory */
+    protected $_jsonResultFactory;
+
   /**
    * @var \Magento\Framework\App\Config\ScopeConfigInterface
    */
@@ -68,12 +71,14 @@ class Paystand extends \Magento\Framework\App\Action\Action
         \Magento\Framework\App\Action\Context $context,
         \Psr\Log\LoggerInterface $logger,
         \Magento\Framework\App\Request\Http $request,
+        \Magento\Framework\Controller\Result\JsonFactory $jsonResultFactory,
         QuoteFactory $quoteFactory,
         QuoteIdMaskFactory $quoteIdMaskFactory,
         ScopeConfig $scopeConfig
     ) {
         $this->_logger = $logger;
         $this->_request = $request;
+        $this->_jsonResultFactory = $jsonResultFactory;
         $this->_quoteFactory = $quoteFactory;
         $this->_quoteIdMaskFactory = $quoteIdMaskFactory;
         $this->scopeConfig = $scopeConfig;
@@ -85,7 +90,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
    */
     public function execute()
     {
-
+        $result = $this->_jsonResultFactory->create();
         $this->_logger->addDebug('paystandmagento/webhook/paystand endpoint was hit');
 
         $body = @file_get_contents('php://input');
@@ -172,11 +177,22 @@ class Paystand extends \Magento\Framework\App\Action\Action
                     $order->save();
                     $this->_logger->addDebug('new order state = '.$state);
                     $this->_logger->addDebug('new order status = '.$status);
+                    $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
+                    $result->setData(['success_message' => __('Event verified, order status changed'),
+                                      'order' => ['newState' => __($state),
+                                                 'newStatus' => __($status)]]);
+                    return $result;
                 } else {
                     $this->_logger->addDebug('event verify failed');
+                    $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_BAD_REQUEST);
+                    $result->setData(['error_message' => __('Event verify failed')]);
+                    return $result;
                 }
             } else {
                 $this->_logger->addDebug('Could not retrieve order from quoteId');
+                $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_NOT_FOUND);
+                $result->setData(['error_message' => __('Could not retrieve order from quoteId')]);
+                return $result;
             }
         }
     }
