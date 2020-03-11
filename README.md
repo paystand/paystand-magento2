@@ -1,4 +1,4 @@
-#  PayStand Payment Gateway Magento 2.0 Extension
+#  PayStand Payment Gateway Magento 2.x Extension
 
 Accept Credit Card, eCheck, and ACH payments using PayStand Payment Gateway's robust and modern checkout.
 
@@ -14,7 +14,7 @@ Use of the extension requires a PayStand account offering fully-featured plans. 
 
 1.  Go to your Magento 2 root folder
 2.  `composer config repositories.paystand-magento2 git https://github.com/paystand/paystand-magento2.git`
-3.  `composer require paystand/paystandmagento:dev-master#3.0.4`
+3.  `composer require paystand/paystandmagento:dev-master#3.1`
 4.  `composer update`
 5.  `php bin/magento setup:upgrade`
 
