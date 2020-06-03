@@ -8,9 +8,6 @@ if (use_sandbox == '1') {
     core_domain = 'paystand.co';
     api_domain = 'api.paystand.co';
     checkout_domain = 'checkout.paystand.co';
-    // core_domain = 'localhost:3001';
-    // api_domain = 'localhost:3001/api';
-    // checkout_domain = 'localhost:3003';
 }
 
 define(
@@ -95,7 +92,7 @@ define(
 
             console.log("rebooting checkout with config", config);
 
-            //This block fixes the issue where checkout opens blank
+            // This block fixes the issue where checkout opens blank
             psCheckout.onReady(function () {
                 // wait for reboot to complete before showing checkout
                 psCheckout.onceLoaded(function (data) {
@@ -116,21 +113,6 @@ define(
                 $(".ps-button").click();
             }
         }
-
-        psCheckout.onComplete(function (data) {
-            console.log("custom checkout complete:", data);
-            $(".submit-trigger").click();
-        });
-
-        psCheckout.onError(function (data) {
-            console.log("custom checkout error:", data);
-        });
-
-        // uncomment for development
-        // psCheckout.checkoutEvent = function (data) {
-        //     console.log(data.response.event.type + ":", data);
-        // }
-
 
         return Component.extend({
             defaults: {
