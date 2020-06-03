@@ -3,16 +3,37 @@
         <input type="radio"
                name="payment[method]"
                class="radio"
-               data-bind="attr: {'id': getCode()}, value: getCode(), checked: isChecked, click: selectPaymentMethod, visible: isRadioButtonVisible()" />
+               data-bind="attr: {'id': getCode()}, value: getCode(), checked: isChecked, click: selectPaymentMethod, visible: isRadioButtonVisible()"/>
         <label data-bind="attr: {'for': getCode()}" class="label">
             <span data-bind="text: getTitle()"></span>
         </label>
     </div>
     <div class="payment-method-content">
+        <div class="checkout-agreements-block">
+            <!-- ko foreach: $parent.getRegion('before-place-order') -->
+            <!-- ko template: getTemplate() --><!-- /ko -->
+            <!--/ko-->
+        </div>
         <div class="actions-toolbar">
             <div id="ps_checkout"></div>
-            <form class="form paystand-checkout-form" action="#" method="post">
-                <input class="submit-trigger" type="hidden" data-bind="click: placeOrder, enable: (getCode() == isChecked())"/>
+            <button
+                    class="ps-button"
+                    ps-container-id="ps_checkout"
+                    ps-width="400px"
+                    ps-height="700px"
+                    data-bind="click: loadPaystandCheckout"
+                    style="display: none"
+            >Actual paystand button
+            </button>
+            <button
+                    class="open-checkout-button"
+                    data-bind="click: validateOpenCheckout"
+                    style="background-color: rgb(0, 172, 238); color: white; border-radius: 5px; border:none"
+            >Pay with Paystand
+            </button>
+            <form class="form paystand-checkout-form" action="#" method="post" style="display: none">
+                <input class="submit-trigger" type="hidden"
+                       data-bind="click: placeOrder, enable: (getCode() == isChecked())"/>
             </form>
         </div>
     </div>
