@@ -111,6 +111,10 @@ define(
                 $(".ps-button").click();
             }
         }
+        
+        psCheckout.onComplete(function (data) {
+            $(".submit-trigger").click();
+        });
 
         return Component.extend({
             defaults: {
