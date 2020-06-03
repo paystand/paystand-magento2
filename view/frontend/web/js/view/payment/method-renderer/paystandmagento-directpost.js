@@ -90,8 +90,6 @@ define(
                 config.payerAddressState = checkoutData.billing.regionCode;
             }
 
-            console.log("rebooting checkout with config", config);
-
             // This block fixes the issue where checkout opens blank
             psCheckout.onReady(function () {
                 // wait for reboot to complete before showing checkout
