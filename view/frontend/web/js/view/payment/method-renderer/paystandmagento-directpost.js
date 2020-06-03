@@ -62,7 +62,7 @@ define(
             }
         };
 
-        const initCheckout= function (checkoutData){
+        const initCheckout = function (checkoutData) {
             let config = {
                 "publishableKey": checkoutData.publishable_key,
                 "paymentAmount": checkoutData.price,
@@ -76,7 +76,7 @@ define(
                 "paymentMeta": {
                     "source": "magento 2",
                     "quote": checkoutData.quoteId,
-                    "quoteDetails" : quote.totals()
+                    "quoteDetails": quote.totals()
                 }
             };
 
@@ -110,25 +110,26 @@ define(
         }
 
         // Validate agreement section using core Magento 2 validator
-        let validateAgreementSection = function() {
-            if(agreementValidator.validate()){
+        let validateAgreementSection = function () {
+            if (agreementValidator.validate()) {
                 // if we clear agreement section, click actual ps-button to open checkout
                 $(".ps-button").click();
             }
         }
 
-        psCheckout.onComplete(function(data){
+        psCheckout.onComplete(function (data) {
             console.log("custom checkout complete:", data);
             $(".submit-trigger").click();
         });
 
-        psCheckout.onError(function(data){
+        psCheckout.onError(function (data) {
             console.log("custom checkout error:", data);
         });
 
-        psCheckout.checkoutEvent = function (data) {
-            console.log(data.response.event.type + ":", data);
-        }
+        // uncomment for development
+        // psCheckout.checkoutEvent = function (data) {
+        //     console.log(data.response.event.type + ":", data);
+        // }
 
 
         return Component.extend({
