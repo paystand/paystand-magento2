@@ -175,7 +175,8 @@ class Paystand extends \Magento\Framework\App\Action\Action
 
         // Finish and send back success response
         $this->_logger->debug(
-            '>>>>> PAYSTAND-FINISH: new order state: "' . $state
+            '>>>>> PAYSTAND-FINISH: Paystand payment status: "' . $json->resource->status
+            . '", new order state: "' . $state
             . '", new order status: "' . $status . '"'
         );
         $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
@@ -239,6 +240,12 @@ class Paystand extends \Magento\Framework\App\Action\Action
     {
         $newStatus = '';
         switch ($status) {
+            case 'created':
+                $newStatus = 'pending';
+                break;
+            case 'processing':
+                $newStatus = 'pending';
+                break;
             case 'posted':
                 $newStatus = 'processing';
                 break;
