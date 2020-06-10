@@ -164,6 +164,14 @@ class Paystand extends \Magento\Framework\App\Action\Action
         }
 
         // Get new order state & status depending on Paystand's payment status
+        if ($json->resource->status == 'created' || $json->resource->status == 'processing') {
+            $this->_logger->debug('>>>>> PAYSTAND-FINISH: payment created or processing, no need to update order');
+            $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
+            $result->setData(
+                ['success_message' => __('Event verified, payment created or processing, no further action')]
+            );
+            return $result;
+        }
         $newStatus = $this->newOrderStatus($json->resource->status);
         $state = $newStatus;
         $status = $newStatus;
@@ -240,12 +248,6 @@ class Paystand extends \Magento\Framework\App\Action\Action
     {
         $newStatus = '';
         switch ($status) {
-            case 'created':
-                $newStatus = 'pending';
-                break;
-            case 'processing':
-                $newStatus = 'pending';
-                break;
             case 'posted':
                 $newStatus = 'processing';
                 break;
