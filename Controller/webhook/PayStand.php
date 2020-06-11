@@ -45,8 +45,6 @@ class Paystand extends \Magento\Framework\App\Action\Action
 
     protected $error;
     protected $errno;
-    protected $raw_response;
-    protected $objectManager;
 
     /**
      * @param \Magento\Framework\App\Action\Context $context ,
@@ -106,7 +104,8 @@ class Paystand extends \Magento\Framework\App\Action\Action
         $quoteId = $json->resource->meta->quote;
         $this->_logger->debug('>>>>> PAYSTAND-QUOTE: magento 2 webhook identified with quote id = ' . $quoteId);
         $quoteIdMask = $this->_quoteIdMaskFactory->create()->load($quoteId, 'masked_id');
-        $id = $quoteIdMask->getQuoteId();
+        // If the quoteId is not masked, it comes from a logged in user and should be used as is.
+        $id = (empty($quoteIdMask->getQuoteId())) ? $json->resource->meta->quote : $quoteIdMask->getQuoteId();
 
         // Get Order Id from quote
         $quote = $this->_quoteFactory->create()->load($id);
