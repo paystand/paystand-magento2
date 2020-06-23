@@ -3,30 +3,33 @@
     <policies>
         <policy id="script-src">
             <values>
-                <value id="paystand-checkout-co" type="host">https://checkout.paystad.co</value>
-                <value id="paystand-checkout-com" type="host">https://checkout.paystad.com</value>
-                <value id="paystand-checkout-biz" type="host">https://checkout.paystad.biz</value>
+                <value id="paystand-checkout-co" type="host">https://checkout.paystand.co</value>
+                <value id="paystand-api-co" type="host">https://api.paystad.co</value>
+                <value id="paystand-checkout-com" type="host">https://checkout.paystand.com</value>
+                <value id="paystand-api-com" type="host">https://api.paystad.com</value>
+                <value id="paystand-checkout-biz" type="host">https://checkout.paystand.biz</value>
+                <value id="paystand-api-biz" type="host">https://api.paystad.biz</value>
             </values>
         </policy>
         <policy id="style-src">
             <values>
-                <value id="style-co" type="host">https://checkout.paystad.co</value>
-                <value id="style-com" type="host">https://checkout.paystad.com</value>
-                <value id="style-biz" type="host">https://checkout.paystad.biz</value>
+                <value id="style-co" type="host">https://checkout.paystand.co</value>
+                <value id="style-com" type="host">https://checkout.paystand.com</value>
+                <value id="style-biz" type="host">https://checkout.paystand.biz</value>
             </values>
         </policy>
         <policy id="frame-src">
             <values>
-                <value id="frame-co" type="host">https://checkout.paystad.co</value>
-                <value id="frame-com" type="host">https://checkout.paystad.com</value>
-                <value id="frame-biz" type="host">https://checkout.paystad.biz</value>
+                <value id="frame-co" type="host">https://checkout.paystand.co</value>
+                <value id="frame-com" type="host">https://checkout.paystand.com</value>
+                <value id="frame-biz" type="host">https://checkout.paystand.biz</value>
             </values>
         </policy>
         <policy id="connect-src">
             <values>
-                <value id="connect-co" type="host">https://checkout.paystad.co</value>
-                <value id="connect-com" type="host">https://checkout.paystad.com</value>
-                <value id="connect-biz" type="host">https://checkout.paystad.biz</value>
+                <value id="connect-co" type="host">https://checkout.paystand.co</value>
+                <value id="connect-com" type="host">https://checkout.paystand.com</value>
+                <value id="connect-biz" type="host">https://checkout.paystand.biz</value>
             </values>
         </policy>
     </policies>
