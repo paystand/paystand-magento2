@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<csp_whitelist xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Csp:etc/csp_whitelist.xsd">
+    <policies>
+        <policy id="script-src">
+            <values>
+                <value id="paystand-checkout-co" type="host">https://checkout.paystad.co</value>
+                <value id="paystand-checkout-com" type="host">https://checkout.paystad.com</value>
+                <value id="paystand-checkout-biz" type="host">https://checkout.paystad.biz</value>
+            </values>
+        </policy>
+        <policy id="style-src">
+            <values>
+                <value id="style-co" type="host">https://checkout.paystad.co</value>
+                <value id="style-com" type="host">https://checkout.paystad.com</value>
+                <value id="style-biz" type="host">https://checkout.paystad.biz</value>
+            </values>
+        </policy>
+        <policy id="frame-src">
+            <values>
+                <value id="frame-co" type="host">https://checkout.paystad.co</value>
+                <value id="frame-com" type="host">https://checkout.paystad.com</value>
+                <value id="frame-biz" type="host">https://checkout.paystad.biz</value>
+            </values>
+        </policy>
+        <policy id="connect-src">
+            <values>
+                <value id="connect-co" type="host">https://checkout.paystad.co</value>
+                <value id="connect-com" type="host">https://checkout.paystad.com</value>
+                <value id="connect-biz" type="host">https://checkout.paystad.biz</value>
+            </values>
+        </policy>
+    </policies>
+</csp_whitelist>
