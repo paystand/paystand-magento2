@@ -3,12 +3,12 @@
     <policies>
         <policy id="script-src">
             <values>
-                <value id="paystand-checkout-co" type="host">https://checkout.paystand.co</value>
-                <value id="paystand-api-co" type="host">https://api.paystand.co</value>
-                <value id="paystand-checkout-com" type="host">https://checkout.paystand.com</value>
-                <value id="paystand-api-com" type="host">https://api.paystand.com</value>
-                <value id="paystand-checkout-biz" type="host">https://checkout.paystand.biz</value>
-                <value id="paystand-api-biz" type="host">https://api.paystand.biz</value>
+                <value id="script-checkout-co" type="host">https://checkout.paystand.co</value>
+                <value id="script-api-co" type="host">https://api.paystand.co</value>
+                <value id="script-checkout-com" type="host">https://checkout.paystand.com</value>
+                <value id="script-api-com" type="host">https://api.paystand.com</value>
+                <value id="script-checkout-biz" type="host">https://checkout.paystand.biz</value>
+                <value id="script-api-biz" type="host">https://api.paystand.biz</value>
             </values>
         </policy>
         <policy id="style-src">
@@ -28,8 +28,11 @@
         <policy id="connect-src">
             <values>
                 <value id="connect-co" type="host">https://checkout.paystand.co</value>
+                <value id="connect-api-co" type="host">https://api.paystand.co</value>
                 <value id="connect-com" type="host">https://checkout.paystand.com</value>
+                <value id="connect-api-com" type="host">https://api.paystand.com</value>
                 <value id="connect-biz" type="host">https://checkout.paystand.biz</value>
+                <value id="connect-api-biz" type="host">https://api.paystand.biz</value>
             </values>
         </policy>
     </policies>
