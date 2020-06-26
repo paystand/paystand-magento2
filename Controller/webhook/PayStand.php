@@ -6,11 +6,12 @@ use \Magento\Framework\App\Config\ScopeConfigInterface as ScopeConfig;
 use \Magento\Quote\Model\QuoteFactory as QuoteFactory;
 use \Magento\Quote\Model\QuoteIdMaskFactory as QuoteIdMaskFactory;
 use \stdClass;
+use Magento\Framework\App\Action\HttpPostActionInterface as HttpPostActionInterface;
 
 /**
  * Webhook Receiver Controller for Paystand
  */
-class Paystand extends \Magento\Framework\App\Action\Action
+class Paystand extends \Magento\Framework\App\Action\Action implements HttpPostActionInterface
 {
 
     // Get configuration from Paystand's payment method settings & set constants
@@ -80,7 +81,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
         $this->_logger->debug('>>>>> PAYSTAND-START: paystandmagento/webhook/paystand endpoint was hit');
 
         // Get body content from request
-        $body = $this->getRequest()->getContent();
+        $body = $this->_request->getContent() ?? $this->getRequest()->getContent();
         if ($body == null) {
             $this->_logger->error('>>>>> PAYSTAND-ERROR: error retrieving the body from webhook');
             $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_INTERNAL_ERROR);
@@ -175,7 +176,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
         $state = $newStatus;
         $status = $newStatus;
 
-        // Assing new status to Magento 2 Order
+        // Assign new status to Magento 2 Order
         $order->setState($state);
         $order->setStatus($status);
         $order->save();
