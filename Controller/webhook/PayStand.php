@@ -114,6 +114,12 @@ class Paystand extends \Magento\Framework\App\Action\Action implements HttpPostA
         $order = $this->_objectManager->create(
             \Magento\Sales\Model\Order::class
         )->loadByIncrementId($quote->getReservedOrderId());
+        // alternate method in case the environment is not using increment_id on the order.
+        if(empty($order)){
+            $order = $this->_objectManager->create(
+                \Magento\Sales\Model\Order::class
+            )->load($quote->getReservedOrderId());
+        }
 
         // Verify we got an existing Magento order from received quote id
         if (empty($order->getIncrementId())) {
