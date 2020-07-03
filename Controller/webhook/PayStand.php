@@ -81,7 +81,8 @@ class Paystand extends \Magento\Framework\App\Action\Action implements HttpPostA
         $this->_logger->debug('>>>>> PAYSTAND-START: paystandmagento/webhook/paystand endpoint was hit');
 
         // Get body content from request
-        $body = $this->_request->getContent() ?? $this->getRequest()->getContent();
+        $body = (!empty($this->_request->getContent()))
+            ? $this->_request->getContent() : $this->getRequest()->getContent();
         if ($body == null) {
             $this->_logger->error('>>>>> PAYSTAND-ERROR: error retrieving the body from webhook');
             $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_INTERNAL_ERROR);
