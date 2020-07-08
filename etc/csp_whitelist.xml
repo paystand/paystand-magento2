@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+<csp_whitelist xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Csp:etc/csp_whitelist.xsd">
+    <policies>
+        <policy id="script-src">
+            <values>
+                <value id="script-checkout-co" type="host">https://checkout.paystand.co</value>
+                <value id="script-api-co" type="host">https://api.paystand.co</value>
+                <value id="script-checkout-com" type="host">https://checkout.paystand.com</value>
+                <value id="script-api-com" type="host">https://api.paystand.com</value>
+                <value id="script-checkout-biz" type="host">https://checkout.paystand.biz</value>
+                <value id="script-api-biz" type="host">https://api.paystand.biz</value>
+            </values>
+        </policy>
+        <policy id="style-src">
+            <values>
+                <value id="style-co" type="host">https://checkout.paystand.co</value>
+                <value id="style-com" type="host">https://checkout.paystand.com</value>
+                <value id="style-biz" type="host">https://checkout.paystand.biz</value>
+            </values>
+        </policy>
+        <policy id="frame-src">
+            <values>
+                <value id="frame-co" type="host">https://checkout.paystand.co</value>
+                <value id="frame-com" type="host">https://checkout.paystand.com</value>
+                <value id="frame-biz" type="host">https://checkout.paystand.biz</value>
+            </values>
+        </policy>
+        <policy id="connect-src">
+            <values>
+                <value id="connect-co" type="host">https://checkout.paystand.co</value>
+                <value id="connect-api-co" type="host">https://api.paystand.co</value>
+                <value id="connect-com" type="host">https://checkout.paystand.com</value>
+                <value id="connect-api-com" type="host">https://api.paystand.com</value>
+                <value id="connect-biz" type="host">https://checkout.paystand.biz</value>
+                <value id="connect-api-biz" type="host">https://api.paystand.biz</value>
+            </values>
+        </policy>
+    </policies>
+</csp_whitelist>

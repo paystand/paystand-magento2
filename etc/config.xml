@@ -23,5 +23,15 @@
                 <!--<date_delim>/</date_delim>-->
             </paystandmagento>
         </payment>
+        <csp>
+            <mode>
+                <storefront>
+                    <report_only>1</report_only>
+                </storefront>
+                <admin>
+                    <report_only>1</report_only>
+                </admin>
+            </mode>
+        </csp>
     </default>
 </config>
