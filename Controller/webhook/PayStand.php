@@ -202,6 +202,7 @@ class Paystand extends \Magento\Framework\App\Action\Action implements HttpPostA
         $order->setStatus($status);
         $order->save();
 
+        // Only create transaction and invoice when the payment is on paid status to prevent multiple objects
         if ($json->resource->status == 'paid') {
             // Create Transaction for the Order
             $this->createTransaction($order, json_decode($body, true)['resource']);
