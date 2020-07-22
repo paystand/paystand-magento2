@@ -207,7 +207,7 @@ class Paystand extends \Magento\Framework\App\Action\Action implements HttpPostA
             // Create Transaction for the Order
             $this->createTransaction($order, json_decode($body, true)['resource']);
             // Automatically invoice order
-            $this->createInvoice($quote->getReservedOrderId());
+            $this->createInvoice($order);
         }
         
         // Finish and send back success response
@@ -401,20 +401,23 @@ class Paystand extends \Magento\Framework\App\Action\Action implements HttpPostA
 
     private function retrievePaystandPaymentInfo($json)
     {
-        $paymentInfo = [
-            'paystandTransactionId' => $json['id'],
-            'amount' => $json['settlementAmount'],
-            'currency' => $json['settlementCurrency'],
-            'paymentStatus' => $json['status']
-        ];
+        if ($json) {
+            $paymentInfo = [
+                'paystandTransactionId' => $json['id'],
+                'amount' => $json['settlementAmount'],
+                'currency' => $json['settlementCurrency'],
+                'paymentStatus' => $json['status']
+            ];
+        } else {
+            $paymentInfo = [];
+        }
         return $paymentInfo;
     }
 
-    private function createInvoice($orderId)
+    private function createInvoice($order)
     {
         try {
             $this->_logger->debug('>>>>> PAYSTAND-CREATE-INVOICE-START');
-            $order = $this->_orderRepository->get($orderId);
             if ($order) {
                 $invoices = $this->_invoiceCollectionFactory->create()
                     ->addAttributeToFilter('order_id', ['eq' => $order->getId()]);
