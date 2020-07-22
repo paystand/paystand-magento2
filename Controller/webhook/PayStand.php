@@ -202,8 +202,7 @@ class Paystand extends \Magento\Framework\App\Action\Action implements HttpPostA
         $order->setStatus($status);
         $order->save();
 
-        if($json->resource->status == 'paid')
-        {
+        if ($json->resource->status == 'paid') {
             // Create Transaction for the Order
             $this->createTransaction($order, json_decode($body, true)['resource']);
             // Automatically invoice order
@@ -436,14 +435,13 @@ class Paystand extends \Magento\Framework\App\Action\Action implements HttpPostA
                 $invoice->register();
                 $invoice->getOrder()->setCustomerNoteNotify(false);
                 $invoice->getOrder()->setIsInProcess(true);
-                $order->addStatusHistoryComment(__('Automatically INVOICED'), false);
+                $order->addStatusHistoryComment(__('Automatically INVOICED by Paystand'), false);
                 $transactionSave = $this->_transactionFactory
                     ->create()
                     ->addObject($invoice)
                     ->addObject($invoice->getOrder());
                 $transactionSave->save();
-                $this->_logger->debug('>>>>> PAYSTAND-CREATE-INVOICE-FINISH: invoice: ');
-                $this->_logger->debug('>>>>> PAYSTAND-CREATE-INVOICE-FINISH: invoice: '. $invoice->getInvoiceId());
+                $this->_logger->debug('>>>>> PAYSTAND-CREATE-INVOICE-FINISH: invoiceId: ' . $invoice->getEntityId());
                 return $invoice;
             }
         } catch (\Exception $e) {
