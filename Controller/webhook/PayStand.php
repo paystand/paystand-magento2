@@ -22,7 +22,7 @@ class Paystand extends \Magento\Framework\App\Action\Action implements HttpPostA
     const CLIENT_ID = 'payment/paystandmagento/client_id';
     const CLIENT_SECRET = 'payment/paystandmagento/client_secret';
     const USE_SANDBOX = 'payment/paystandmagento/use_sandbox';
-    const SANDBOX_BASE_URL = 'https://api.paystand.biz/v3';
+    const SANDBOX_BASE_URL = 'https://api.paystand.co/v3';
     const BASE_URL = 'https://api.paystand.com/v3';
     const STORE_SCOPE = \Magento\Store\Model\ScopeInterface::SCOPE_STORE;
 
