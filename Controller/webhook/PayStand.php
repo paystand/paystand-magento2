@@ -7,6 +7,8 @@ use \Magento\Quote\Model\QuoteFactory as QuoteFactory;
 use \Magento\Quote\Model\QuoteIdMaskFactory as QuoteIdMaskFactory;
 use \stdClass;
 use Magento\Framework\App\Action\HttpPostActionInterface as HttpPostActionInterface;
+use Magento\Sales\Model\Order\Payment\Transaction\BuilderInterface as BuilderInterface;
+use Magento\Sales\Model\Order;
 
 /**
  * Webhook Receiver Controller for Paystand
@@ -59,7 +61,13 @@ class Paystand extends \Magento\Framework\App\Action\Action implements HttpPostA
         \Magento\Framework\ObjectManagerInterface $objectManager,
         QuoteFactory $quoteFactory,
         QuoteIdMaskFactory $quoteIdMaskFactory,
-        ScopeConfig $scopeConfig
+        ScopeConfig $scopeConfig,
+        BuilderInterface $builderInterface,
+        \Magento\Sales\Model\ResourceModel\Order\Invoice\CollectionFactory $invoiceCollectionFactory,
+        \Magento\Sales\Model\Service\InvoiceService $invoiceService,
+        \Magento\Framework\DB\TransactionFactory $transactionFactory,
+        \Magento\Sales\Api\InvoiceRepositoryInterface $invoiceRepository,
+        \Magento\Sales\Api\OrderRepositoryInterface $orderRepository
     ) {
         $this->_logger = $logger;
         $this->_request = $request;
@@ -68,6 +76,12 @@ class Paystand extends \Magento\Framework\App\Action\Action implements HttpPostA
         $this->_quoteFactory = $quoteFactory;
         $this->_quoteIdMaskFactory = $quoteIdMaskFactory;
         $this->scopeConfig = $scopeConfig;
+        $this->_builderInterface = $builderInterface;
+        $this->_invoiceCollectionFactory = $invoiceCollectionFactory;
+        $this->_invoiceService = $invoiceService;
+        $this->_transactionFactory = $transactionFactory;
+        $this->_invoiceRepository = $invoiceRepository;
+        $this->_orderRepository = $orderRepository;
         parent::__construct($context);
     }
 
@@ -90,7 +104,7 @@ class Paystand extends \Magento\Framework\App\Action\Action implements HttpPostA
             return $result;
         }
         $json = json_decode($body);
-        $this->_logger->debug(">>>>> PAYSTAND-REQUEST-RECEIVED: " .json_encode($json));
+        $this->_logger->debug(">>>>> PAYSTAND-REQUEST-RECEIVED: " . json_encode($json));
 
         // Verify the received event is a Paystand-Magento request
         if (!isset($json->resource->meta->source) || ($json->resource->meta->source != "magento 2")) {
@@ -134,7 +148,7 @@ class Paystand extends \Magento\Framework\App\Action\Action implements HttpPostA
         $status = $order->getStatus();
         $this->_logger->debug(
             '>>>>> PAYSTAND-ORDER: current order id: "' . $order->getIncrementId()
-            . '", current order state: "' . $state . '", current order status: "' . $status . '"'
+                . '", current order state: "' . $state . '", current order status: "' . $status . '"'
         );
 
         // Get an access_token from Paystand using CLIENT_ID & CLIENT_SECRET
@@ -188,11 +202,19 @@ class Paystand extends \Magento\Framework\App\Action\Action implements HttpPostA
         $order->setStatus($status);
         $order->save();
 
+        // Only create transaction and invoice when the payment is on paid status to prevent multiple objects
+        if ($json->resource->status == 'paid') {
+            // Create Transaction for the Order
+            $this->createTransaction($order, json_decode($body, true)['resource']);
+            // Automatically invoice order
+            $this->createInvoice($order);
+        }
+        
         // Finish and send back success response
         $this->_logger->debug(
             '>>>>> PAYSTAND-FINISH: Paystand payment status: "' . $json->resource->status
-            . '", new order state: "' . $state
-            . '", new order status: "' . $status . '"'
+                . '", new order state: "' . $state
+                . '", new order status: "' . $status . '"'
         );
         $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
         $result->setData(
@@ -256,16 +278,16 @@ class Paystand extends \Magento\Framework\App\Action\Action implements HttpPostA
         $newStatus = '';
         switch ($status) {
             case 'posted':
-                $newStatus = 'processing';
+                $newStatus = Order::STATE_PROCESSING;
                 break;
             case 'paid':
-                $newStatus = 'processing';
+                $newStatus = Order::STATE_PROCESSING;
                 break;
             case 'failed':
-                $newStatus = 'closed';
+                $newStatus = Order::STATE_CLOSED;
                 break;
             case 'canceled':
-                $newStatus = 'canceled';
+                $newStatus = Order::STATE_CANCELED;
                 break;
         }
         return $newStatus;
@@ -328,5 +350,108 @@ class Paystand extends \Magento\Framework\App\Action\Action implements HttpPostA
             $base_url = self::BASE_URL;
         }
         return $base_url;
+    }
+
+    private function createTransaction($order = null, $paymentData = [])
+    {
+        try {
+            //get payment object from order object
+            $this->_logger->debug('>>>>> PAYSTAND-CREATE-TRANSACTION-START');
+            $payment = $order->getPayment();
+            $payment->setLastTransId($paymentData['id']);
+            $payment->setTransactionId($paymentData['id']);
+            $payment->setAdditionalInformation(
+                [\Magento\Sales\Model\Order\Payment\Transaction::RAW_DETAILS => $paymentData]
+            );
+
+            // Formated price
+            $formatedPrice = $order->getBaseCurrency()->formatTxt(
+                $order->getGrandTotal()
+            );
+
+            $message = __('The captured amount is %1.', $formatedPrice);
+            //get the object of builder class
+            $trans = $this->_builderInterface;
+            $transaction = $trans->setPayment($payment)
+                ->setOrder($order)
+                ->setTransactionId($paymentData['id'])
+                ->setAdditionalInformation(
+                    [\Magento\Sales\Model\Order\Payment\Transaction::RAW_DETAILS
+                        => $this->retrievePaystandPaymentInfo($paymentData)]
+                )
+                ->setFailSafe(true)
+                //build method creates the transaction and returns the object
+                ->build(\Magento\Sales\Model\Order\Payment\Transaction::TYPE_CAPTURE);
+
+            $payment->addTransactionCommentsToOrder(
+                $transaction,
+                $message
+            );
+            $payment->setParentTransactionId(null);
+            $payment->save();
+            $order->save();
+
+            $transactionId = $transaction->save()->getTransactionId();
+            $this->_logger->debug('>>>>> PAYSTAND-CREATE-TRANSACTION-FINISH: transactionId: ' . $transactionId);
+            return  $transactionId;
+        } catch (\Magento\Framework\Exception\AlreadyExistsException $e) {
+            $this->_logger->debug('>>>>> PAYSTAND-EXCEPTION: ' . $e);
+        }
+    }
+
+    private function retrievePaystandPaymentInfo($json)
+    {
+        if ($json) {
+            $paymentInfo = [
+                'paystandTransactionId' => $json['id'],
+                'amount' => $json['settlementAmount'],
+                'currency' => $json['settlementCurrency'],
+                'paymentStatus' => $json['status']
+            ];
+        } else {
+            $paymentInfo = [];
+        }
+        return $paymentInfo;
+    }
+
+    private function createInvoice($order)
+    {
+        try {
+            $this->_logger->debug('>>>>> PAYSTAND-CREATE-INVOICE-START');
+            if ($order) {
+                $invoices = $this->_invoiceCollectionFactory->create()
+                    ->addAttributeToFilter('order_id', ['eq' => $order->getId()]);
+
+                $invoices->getSelect()->limit(1);
+
+                if ((int)$invoices->count() !== 0) {
+                    $invoices = $invoices->getFirstItem();
+                    $invoice = $this->_invoiceRepository->get($invoices->getId());
+                    return $invoice;
+                }
+
+                if (!$order->canInvoice()) {
+                    return null;
+                }
+
+                $invoice = $this->_invoiceService->prepareInvoice($order);
+                $invoice->setRequestedCaptureCase(\Magento\Sales\Model\Order\Invoice::CAPTURE_ONLINE);
+                $invoice->register();
+                $invoice->getOrder()->setCustomerNoteNotify(false);
+                $invoice->getOrder()->setIsInProcess(true);
+                $order->addStatusHistoryComment(__('Automatically INVOICED by Paystand'), false);
+                $transactionSave = $this->_transactionFactory
+                    ->create()
+                    ->addObject($invoice)
+                    ->addObject($invoice->getOrder());
+                $transactionSave->save();
+                $this->_logger->debug('>>>>> PAYSTAND-CREATE-INVOICE-FINISH: invoiceId: ' . $invoice->getEntityId());
+                return $invoice;
+            }
+        } catch (\Exception $e) {
+            throw new \Magento\Framework\Exception\LocalizedException(
+                __($e->getMessage())
+            );
+        }
     }
 }
