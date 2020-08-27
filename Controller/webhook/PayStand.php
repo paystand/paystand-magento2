@@ -185,11 +185,16 @@ class Paystand extends \Magento\Framework\App\Action\Action implements HttpPostA
         }
 
         // Get new order state & status depending on Paystand's payment status
-        if ($json->resource->status == 'created' || $json->resource->status == 'processing') {
-            $this->_logger->debug('>>>>> PAYSTAND-FINISH: payment created or processing, no need to update order');
+        if ($json->resource->status == 'created'
+                || $json->resource->status == 'processing'
+                || $json->resource->status == 'paid'
+            ) {
+            $this->_logger->debug(
+                '>>>>> PAYSTAND-FINISH: payment created, processing or paid, no need to update order'
+            );
             $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
             $result->setData(
-                ['success_message' => __('Event verified, payment created or processing, no further action')]
+                ['success_message' => __('Event verified, payment created, processing or paid, no further action')]
             );
             return $result;
         }
@@ -278,9 +283,6 @@ class Paystand extends \Magento\Framework\App\Action\Action implements HttpPostA
         $newStatus = '';
         switch ($status) {
             case 'posted':
-                $newStatus = Order::STATE_PROCESSING;
-                break;
-            case 'paid':
                 $newStatus = Order::STATE_PROCESSING;
                 break;
             case 'failed':
