@@ -437,7 +437,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 'sourceType' => $json['sourceType'],
                 'sourceId' => $json['sourceId'],
                 'meta' => [
-                    'quote' => $json-['meta']['quote']
+                    'quote' => $json['meta']['quote']
                 ]
             ];
         } else {
