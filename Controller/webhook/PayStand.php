@@ -394,7 +394,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 $paystandPaymentInfo['payerId'],
                 $paystandPaymentInfo['sourceType'],
                 $paystandPaymentInfo['sourceId'],
-                $paystandPaymentInfo['meta']['quote'],
+                $paystandPaymentInfo['meta']['quote']
             );
             //get the object of builder class
             $trans = $this->_builderInterface;
