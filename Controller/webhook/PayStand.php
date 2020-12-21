@@ -387,14 +387,14 @@ class Paystand extends \Magento\Framework\App\Action\Action
             );
 
             $paystandPaymentInfo = $this->retrievePaystandPaymentInfo($paymentData);
-            $message = __(
+            $message = sprintf(
                 'amount: %1.\nPaystand Payment ID: %s\nPaystand Payer ID: %s\nPaystand %s ID: %s\nMagento quote ID: %s', 
                 $formatedPrice,
                 $paystandPaymentInfo['paystandTransactionId'],
                 $paystandPaymentInfo['payerId'],
                 $paystandPaymentInfo['sourceType'],
                 $paystandPaymentInfo['sourceId'],
-                $paystandPaymentInfo['meta']['quote']
+                $paystandPaymentInfo['quote']
             );
             //get the object of builder class
             $trans = $this->_builderInterface;
@@ -436,9 +436,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 'payerId' => $json['payerId'],
                 'sourceType' => $json['sourceType'],
                 'sourceId' => $json['sourceId'],
-                'meta' => [
-                    'quote' => $json['meta']['quote']
-                ]
+                'quote' => $json['meta']['quote']
             ];
         } else {
             $paymentInfo = [];
