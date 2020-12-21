@@ -199,6 +199,20 @@ class Paystand extends \Magento\Framework\App\Action\Action
             );
             return $result;
         }
+
+        // If payment "paid" status has already been processed, there is no further action
+        if ($json->resource->status == 'paid' && ($state == 'processing' || $status == 'processing')) 
+        {
+            $this->_logger->debug(
+                '>>>>> PAYSTAND-FINISH: payment already processed, no further action needed'
+            );
+            $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
+            $result->setData(
+                ['success_message' => __('payment already processed, no further action needed')]
+            );
+            return $result;
+        }
+
         $newStatus = $this->newOrderStatus($json->resource->status);
         $state = $newStatus;
         $status = $newStatus;
@@ -372,7 +386,16 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 $order->getGrandTotal()
             );
 
-            $message = __('The captured amount is %1.', $formatedPrice);
+            $paystandPaymentInfo = $this->retrievePaystandPaymentInfo($paymentData);
+            $message = __(
+                'amount: %1.\nPaystand Payment ID: %s\nPaystand Payer ID: %s\nPaystand %s ID: %s\nMagento quote ID: %s', 
+                $formatedPrice,
+                $paystandPaymentInfo['paystandTransactionId'],
+                $paystandPaymentInfo['payerId'],
+                $paystandPaymentInfo['sourceType'],
+                $paystandPaymentInfo['sourceId'],
+                $paystandPaymentInfo['meta']['quote'],
+            );
             //get the object of builder class
             $trans = $this->_builderInterface;
             $transaction = $trans->setPayment($payment)
@@ -380,7 +403,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 ->setTransactionId($paymentData['id'])
                 ->setAdditionalInformation(
                     [\Magento\Sales\Model\Order\Payment\Transaction::RAW_DETAILS
-                        => $this->retrievePaystandPaymentInfo($paymentData)]
+                        => $paystandPaymentInfo]
                 )
                 ->setFailSafe(true)
                 //build method creates the transaction and returns the object
@@ -409,7 +432,13 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 'paystandTransactionId' => $json['id'],
                 'amount' => $json['settlementAmount'],
                 'currency' => $json['settlementCurrency'],
-                'paymentStatus' => $json['status']
+                'paymentStatus' => $json['status'],
+                'payerId' => $json['payerId'],
+                'sourceType' => $json['sourceType'],
+                'sourceId' => $json['sourceId'],
+                'meta' => [
+                    'quote' => $json->meta['quote']
+                ]
             ];
         } else {
             $paymentInfo = [];
