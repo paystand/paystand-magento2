@@ -6,14 +6,13 @@ use \Magento\Framework\App\Config\ScopeConfigInterface as ScopeConfig;
 use \Magento\Quote\Model\QuoteFactory as QuoteFactory;
 use \Magento\Quote\Model\QuoteIdMaskFactory as QuoteIdMaskFactory;
 use \stdClass;
-use Magento\Framework\App\Action\HttpPostActionInterface as HttpPostActionInterface;
 use Magento\Sales\Model\Order\Payment\Transaction\BuilderInterface as BuilderInterface;
 use Magento\Sales\Model\Order;
 
 /**
  * Webhook Receiver Controller for Paystand
  */
-class Paystand extends \Magento\Framework\App\Action\Action implements HttpPostActionInterface
+class Paystand extends \Magento\Framework\App\Action\Action
 {
 
     // Get configuration from Paystand's payment method settings & set constants
