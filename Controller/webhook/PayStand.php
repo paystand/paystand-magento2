@@ -388,7 +388,8 @@ class Paystand extends \Magento\Framework\App\Action\Action
 
             $paystandPaymentInfo = $this->retrievePaystandPaymentInfo($paymentData);
             $message = sprintf(
-                'Amount: %s'.'<br/>'.'Paystand Payment ID: %s'."</br>".'Paystand Payer ID: %s'."\n"."Paystand %s ID: %s<br/>Magento quote ID: %s", 
+                'Amount: %s<br/>Paystand Payment ID: %s<br/>Paystand Payer ID: %s<br/>'
+                    .'Paystand %s ID: %s<br/>Magento quote ID: %s<br/>', 
                 $formatedPrice,
                 $paystandPaymentInfo['paystandTransactionId'],
                 $paystandPaymentInfo['payerId'],
