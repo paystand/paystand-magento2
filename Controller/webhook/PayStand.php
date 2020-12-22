@@ -388,12 +388,12 @@ class Paystand extends \Magento\Framework\App\Action\Action
 
             $paystandPaymentInfo = $this->retrievePaystandPaymentInfo($paymentData);
             $message = sprintf(
-                'amount: %s%cPaystand Payment ID: %s%cPaystand Payer ID: %s%cPaystand %s ID: %s%cMagento quote ID: %s', 
-                $formatedPrice, 10,
-                $paystandPaymentInfo['paystandTransactionId'], 10,
-                $paystandPaymentInfo['payerId'], 10,
+                'amount: %s'."<br/>".'Paystand Payment ID: %s'."\n".'Paystand Payer ID: %s'."\n"."Paystand %s ID: %s\nMagento quote ID: %s", 
+                $formatedPrice,
+                $paystandPaymentInfo['paystandTransactionId'],
+                $paystandPaymentInfo['payerId'],
                 $paystandPaymentInfo['sourceType'],
-                $paystandPaymentInfo['sourceId'], 10,
+                $paystandPaymentInfo['sourceId'],
                 $paystandPaymentInfo['quote']
             );
             //get the object of builder class
