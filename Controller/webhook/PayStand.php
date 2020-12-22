@@ -390,9 +390,9 @@ class Paystand extends \Magento\Framework\App\Action\Action
             $message = sprintf(
                 'amount: %s%cPaystand Payment ID: %s%cPaystand Payer ID: %s%cPaystand %s ID: %s%cMagento quote ID: %s', 
                 $formatedPrice, 10,
-                $paystandPaymentInfo['paystandTransactionId'], 10,
-                $paystandPaymentInfo['payerId'], 10,
-                $paystandPaymentInfo['sourceType'], 10,
+                $paystandPaymentInfo['paystandTransactionId'], 13,
+                $paystandPaymentInfo['payerId'], 21,
+                $paystandPaymentInfo['sourceType'],
                 $paystandPaymentInfo['sourceId'], 10,
                 $paystandPaymentInfo['quote']
             );
