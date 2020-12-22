@@ -410,6 +410,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 ->build(\Magento\Sales\Model\Order\Payment\Transaction::TYPE_CAPTURE);
 
             $payment->addTransactionCommentsToOrder(
+                $transaction,
                 $message
             );
             $payment->setParentTransactionId(null);
