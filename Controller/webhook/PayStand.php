@@ -6,14 +6,13 @@ use \Magento\Framework\App\Config\ScopeConfigInterface as ScopeConfig;
 use \Magento\Quote\Model\QuoteFactory as QuoteFactory;
 use \Magento\Quote\Model\QuoteIdMaskFactory as QuoteIdMaskFactory;
 use \stdClass;
-use Magento\Framework\App\Action\HttpPostActionInterface as HttpPostActionInterface;
 use Magento\Sales\Model\Order\Payment\Transaction\BuilderInterface as BuilderInterface;
 use Magento\Sales\Model\Order;
 
 /**
  * Webhook Receiver Controller for Paystand
  */
-class Paystand extends \Magento\Framework\App\Action\Action implements HttpPostActionInterface
+class Paystand extends \Magento\Framework\App\Action\Action
 {
 
     // Get configuration from Paystand's payment method settings & set constants
@@ -200,6 +199,19 @@ class Paystand extends \Magento\Framework\App\Action\Action implements HttpPostA
             );
             return $result;
         }
+
+        // If payment "paid" status has already been processed, there is no further action
+        if ($json->resource->status == 'paid' && ($state == 'processing' || $status == 'processing')) {
+            $this->_logger->debug(
+                '>>>>> PAYSTAND-FINISH: payment already processed, no further action needed'
+            );
+            $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
+            $result->setData(
+                ['success_message' => __('payment already processed, no further action needed')]
+            );
+            return $result;
+        }
+
         $newStatus = $this->newOrderStatus($json->resource->status);
         $state = $newStatus;
         $status = $newStatus;
@@ -373,7 +385,17 @@ class Paystand extends \Magento\Framework\App\Action\Action implements HttpPostA
                 $order->getGrandTotal()
             );
 
-            $message = __('The captured amount is %1.', $formatedPrice);
+            $paystandPaymentInfo = $this->retrievePaystandPaymentInfo($paymentData);
+            $message = sprintf(
+                'Amount: %s<br/>Paystand Payment ID: %s<br/>Paystand Payer ID: %s<br/>'
+                    .'Paystand %s ID: %s<br/>Magento quote ID: %s<br/>',
+                $formatedPrice,
+                $paystandPaymentInfo['paystandTransactionId'],
+                $paystandPaymentInfo['payerId'],
+                $paystandPaymentInfo['sourceType'],
+                $paystandPaymentInfo['sourceId'],
+                $paystandPaymentInfo['quote']
+            );
             //get the object of builder class
             $trans = $this->_builderInterface;
             $transaction = $trans->setPayment($payment)
@@ -381,7 +403,7 @@ class Paystand extends \Magento\Framework\App\Action\Action implements HttpPostA
                 ->setTransactionId($paymentData['id'])
                 ->setAdditionalInformation(
                     [\Magento\Sales\Model\Order\Payment\Transaction::RAW_DETAILS
-                        => $this->retrievePaystandPaymentInfo($paymentData)]
+                        => $paystandPaymentInfo]
                 )
                 ->setFailSafe(true)
                 //build method creates the transaction and returns the object
@@ -410,7 +432,11 @@ class Paystand extends \Magento\Framework\App\Action\Action implements HttpPostA
                 'paystandTransactionId' => $json['id'],
                 'amount' => $json['settlementAmount'],
                 'currency' => $json['settlementCurrency'],
-                'paymentStatus' => $json['status']
+                'paymentStatus' => $json['status'],
+                'payerId' => $json['payerId'],
+                'sourceType' => $json['sourceType'],
+                'sourceId' => $json['sourceId'],
+                'quote' => $json['meta']['quote']
             ];
         } else {
             $paymentInfo = [];
