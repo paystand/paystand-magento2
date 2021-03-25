@@ -127,11 +127,14 @@ class Paystand extends \Magento\Framework\App\Action\Action
         $order = $this->_objectManager->create(
             \Magento\Sales\Model\Order::class
         )->loadByIncrementId($quote->getReservedOrderId());
+        $this->_logger->debug('>>>>> PAYSTAND-QUOTE: quote ae5eb1fa197fa54df0211cac479b6d38 ' . $quote . '", order: "' . $order);
         // alternate method in case the environment is not using increment_id on the order.
         if (empty($order)) {
+            $this->_logger->debug('>>>>> PAYSTAND-QUOTE:  = ' . $quoteId);
             $order = $this->_objectManager->create(
                 \Magento\Sales\Model\Order::class
             )->load($quote->getReservedOrderId());
+            $this->_logger->debug('>>>>> PAYSTAND-QUOTE: order 471b201ac77cd9ab017cbed7dfc482b1:  ' . $order);
         }
 
         // Verify we got an existing Magento order from received quote id
