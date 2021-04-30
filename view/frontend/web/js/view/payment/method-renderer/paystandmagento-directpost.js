@@ -69,6 +69,7 @@ define(
                 "viewReceipt": "close",
                 "viewCheckout": "mobile",
                 "paymentCurrency": "USD",
+                "mode": "modal",
                 "env": env,
                 "payerName": checkoutData.billing.firstname + ' ' + checkoutData.billing.lastname,
                 "payerEmail": quote.guestEmail,
@@ -104,12 +105,7 @@ define(
             });
 
             psCheckout.reboot(config);
-            let mode = (config && typeof config.mode !== 'undefined') ? config.mode : psCheckout.mode;
-            if (!psCheckout.isMobileApple() && mode !== 'embed') {
-                psCheckout.showCheckout();
-            } else {
-                psCheckout.runCheckout(config)
-            }
+            psCheckout.runCheckout(config);
         }
 
         // Validate agreement section using core Magento 2 validator
