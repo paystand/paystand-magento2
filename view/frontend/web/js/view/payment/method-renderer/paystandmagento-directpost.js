@@ -104,7 +104,6 @@ define(
                 psCheckout.reboot(config);
             });
 
-            psCheckout.reboot(config);
             psCheckout.runCheckout(config);
         }
 
