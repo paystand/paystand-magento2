@@ -2,12 +2,14 @@ var checkoutjs_module = 'paystand';
 var core_domain = 'paystand.com';
 var api_domain = 'api.paystand.com';
 var checkout_domain = 'checkout.paystand.com';
+var env = 'live';
 var use_sandbox = window.checkoutConfig.payment.paystandmagento.use_sandbox;
 if (use_sandbox == '1') {
     checkoutjs_module = 'paystand-sandbox';
     core_domain = 'paystand.co';
     api_domain = 'api.paystand.co';
     checkout_domain = 'checkout.paystand.co';
+    env = 'sandbox'
 }
 
 define(
@@ -67,6 +69,7 @@ define(
                 "viewReceipt": "close",
                 "viewCheckout": "mobile",
                 "paymentCurrency": "USD",
+                "env": env,
                 "payerName": checkoutData.billing.firstname + ' ' + checkoutData.billing.lastname,
                 "payerEmail": quote.guestEmail,
                 "payerAddressCounty": checkoutData.countryISO3,
@@ -101,7 +104,12 @@ define(
             });
 
             psCheckout.reboot(config);
-            psCheckout.showCheckout();
+            let mode = (config && typeof config.mode !== 'undefined') ? config.mode : psCheckout.mode;
+            if (!psCheckout.isMobileApple() && mode !== 'embed') {
+                psCheckout.showCheckout();
+            } else {
+                psCheckout.runCheckout(config)
+            }
         }
 
         // Validate agreement section using core Magento 2 validator
