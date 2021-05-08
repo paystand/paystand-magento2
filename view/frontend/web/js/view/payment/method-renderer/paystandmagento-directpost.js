@@ -28,7 +28,8 @@ define(
 
             // Get information from Magento checkout to load Paystand Checkout with
             const publishable_key = window.checkoutConfig.payment.paystandmagento.publishable_key;
-            const price = quote.totals().grand_total.toString();
+            const price = quote.totals().base_grand_total.toString();
+            const currency = quote.totals().quote_currency_code;
             const quoteId = quote.getQuoteId();
             const billing = quote.billingAddress();
 
@@ -68,7 +69,7 @@ define(
                 "fixedAmount": true,
                 "viewReceipt": "close",
                 "viewCheckout": "mobile",
-                "paymentCurrency": "USD",
+                "paymentCurrency": checkoutData.currency,
                 "mode": "modal",
                 "env": env,
                 "payerName": checkoutData.billing.firstname + ' ' + checkoutData.billing.lastname,
@@ -107,14 +108,16 @@ define(
             psCheckout.runCheckout(config);
         }
 
-        // Validate agreement section using core Magento 2 validator
-        let validateAgreementSection = function () {
-            if (agreementValidator.validate()) {
-                // if we clear agreement section, click actual ps-button to open checkout
-                $(".ps-button").click();
+        const watchAgreementCheckbox = function () {
+            var isDisabled = $('.ps-button').prop("disabled");
+            if (agreementValidator.validate() && isDisabled) {
+                $(".ps-button").prop('disabled', false);
+            }
+            if (!agreementValidator.validate() && !isDisabled) {
+                $(".ps-button").prop('disabled', true);
             }
         }
-        
+
         psCheckout.onComplete(function (data) {
             $(".submit-trigger").click();
         });
@@ -124,14 +127,14 @@ define(
                 template: 'PayStand_PayStandMagento/payment/paystandmagento-directpost'
             },
 
-            // this function is binded to Magento's "Pay with Paystand" button
-            validateOpenCheckout: function () {
-                validateAgreementSection();
-            },
-
             // this function ins binded to actual Paystand button to trigger checkout
             loadPaystandCheckout: function (event) {
                 loadPaystandCheckout();
+            },
+
+            // this function ins binded to actual Paystand button to trigger checkout
+            watchAgreementCheckbox: function () {
+                setInterval(watchAgreementCheckbox, 500)
             }
         });
     }
