@@ -16,7 +16,7 @@ Use of the extension requires a PayStand account offering fully-featured plans. 
 2.  `composer config repositories.paystand-magento2 git https://github.com/paystand/paystand-magento2.git`
 3.  `composer require paystand/paystandmagento:3.3.4`
 4.  `composer update`
-5.  `php bin/magento setup:upgrade`
+5.  `php bin/magento setup:upgrade --keep-generated`
 
 ##  Configuring the PayStand Payment Gateway
 1.  Go to Stores/Configuration/Sales/Payment Methods/PayStand in your Magento admin interface.

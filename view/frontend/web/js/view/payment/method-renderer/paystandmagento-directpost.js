@@ -6,10 +6,10 @@ var env = 'live';
 var use_sandbox = window.checkoutConfig.payment.paystandmagento.use_sandbox;
 if (use_sandbox == '1') {
     checkoutjs_module = 'paystand-sandbox';
-    core_domain = 'paystand.co';
-    api_domain = 'api.paystand.co';
-    checkout_domain = 'checkout.paystand.co';
-    env = 'sandbox'
+    core_domain = 'paystand.biz';
+    api_domain = 'api.paystand.biz';
+    checkout_domain = 'checkout.paystand.biz';
+    env = 'development'
 }
 
 define(
@@ -65,23 +65,17 @@ define(
       }
 
       function initCheckout(config) {
-          // This block fixes the issue where checkout opens blank
-          psCheckout.onReady(function () {
-              // wait for reboot to complete before showing checkout
-              psCheckout.onceLoaded(function (data) {
-                  psCheckout.showCheckout();
-              });
-              // reboot checkout with a new config
-              psCheckout.reboot(config);
-          });
-          setTimeout(() => { psCheckout.runCheckout(config); }, 2000);
-          psCheckout.onComplete(function () {
-              $(submitTrigger).click();
-          });
+          setTimeout(() => { psCheckout.runCheckout(config); }, 0);
       }
 
       function loadCheckout() {
           initCheckout(getConfig());
+      }
+
+      function onCompleteCheckout() {
+        psCheckout.onComplete(function () {
+            $(submitTrigger).click();
+        });
       }
 
       function disableButton() {
@@ -172,6 +166,10 @@ define(
           // this function ins binded to actual Paystand button to trigger checkout
           loadCheckout: function () {
               loadCheckout();
+          },
+
+          onCompleteCheckout: function () {
+              onCompleteCheckout();
           },
 
           // this function ins binded to actual Paystand button to trigger checkout
