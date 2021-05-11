@@ -13,126 +13,169 @@ if (use_sandbox == '1') {
 }
 
 define(
-    [
-        'jquery',
-        'Magento_Checkout/js/view/payment/default',
-        'Magento_Checkout/js/model/quote',
-        'Magento_CheckoutAgreements/js/model/agreement-validator',
-        checkoutjs_module,
-    ],
-    function ($, Component, quote, agreementValidator, paystand) {
-        'use strict';
+  [
+      'jquery',
+      'Magento_Checkout/js/view/payment/default',
+      'Magento_Checkout/js/model/quote',
+      'Magento_CheckoutAgreements/js/model/agreement-validator',
+      checkoutjs_module,
+  ],
+  function ($, Component, quote, agreementValidator) {
+      'use strict';
 
+      const termsSel = '.ps-payment-method div.checkout-agreements input[type="checkbox"]';
+      const psButtonSel = '.ps-payment-method .ps-button';
+      const submitTrigger = '.submit-trigger';
+      let countryISO3 = null;
 
-        const loadPaystandCheckout = function () {
+      function getConfig() {
+          const billing = quote.billingAddress()
+          const config = {
+              "publishableKey": window.checkoutConfig.payment.paystandmagento.publishable_key,
+              "paymentAmount": quote.totals().base_grand_total.toString(),
+              "fixedAmount": true,
+              "viewReceipt": "close",
+              "viewCheckout": "mobile",
+              "paymentCurrency": quote.totals().quote_currency_code,
+              "mode": "modal",
+              "env": env,
+              "payerName": billing.firstname + ' ' + billing.lastname,
+              "payerEmail": quote.guestEmail,
+              "payerAddressCounty": countryISO3,
+              "paymentMeta": {
+                  "source": "magento 2",
+                  "quote": quote.getQuoteId(),
+                  "quoteDetails": quote.totals()
+              }
+          };
 
-            // Get information from Magento checkout to load Paystand Checkout with
-            const publishable_key = window.checkoutConfig.payment.paystandmagento.publishable_key;
-            const price = quote.totals().grand_total.toString();
-            const quoteId = quote.getQuoteId();
-            const billing = quote.billingAddress();
+          if (billing.street && billing.street.length > 0) {
+              config.payerAddressStreet = billing.street[0];
+          }
+          if (billing.city) {
+              config.payerAddressCity = billing.city;
+          }
+          if (billing.postcode) {
+              config.payerAddressPostal = billing.postcode;
+          }
+          if (billing.regionCode) {
+              config.payerAddressState = billing.regionCode;
+          }
+          return config;
+      }
 
-            let checkoutData = {
-                publishable_key: publishable_key,
-                price: price,
-                quoteId: quoteId,
-                billing: billing,
-            }
+      function initCheckout(config) {
+          setTimeout(() => { psCheckout.runCheckout(config); }, 0);
+      }
 
-            // Init checkout with iso3 country code if country is provided
-            if (billing.countryId) {
-                $.ajax({
-                    beforeSend: function (request) {
-                        request.setRequestHeader("x-publishable-key", publishable_key);
-                    },
-                    dataType: "text",
-                    contentType: "application/json; charset=utf-8",
-                    url: "https://" + api_domain + "/v3/addresses/countries/iso?code=" + billing.countryId,
-                    success: function (data) {
-                        checkoutData.countryISO3 = JSON.parse(data).iso3;
-                        initCheckout(checkoutData);
-                    },
-                    error: function (error) {
-                        console.log('Unable to get ISO3 code from PayStand!');
-                    },
-                });
-            } else {
-                initCheckout(checkoutData);
-            }
-        };
+      function loadCheckout() {
+          initCheckout(getConfig());
+      }
 
-        const initCheckout = function (checkoutData) {
-            let config = {
-                "publishableKey": checkoutData.publishable_key,
-                "paymentAmount": checkoutData.price,
-                "fixedAmount": true,
-                "viewReceipt": "close",
-                "viewCheckout": "mobile",
-                "paymentCurrency": "USD",
-                "mode": "modal",
-                "env": env,
-                "payerName": checkoutData.billing.firstname + ' ' + checkoutData.billing.lastname,
-                "payerEmail": quote.guestEmail,
-                "payerAddressCounty": checkoutData.countryISO3,
-                "paymentMeta": {
-                    "source": "magento 2",
-                    "quote": checkoutData.quoteId,
-                    "quoteDetails": quote.totals()
-                }
-            };
-
-            if (checkoutData.billing.street && checkoutData.billing.street.length > 0) {
-                config.payerAddressStreet = checkoutData.billing.street[0];
-            }
-            if (checkoutData.billing.city) {
-                config.payerAddressCity = checkoutData.billing.city;
-            }
-            if (checkoutData.billing.postcode) {
-                config.payerAddressPostal = checkoutData.billing.postcode;
-            }
-            if (checkoutData.billing.regionCode) {
-                config.payerAddressState = checkoutData.billing.regionCode;
-            }
-
-            // This block fixes the issue where checkout opens blank
-            psCheckout.onReady(function () {
-                // wait for reboot to complete before showing checkout
-                psCheckout.onceLoaded(function (data) {
-                    psCheckout.showCheckout();
-                });
-                // reboot checkout with a new config
-                psCheckout.reboot(config);
-            });
-
-            psCheckout.runCheckout(config);
-        }
-
-        // Validate agreement section using core Magento 2 validator
-        let validateAgreementSection = function () {
-            if (agreementValidator.validate()) {
-                // if we clear agreement section, click actual ps-button to open checkout
-                $(".ps-button").click();
-            }
-        }
-        
-        psCheckout.onComplete(function (data) {
-            $(".submit-trigger").click();
+      function onCompleteCheckout() {
+        psCheckout.onComplete(function () {
+            $(submitTrigger).click();
         });
+      }
 
-        return Component.extend({
-            defaults: {
-                template: 'PayStand_PayStandMagento/payment/paystandmagento-directpost'
-            },
+      function disableButton() {
+          $(psButtonSel).prop("disabled", true)
+      }
 
-            // this function is binded to Magento's "Pay with Paystand" button
-            validateOpenCheckout: function () {
-                validateAgreementSection();
-            },
+      function enableButton() {
+          $(psButtonSel).prop("disabled", false)
+      }
 
-            // this function ins binded to actual Paystand button to trigger checkout
-            loadPaystandCheckout: function (event) {
-                loadPaystandCheckout();
-            }
-        });
-    }
+      function hasCountryCode() {
+          return !!countryISO3;
+      }
+
+      function areAllTermsSelected() {
+          return $(termsSel)
+            .map(function () { return $(this).prop("checked") })
+            .filter(function (key,value) { return value === false; })
+            .toArray()
+            .length === 0;
+      }
+
+      function registerClicks() {
+          $(termsSel).each(function () {
+              $(this).click(function () { resolveButton(); })
+          });
+      }
+
+      function resolveButton() {
+          if (areAllTermsSelected()) {
+              if (agreementValidator.validate()) {
+                  if (hasCountryCode()) {
+                      enableButton();
+                  }
+                  else {
+                      // show "Unable to find country code error"
+                      console.log('Unable to get ISO3 code from PayStand!');
+                  }
+              }
+              else {
+                  disableButton();
+              }
+          }
+          else {
+              disableButton();
+          }
+      }
+
+      function getCountryCode() {
+          const billing = quote.billingAddress();
+          const publishable_key = window.checkoutConfig.payment.paystandmagento.publishable_key;
+          if (billing.countryId) {
+              $.ajax({
+                  beforeSend: function (request) {
+                      request.setRequestHeader("x-publishable-key", publishable_key);
+                  },
+                  dataType: "text",
+                  contentType: "application/json; charset=utf-8",
+                  url: "https://" + api_domain + "/v3/addresses/countries/iso?code=" + billing.countryId,
+                  success: function (data) {
+                      countryISO3 = JSON.parse(data).iso3;
+                      resolveButton();
+                  },
+                  error: function (error) {
+                      console.log('Unable to get ISO3 code from PayStand!');
+                  },
+              });
+          }
+      }
+
+      function watchAgreement() {
+          const interval = setInterval(function(){
+              if ($(termsSel).length > 0) {
+                  disableButton();
+                  registerClicks();
+                  getCountryCode()
+                  clearInterval(interval);
+                  return;
+              }
+          }, 500)
+      }
+
+      return Component.extend({
+          defaults: {
+              template: 'PayStand_PayStandMagento/payment/paystandmagento-directpost'
+          },
+
+          // this function ins binded to actual Paystand button to trigger checkout
+          loadCheckout: function () {
+              loadCheckout();
+          },
+
+          onCompleteCheckout: function () {
+              onCompleteCheckout();
+          },
+
+          // this function ins binded to actual Paystand button to trigger checkout
+          watchAgreement: function () {
+              watchAgreement();
+          }
+      });
+  }
 );
