@@ -154,6 +154,8 @@ define(
                   getCountryCode()
                   clearInterval(interval);
                   return;
+              } else {
+                  enableButton();
               }
           }, 500)
       }
