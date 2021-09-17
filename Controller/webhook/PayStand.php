@@ -21,8 +21,8 @@ class Paystand extends \Magento\Framework\App\Action\Action
     const CLIENT_ID = 'payment/paystandmagento/client_id';
     const CLIENT_SECRET = 'payment/paystandmagento/client_secret';
     const USE_SANDBOX = 'payment/paystandmagento/use_sandbox';
-    const SANDBOX_BASE_URL = 'https://localhost:3001/api/v3';
-    const BASE_URL = 'https://localhost:3001/api/v3';
+    const SANDBOX_BASE_URL = 'https://api.paystand.co/v3';
+    const BASE_URL = 'https://api.paystand.com/v3';
     const STORE_SCOPE = \Magento\Store\Model\ScopeInterface::SCOPE_STORE;
 
     /** @var \Psr\Log\LoggerInterface */
@@ -298,9 +298,6 @@ class Paystand extends \Magento\Framework\App\Action\Action
         switch ($status) {
             case 'paid':
                 $newStatus = Order::STATE_PROCESSING;
-                break;
-            case 'failed':
-                $newStatus = Order::STATE_CLOSED;
                 break;
             case 'canceled':
                 $newStatus = Order::STATE_CANCELED;
