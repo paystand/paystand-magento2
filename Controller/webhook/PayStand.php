@@ -213,13 +213,16 @@ class Paystand extends \Magento\Framework\App\Action\Action
         }
 
         $newStatus = $this->newOrderStatus($json->resource->status);
-        $state = $newStatus;
-        $status = $newStatus;
 
-        // Assign new status to Magento 2 Order
-        $order->setState($state);
-        $order->setStatus($status);
-        $order->save();
+        if ($newStatus != '') {
+            $state = $newStatus;
+            $status = $newStatus;
+
+            // Assign new status to Magento 2 Order
+            $order->setState($state);
+            $order->setStatus($status);
+            $order->save();
+        }
 
         // Only create transaction and invoice when the payment is on paid status to prevent multiple objects
         if ($json->resource->status == 'paid') {
