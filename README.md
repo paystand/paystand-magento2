@@ -14,7 +14,7 @@ Use of the extension requires a PayStand account offering fully-featured plans. 
 
 1.  Go to your Magento 2 root folder
 2.  `composer config repositories.paystand-magento2 git https://github.com/paystand/paystand-magento2.git`
-3.  `composer require paystand/paystandmagento:3.3.5`
+3.  `composer require paystand/paystandmagento:3.3.6`
 4.  `composer update`
 5.  `php bin/magento setup:upgrade`  
 **Note**: The above command updates database schema, so in order to preserve previously generated static files run the above command with the flag `--keep-generated`
