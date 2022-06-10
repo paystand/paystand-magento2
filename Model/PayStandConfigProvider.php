@@ -33,6 +33,11 @@ class PayStandConfigProvider implements ConfigProviderInterface
     const CLIENT_SECRET = 'payment/paystandmagento/client_secret';
 
   /**
+   * update orders on
+   */
+  const UPDATE_ORDER_ON = 'payment/paystandmagento/update_order_on';
+
+  /**
    * use sandbox config path
    */
     const USE_SANDBOX = 'payment/paystandmagento/use_sandbox';
@@ -53,15 +58,16 @@ class PayStandConfigProvider implements ConfigProviderInterface
         $storeScope = \Magento\Store\Model\ScopeInterface::SCOPE_STORE;
 
         $config = [
-        'payment' => [
-        'paystandmagento' => [
-          'publishable_key' => $this->scopeConfig->getValue(self::PUBLISHABLE_KEY, $storeScope),
-          'customer_id' => $this->scopeConfig->getValue(self::CUSTOMER_ID, $storeScope),
-          'client_id' => $this->scopeConfig->getValue(self::CLIENT_ID, $storeScope),
-          'client_secret' => $this->scopeConfig->getValue(self::CLIENT_SECRET, $storeScope),
-          'use_sandbox' => $this->scopeConfig->getValue(self::USE_SANDBOX, $storeScope)
-        ]
-        ]
+          'payment' => [
+            'paystandmagento' => [
+              'publishable_key' => $this->scopeConfig->getValue(self::PUBLISHABLE_KEY, $storeScope),
+              'customer_id' => $this->scopeConfig->getValue(self::CUSTOMER_ID, $storeScope),
+              'client_id' => $this->scopeConfig->getValue(self::CLIENT_ID, $storeScope),
+              'client_secret' => $this->scopeConfig->getValue(self::CLIENT_SECRET, $storeScope),
+              'update_order_on' => $this->scopeConfig->getValue(self::UPDATE_ORDER_ON, $storeScope),
+              'use_sandbox' => $this->scopeConfig->getValue(self::USE_SANDBOX, $storeScope)
+            ]
+          ]
         ];
         return $config;
     }
