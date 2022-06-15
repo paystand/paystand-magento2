@@ -203,7 +203,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
         }
 
         // If payment status has already been processed, there is no further action
-        if ($psPaymentStatus == $updateOrderOn && ($state == 'processing' || $status == 'processing')) {
+        if ($state == 'processing' || $status == 'processing') {
             $this->_logger->debug(
                 '>>>>> PAYSTAND-FINISH: payment already processed, no further action needed'
             );
