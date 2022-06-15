@@ -20,6 +20,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
     const CUSTOMER_ID = 'payment/paystandmagento/customer_id';
     const CLIENT_ID = 'payment/paystandmagento/client_id';
     const CLIENT_SECRET = 'payment/paystandmagento/client_secret';
+    const UPDATE_ORDER_ON = 'payment/paystandmagento/update_order_on';
     const USE_SANDBOX = 'payment/paystandmagento/use_sandbox';
     const SANDBOX_BASE_URL = 'https://api.paystand.co/v3';
     const BASE_URL = 'https://api.paystand.com/v3';
@@ -81,6 +82,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
         $this->_transactionFactory = $transactionFactory;
         $this->_invoiceRepository = $invoiceRepository;
         $this->_orderRepository = $orderRepository;
+        $this->updateOrderOn = $this->scopeConfig->getValue(self::UPDATE_ORDER_ON, self::STORE_SCOPE);
         parent::__construct($context);
     }
 
@@ -183,25 +185,25 @@ class Paystand extends \Magento\Framework\App\Action\Action
             return $result;
         }
 
-        $this->_logger->debug('>>>>> PAYSTAND-PAYMENT-STATUS: "' . $json->resource->status);
+        $updateOrderOn = $this->updateOrderOn;
+        $this->_logger->debug(">>>>> PAYSTAND-UPDATE-ORDER-ON: '{$updateOrderOn}'");
+        $psPaymentStatus = $json->resource->status;
+        $this->_logger->debug(">>>>> PAYSTAND-PAYMENT-STATUS: '{$psPaymentStatus}'");
 
         // Get new order state & status depending on Paystand's payment status
-        if ($json->resource->status == 'created'
-                || $json->resource->status == 'processing'
-                || $json->resource->status == 'posted'
-            ) {
+        if ($psPaymentStatus != $updateOrderOn && $psPaymentStatus != 'failed') {
             $this->_logger->debug(
-                '>>>>> PAYSTAND-FINISH: payment created, processing or posted, no need to update order'
+                ">>>>> PAYSTAND-FINISH: payment {$psPaymentStatus}, no need to update order"
             );
             $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
             $result->setData(
-                ['success_message' => __('Event verified, payment created, processing or posted, no further action')]
+                ['success_message' => __("Event verified, payment {$psPaymentStatus}, no further action")]
             );
             return $result;
         }
 
-        // If payment "paid" status has already been processed, there is no further action
-        if ($json->resource->status == 'paid' && ($state == 'processing' || $status == 'processing')) {
+        // If payment status has already been processed, there is no further action
+        if ($state == 'processing' || $status == 'processing') {
             $this->_logger->debug(
                 '>>>>> PAYSTAND-FINISH: payment already processed, no further action needed'
             );
@@ -212,7 +214,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
             return $result;
         }
 
-        $newStatus = $this->newOrderStatus($json->resource->status);
+        $newStatus = $this->newOrderStatus($psPaymentStatus);
 
         if ($newStatus != '') {
             $state = $newStatus;
@@ -225,7 +227,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
         }
 
         // Only create transaction and invoice when the payment is on paid status to prevent multiple objects
-        if ($json->resource->status == 'paid') {
+        if ($psPaymentStatus == $updateOrderOn) {
             // Create Transaction for the Order
             $this->createTransaction($order, json_decode($body, true)['resource']);
             // Automatically invoice order
@@ -234,7 +236,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
         
         // Finish and send back success response
         $this->_logger->debug(
-            '>>>>> PAYSTAND-FINISH: Paystand payment status: "' . $json->resource->status
+            '>>>>> PAYSTAND-FINISH: Paystand payment status: "' . $psPaymentStatus
                 . '", new order state: "' . $state
                 . '", new order status: "' . $status . '"'
         );
@@ -298,13 +300,10 @@ class Paystand extends \Magento\Framework\App\Action\Action
     private function newOrderStatus($status)
     {
         $newStatus = '';
-        switch ($status) {
-            case 'paid':
-                $newStatus = Order::STATE_PROCESSING;
-                break;
-            case 'canceled':
-                $newStatus = Order::STATE_CANCELED;
-                break;
+        if ($status == $this->updateOrderOn) {
+            $newStatus = Order::STATE_PROCESSING;
+        } else if ($status == 'canceled') {
+            $newStatus = Order::STATE_CANCELED;
         }
         return $newStatus;
     }
