@@ -13,171 +13,230 @@ if (use_sandbox == '1') {
 }
 
 define(
-  [
-      'jquery',
-      'Magento_Checkout/js/view/payment/default',
-      'Magento_Checkout/js/model/quote',
-      'Magento_CheckoutAgreements/js/model/agreement-validator',
-      checkoutjs_module,
-  ],
-  function ($, Component, quote, agreementValidator) {
-      'use strict';
+    [
+        'jquery',
+        'Magento_Checkout/js/view/payment/default',
+        'Magento_Checkout/js/model/quote',
+        'Magento_CheckoutAgreements/js/model/agreement-validator',
+        checkoutjs_module,
+    ],
 
-      const termsSel = '.ps-payment-method div.checkout-agreements input[type="checkbox"]';
-      const psButtonSel = '.ps-payment-method .ps-button';
-      const submitTrigger = '.submit-trigger';
-      let countryISO3 = null;
+    function ($, Component, quote, agreementValidator) {
+        'use strict';
+        require(['jquery', 'jquery/ui', 'Magento_Ui/js/modal/alert', 'Magento_Ui/js/modal/modal'], function ($) {
+            $(document).ready(function ($, alert) {
+                if (document.getElementsByClassName("ps-checkout-visible")[0] != undefined) {
+                    if (document.getElementsByClassName("ps-total-amount-fixed")[0] == undefined) {
+                        $(".ps-button").text("Pay With Paystand")
+                        $(".ps-checkout-close").click();
+                        $('#modal-warning').alert({
+                            title: 'Warning',
+                            modalClass: 'alert',
+                            autoOpen: false,
+                            buttons: [{
+                                text: $.mage.__('Accept'),
+                                class: 'action primary accept',
+                                click: function () {
+                                    this.closeModal(true);
+                                }
+                            }]
+                        });
+                    }
+                }
+                if (document.getElementById('paystand_checkout_iframe'))
+                    document.getElementById('paystand_checkout_iframe').onload = function () {
+                        if (document.getElementsByClassName("ps-checkout-visible")[0] != undefined)
+                            setTimeout(() => {
+                                if (document.getElementsByClassName("ps-total-amount-fixed")[0] != undefined) {
+                                    console.log("That's ok")
+                                } else {
+                                    $(".ps-button").text("Pay With Paystand")
+                                    $(".ps-checkout-close").click();
+                                    $('#modal-warning').alert({
+                                        title: 'Warning',
+                                        modalClass: 'alert',
+                                        autoOpen: false,
+                                        buttons: [{
+                                            text: $.mage.__('Accept'),
+                                            class: 'action primary accept',
+                                            click: function () {
+                                                this.closeModal(true);
+                                            }
+                                        }]
+                                    });
+                                }
+                            }, 3000)
+                    };
+            });
 
-      function getConfig() {
-          const billing = quote.billingAddress()
-          const config = {
-              "publishableKey": window.checkoutConfig.payment.paystandmagento.publishable_key,
-              "paymentAmount": quote.totals().base_grand_total.toString(),
-              "fixedAmount": true,
-              "viewReceipt": "close",
-              "viewCheckout": "mobile",
-              "paymentCurrency": quote.totals().quote_currency_code,
-              "mode": "modal",
-              "env": env,
-              "payerName": billing.firstname + ' ' + billing.lastname,
-              "payerEmail": quote.guestEmail,
-              "payerAddressCounty": countryISO3,
-              "paymentMeta": {
-                  "source": "magento 2",
-                  "quote": quote.getQuoteId(),
-                  "quoteDetails": quote.totals()
-              }
-          };
-
-          if (billing.street && billing.street.length > 0) {
-              config.payerAddressStreet = billing.street[0];
-          }
-          if (billing.city) {
-              config.payerAddressCity = billing.city;
-          }
-          if (billing.postcode) {
-              config.payerAddressPostal = billing.postcode;
-          }
-          if (billing.regionCode) {
-              config.payerAddressState = billing.regionCode;
-          }
-          return config;
-      }
-
-      function initCheckout(config) {
-          setTimeout(() => { psCheckout.runCheckout(config); }, 0);
-      }
-
-      function loadCheckout() {
-          initCheckout(getConfig());
-      }
-
-      function onCompleteCheckout() {
-        psCheckout.onComplete(function () {
-            $(submitTrigger).click();
         });
-      }
 
-      function disableButton() {
-          $(psButtonSel).prop("disabled", true)
-      }
+        const termsSel = '.ps-payment-method div.checkout-agreements input[type="checkbox"]';
+        const psButtonSel = '.ps-payment-method .ps-button';
+        const submitTrigger = '.submit-trigger';
+        let countryISO3 = null;
 
-      function enableButton() {
-          $(psButtonSel).prop("disabled", false)
-      }
+        function getConfig() {
+            const billing = quote.billingAddress()
+            const config = {
+                "publishableKey": window.checkoutConfig.payment.paystandmagento.publishable_key,
+                "paymentAmount": quote.totals().base_grand_total.toString(),
+                "fixedAmount": true,
+                "viewReceipt": "close",
+                "viewCheckout": "mobile",
+                "paymentCurrency": quote.totals().quote_currency_code,
+                "mode": "modal",
+                "env": env,
+                "payerName": billing.firstname + ' ' + billing.lastname,
+                "payerEmail": quote.guestEmail,
+                "payerAddressCounty": countryISO3,
+                "paymentMeta": {
+                    "source": "magento 2",
+                    "quote": quote.getQuoteId(),
+                    "quoteDetails": quote.totals()
+                }
+            };
 
-      function hasCountryCode() {
-          return !!countryISO3;
-      }
+            if (billing.street && billing.street.length > 0) {
+                config.payerAddressStreet = billing.street[0];
+            }
+            if (billing.city) {
+                config.payerAddressCity = billing.city;
+            }
+            if (billing.postcode) {
+                config.payerAddressPostal = billing.postcode;
+            }
+            if (billing.regionCode) {
+                config.payerAddressState = billing.regionCode;
+            }
+            return config;
+        }
 
-      function areAllTermsSelected() {
-          return $(termsSel)
-            .map(function () { return $(this).prop("checked") })
-            .filter(function (key,value) { return value === false; })
-            .toArray()
-            .length === 0;
-      }
+        function initCheckout(config) {
+            setTimeout(() => { psCheckout.runCheckout(config); }, 0);
+            if (document.getElementsByClassName("ps-total-amount-fixed")[0] != undefined)
+                setTimeout(() => {
+                    if (document.getElementsByClassName("ps-total-amount-fixed")[0] != undefined) {
+                        console.log("Everythig is ok")
+                    } else {
+                        $(".ps-button").text("Pay With Paystand")
+                        $(".ps-checkout-close").click();
+                        alert("We detect a slow connection, so try again to reload the checkout form, please.")
+                    }
+                }, 5000)
+        }
 
-      function registerClicks() {
-          $(termsSel).each(function () {
-              $(this).click(function () { resolveButton(); })
-          });
-      }
+        function loadCheckout() {
+            console.log("press button :)")
+            initCheckout(getConfig())
+        }
 
-      function resolveButton() {
-          if (areAllTermsSelected()) {
-              if (agreementValidator.validate()) {
-                  if (hasCountryCode()) {
-                      enableButton();
-                  }
-                  else {
-                      // show "Unable to find country code error"
-                      console.log('Unable to get ISO3 code from PayStand!');
-                  }
-              }
-              else {
-                  disableButton();
-              }
-          }
-          else {
-              disableButton();
-          }
-      }
+        function onCompleteCheckout() {
+            psCheckout.onComplete(function () {
+                $(submitTrigger).click();
+            });
+        }
 
-      function getCountryCode() {
-          const billing = quote.billingAddress();
-          const publishable_key = window.checkoutConfig.payment.paystandmagento.publishable_key;
-          if (billing.countryId) {
-              $.ajax({
-                  beforeSend: function (request) {
-                      request.setRequestHeader("x-publishable-key", publishable_key);
-                  },
-                  dataType: "text",
-                  contentType: "application/json; charset=utf-8",
-                  url: "https://" + api_domain + "/v3/addresses/countries/iso?code=" + billing.countryId,
-                  success: function (data) {
-                      countryISO3 = JSON.parse(data).iso3;
-                      resolveButton();
-                  },
-                  error: function (error) {
-                      console.log('Unable to get ISO3 code from PayStand!');
-                  },
-              });
-          }
-      }
+        function disableButton() {
+            $(psButtonSel).prop("disabled", true)
+        }
 
-      function watchAgreement() {
-          const interval = setInterval(function(){
-              if ($(termsSel).length > 0) {
-                  disableButton();
-                  registerClicks();
-                  getCountryCode()
-                  clearInterval(interval);
-                  return;
-              } else {
-                  enableButton();
-              }
-          }, 500)
-      }
+        function enableButton() {
+            $(psButtonSel).prop("disabled", false)
+        }
 
-      return Component.extend({
-          defaults: {
-              template: 'PayStand_PayStandMagento/payment/paystandmagento-directpost'
-          },
+        function hasCountryCode() {
+            return !!countryISO3;
+        }
 
-          // this function ins binded to actual Paystand button to trigger checkout
-          loadCheckout: function () {
-              loadCheckout();
-          },
+        function areAllTermsSelected() {
+            return $(termsSel)
+                .map(function () { return $(this).prop("checked") })
+                .filter(function (key, value) { return value === false; })
+                .toArray()
+                .length === 0;
+        }
 
-          onCompleteCheckout: function () {
-              onCompleteCheckout();
-          },
+        function registerClicks() {
+            $(termsSel).each(function () {
+                $(this).click(function () { resolveButton(); })
+            });
+        }
 
-          // this function ins binded to actual Paystand button to trigger checkout
-          watchAgreement: function () {
-              watchAgreement();
-          }
-      });
-  }
+        function resolveButton() {
+            if (areAllTermsSelected()) {
+                if (agreementValidator.validate()) {
+                    if (hasCountryCode()) {
+                        enableButton();
+                    }
+                    else {
+                        // show "Unable to find country code error"
+                        console.log('Unable to get ISO3 code from PayStand!');
+                    }
+                }
+                else {
+                    disableButton();
+                }
+            }
+            else {
+                disableButton();
+            }
+        }
+
+        function getCountryCode() {
+            const billing = quote.billingAddress();
+            const publishable_key = window.checkoutConfig.payment.paystandmagento.publishable_key;
+            if (billing.countryId) {
+                $.ajax({
+                    beforeSend: function (request) {
+                        request.setRequestHeader("x-publishable-key", publishable_key);
+                    },
+                    dataType: "text",
+                    contentType: "application/json; charset=utf-8",
+                    url: "https://" + api_domain + "/v3/addresses/countries/iso?code=" + billing.countryId,
+                    success: function (data) {
+                        countryISO3 = JSON.parse(data).iso3;
+                        resolveButton();
+                    },
+                    error: function (error) {
+                        console.log('Unable to get ISO3 code from PayStand!');
+                    },
+                });
+            }
+        }
+
+        function watchAgreement() {
+            const interval = setInterval(function () {
+                if ($(termsSel).length > 0) {
+                    disableButton();
+                    registerClicks();
+                    getCountryCode()
+                    clearInterval(interval);
+                    return;
+                } else {
+                    enableButton();
+                }
+            }, 500)
+        }
+
+        return Component.extend({
+            defaults: {
+                template: 'PayStand_PayStandMagento/payment/paystandmagento-directpost'
+            },
+
+            // this function ins binded to actual Paystand button to trigger checkout
+            loadCheckout: function () {
+                loadCheckout();
+            },
+
+            onCompleteCheckout: function () {
+                onCompleteCheckout();
+            },
+
+            // this function ins binded to actual Paystand button to trigger checkout
+            watchAgreement: function () {
+                watchAgreement();
+            }
+        });
+    }
 );
