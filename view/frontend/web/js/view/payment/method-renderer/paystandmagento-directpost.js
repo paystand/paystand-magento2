@@ -107,7 +107,7 @@ define(
 
             startTime = (new Date()).getTime();
             var cacheBuster = "?nnn=" + startTime;
-            var imageAddr = "https://dashboard.paystand.com/v2/app/styles/img/login_plaid.jpg";
+            var imageAddr = "https://www.adobe.com/content/dam/cc/icons/Adobe_Experience_Cloud_logo_RGB.svg";
             download.src = imageAddr + cacheBuster;
 
             function showResults() {
@@ -133,7 +133,7 @@ define(
                     }, 15000);
                 } else {
                     if (speedMbps < 60) {
-                        var timeleft = 4;
+                        var timeleft = 5;
                         var downloadTimer = setInterval(function () {
                             if (timeleft <= 0) {
                                 clearInterval(downloadTimer);
@@ -145,9 +145,9 @@ define(
                         setTimeout(() => {
                             document.getElementById("ps_checkout").style.display = "none";
                             $(psButtonSel).prop("disabled", false)
-                        }, 4000);
+                        }, 5000);
                     } else {
-                        var timeleft = 2;
+                        var timeleft = 3;
                         var downloadTimer = setInterval(function () {
                             if (timeleft <= 0) {
                                 clearInterval(downloadTimer);
@@ -159,7 +159,7 @@ define(
                         setTimeout(() => {
                             document.getElementById("ps_checkout").style.display = "none";
                             $(psButtonSel).prop("disabled", false)
-                        }, 2000);
+                        }, 3000);
                     }
                 }
 
