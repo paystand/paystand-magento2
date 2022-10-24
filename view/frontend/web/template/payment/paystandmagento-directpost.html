@@ -20,15 +20,27 @@
                 style="background-color: rgb(0, 172, 238); color: white; border-radius: 5px; border:none;" disabled>Pay
                 with Paystand
             </button>
+            <p id="progressBar">Loading, please wait... <span id="countdown"></span></p>
             <form class="form paystand-checkout-form" action="#" method="post" style="display: none">
                 <input class="submit-trigger" type="hidden"
                     data-bind="click: placeOrder, enable: (getCode() == isChecked())" />
             </form>
         </div>
     </div>
-    <div id="modal-warning" style="display: none;">
+    <!-- <div id="modal-warning" style="display: none;">
         <div class="modal-inner-content">
-            <p>We detect a slow connection, so try again to reload the checkout form, please.</p>
+            <p>Connection timed out. Please check your internet connection and try again.</p>
         </div>
     </div>
+    <div id="modal-loading" style="display: none;">
+        <div class="modal-inner-content">
+            <p style="text-align: center;">
+                <img width="100px"
+                    src="https://magento.paystand.co/static/version1665615905/frontend/Magento/luma/en_US/images/loader-1.gif"
+                    alt="loading" /> 
+                <span>We detect a slow connection. Please check your internet connection and try again or wait for the
+                    page to finish loading.</span>
+            </p>
+        </div>
+    </div> -->
 </div>

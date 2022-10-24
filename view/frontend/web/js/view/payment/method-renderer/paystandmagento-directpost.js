@@ -23,54 +23,6 @@ define(
 
     function ($, Component, quote, agreementValidator) {
         'use strict';
-        require(['jquery', 'jquery/ui', 'Magento_Ui/js/modal/alert', 'Magento_Ui/js/modal/modal'], function ($) {
-            $(document).ready(function ($, alert) {
-                if (document.getElementsByClassName("ps-checkout-visible")[0] != undefined) {
-                    if (document.getElementsByClassName("ps-total-amount-fixed")[0] == undefined) {
-                        $(".ps-button").text("Pay With Paystand")
-                        $(".ps-checkout-close").click();
-                        $('#modal-warning').alert({
-                            title: 'Warning',
-                            modalClass: 'alert',
-                            autoOpen: false,
-                            buttons: [{
-                                text: $.mage.__('Accept'),
-                                class: 'action primary accept',
-                                click: function () {
-                                    this.closeModal(true);
-                                }
-                            }]
-                        });
-                    }
-                }
-                if (document.getElementById('paystand_checkout_iframe'))
-                    document.getElementById('paystand_checkout_iframe').onload = function () {
-                        if (document.getElementsByClassName("ps-checkout-visible")[0] != undefined)
-                            setTimeout(() => {
-                                if (document.getElementsByClassName("ps-total-amount-fixed")[0] != undefined) {
-                                    console.log("That's ok")
-                                } else {
-                                    $(".ps-button").text("Pay With Paystand")
-                                    $(".ps-checkout-close").click();
-                                    $('#modal-warning').alert({
-                                        title: 'Warning',
-                                        modalClass: 'alert',
-                                        autoOpen: false,
-                                        buttons: [{
-                                            text: $.mage.__('Accept'),
-                                            class: 'action primary accept',
-                                            click: function () {
-                                                this.closeModal(true);
-                                            }
-                                        }]
-                                    });
-                                }
-                            }, 3000)
-                    };
-            });
-
-        });
-
         const termsSel = '.ps-payment-method div.checkout-agreements input[type="checkbox"]';
         const psButtonSel = '.ps-payment-method .ps-button';
         const submitTrigger = '.submit-trigger';
@@ -112,22 +64,120 @@ define(
             return config;
         }
 
-        function initCheckout(config) {
-            setTimeout(() => { psCheckout.runCheckout(config); }, 0);
-            if (document.getElementsByClassName("ps-total-amount-fixed")[0] != undefined)
-                setTimeout(() => {
-                    if (document.getElementsByClassName("ps-total-amount-fixed")[0] != undefined) {
-                        console.log("Everythig is ok")
-                    } else {
-                        $(".ps-button").text("Pay With Paystand")
-                        $(".ps-checkout-close").click();
-                        alert("We detect a slow connection, so try again to reload the checkout form, please.")
+        function ShowProgressMessage(msg) {
+            if (console) {
+                if (typeof msg == "string") {
+                    console.log(msg);
+                } else {
+                    for (var i = 0; i < msg.length; i++) {
+                        console.log(msg[i]);
                     }
-                }, 5000)
+                }
+            }
+
+            var oProgress = document.getElementById("progress");
+            if (oProgress) {
+                var actualHTML = (typeof msg == "string") ? msg : msg.join("<br />");
+                oProgress.innerHTML = actualHTML;
+            }
+        }
+
+        function InitiateSpeedDetection() {
+            ShowProgressMessage("Loading the image, please wait...");
+            window.setTimeout(MeasureConnectionSpeed, 1);
+        };
+
+        if (window.addEventListener) {
+            window.addEventListener('load', InitiateSpeedDetection, false);
+        } else if (window.attachEvent) {
+            window.attachEvent('onload', InitiateSpeedDetection);
+        }
+
+        function MeasureConnectionSpeed() {
+            var startTime, endTime;
+            var download = new Image();
+            download.onload = function () {
+                endTime = (new Date()).getTime();
+                showResults();
+            }
+
+            download.onerror = function (err, msg) {
+                ShowProgressMessage("Invalid image, or error downloading");
+            }
+
+            startTime = (new Date()).getTime();
+            var cacheBuster = "?nnn=" + startTime;
+            var imageAddr = "https://dashboard.paystand.com/v2/app/styles/img/login_plaid.jpg";
+            download.src = imageAddr + cacheBuster;
+
+            function showResults() {
+                var downloadSize = 4995374
+                var duration = (endTime - startTime) / 1000;
+                var bitsLoaded = downloadSize * 8;
+                var speedBps = (bitsLoaded / duration).toFixed(2);
+                var speedKbps = (speedBps / 1024).toFixed(2);
+                var speedMbps = (speedKbps / 1024).toFixed(2);
+                if (speedMbps < 20) {
+                    var timeleft = 15;
+                    var downloadTimer = setInterval(function () {
+                        if (timeleft <= 0) {
+                            clearInterval(downloadTimer);
+                            document.getElementById("progressBar").style.display = "none"
+                        }
+                        document.getElementById("countdown").textContent = timeleft + " seconds remaining";
+                        timeleft -= 1;
+                    }, 1000);
+                    setTimeout(() => {
+                        document.getElementById("ps_checkout").style.display = "none";
+                        $(psButtonSel).prop("disabled", false)
+                    }, 15000);
+                } else {
+                    if (speedMbps < 60) {
+                        var timeleft = 4;
+                        var downloadTimer = setInterval(function () {
+                            if (timeleft <= 0) {
+                                clearInterval(downloadTimer);
+                                document.getElementById("progressBar").style.display = "none"
+                            }
+                            document.getElementById("countdown").textContent = timeleft + " seconds remaining";
+                            timeleft -= 1;
+                        }, 1000);
+                        setTimeout(() => {
+                            document.getElementById("ps_checkout").style.display = "none";
+                            $(psButtonSel).prop("disabled", false)
+                        }, 4000);
+                    } else {
+                        var timeleft = 2;
+                        var downloadTimer = setInterval(function () {
+                            if (timeleft <= 0) {
+                                clearInterval(downloadTimer);
+                                document.getElementById("progressBar").style.display = "none"
+                            }
+                            document.getElementById("countdown").textContent = timeleft + " seconds remaining";
+                            timeleft -= 1;
+                        }, 1000);
+                        setTimeout(() => {
+                            document.getElementById("ps_checkout").style.display = "none";
+                            $(psButtonSel).prop("disabled", false)
+                        }, 2000);
+                    }
+                }
+
+                ShowProgressMessage([
+                    "Your connection speed is:",
+                    speedBps + " bps",
+                    speedKbps + " kbps",
+                    speedMbps + " Mbps"
+                ]);
+            }
+        }
+
+        function initCheckout(config) {
+            // console.log(speedMB)
+            setTimeout(() => { psCheckout.runCheckout(config); }, 2000);
         }
 
         function loadCheckout() {
-            console.log("press button :)")
             initCheckout(getConfig())
         }
 
@@ -142,7 +192,7 @@ define(
         }
 
         function enableButton() {
-            $(psButtonSel).prop("disabled", false)
+            // $(psButtonSel).prop("disabled", false)
         }
 
         function hasCountryCode() {
@@ -235,8 +285,11 @@ define(
 
             // this function ins binded to actual Paystand button to trigger checkout
             watchAgreement: function () {
+                InitiateSpeedDetection()
                 watchAgreement();
             }
         });
     }
 );
+//https://api.paystand.co/v3/FeeSplits/splitFees/public
+//https://api.paystand.co/v3/Customers
