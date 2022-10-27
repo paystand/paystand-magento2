@@ -291,5 +291,3 @@ define(
         });
     }
 );
-//https://api.paystand.co/v3/FeeSplits/splitFees/public
-//https://api.paystand.co/v3/Customers
