@@ -1,9 +1,7 @@
 <div class="payment-method ps-payment-method" data-bind="css: {'_active': (getCode() == isChecked())}">
     <div class="payment-method-title field choice">
-        <input type="radio"
-               name="payment[method]"
-               class="radio"
-               data-bind="attr: {'id': getCode()}, value: getCode(), checked: isChecked, click: selectPaymentMethod, visible: isRadioButtonVisible()"/>
+        <input type="radio" name="payment[method]" class="radio"
+            data-bind="attr: {'id': getCode()}, value: getCode(), checked: isChecked, click: selectPaymentMethod, visible: isRadioButtonVisible()" />
         <label data-bind="attr: {'for': getCode()}" class="label">
             <span data-bind="text: getTitle()"></span>
         </label>
@@ -11,25 +9,21 @@
     <div class="payment-method-content">
         <div class="checkout-agreements-block" afterRender="watchAgreement">
             <!-- ko foreach: $parent.getRegion('before-place-order') -->
-            <!-- ko template: getTemplate() --><!-- /ko -->
+            <!-- ko template: getTemplate() -->
+            <!-- /ko -->
             <!--/ko-->
         </div>
         <div class="actions-toolbar" style="margin-left: 0;">
             <div id="ps_checkout"></div>
-            <button
-                    afterRender="onCompleteCheckout"
-                    class="ps-button"
-                    ps-container-id="ps_checkout"
-                    ps-width="400px"
-                    ps-height="700px"
-                    data-bind="click: loadCheckout"
-                    style="background-color: rgb(0, 172, 238); color: white; border-radius: 5px; border:none;"
-                    disabled
-            >Pay with Paystand
+            <button afterRender="onCompleteCheckout" class="ps-button" ps-container-id="ps_checkout" ps-width="400px"
+                ps-height="700px" data-bind="click: loadCheckout"
+                style="background-color: rgb(0, 172, 238); color: white; border-radius: 5px; border:none;" disabled>Pay
+                with Paystand
             </button>
+            <p id="progressBar">Loading, please wait... <span id="countdown"></span></p>
             <form class="form paystand-checkout-form" action="#" method="post" style="display: none">
                 <input class="submit-trigger" type="hidden"
-                       data-bind="click: placeOrder, enable: (getCode() == isChecked())"/>
+                    data-bind="click: placeOrder, enable: (getCode() == isChecked())" />
             </form>
         </div>
     </div>
