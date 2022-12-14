@@ -87,13 +87,14 @@ define(
             window.setTimeout(MeasureConnectionSpeed, 1);
         };
 
-        if (window.addEventListener) {
-            window.addEventListener('load', InitiateSpeedDetection, false);
-        } else if (window.attachEvent) {
-            window.attachEvent('onload', InitiateSpeedDetection);
-        }
+               if (Element.addEventListener) {
+                const radiobutton = document.getElementById("payment[method]");
+                Element.addEventListener('click', InitiateSpeedDetection);
+            } else {
+                 disableButton();
+            }
 
-        function MeasureConnectionSpeed() {
+            function MeasureConnectionSpeed() {
             var startTime, endTime;
             var download = new Image();
             download.onload = function () {
