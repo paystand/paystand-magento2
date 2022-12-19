@@ -81,17 +81,23 @@ define(
                 oProgress.innerHTML = actualHTML;
             }
         }
+        function reloadPage() {
+            window.location.reload(); 
+            const radiobutton = document.getElementById("payment[method]");
+            radiobutton.addEventListener('click', reloadPage);
+  
+        }
+
 
         function InitiateSpeedDetection() {
             ShowProgressMessage("Loading the image, please wait...");
             window.setTimeout(MeasureConnectionSpeed, 1);
         };
-
-               if (Element.addEventListener) {
-                const radiobutton = document.getElementById("payment[method]");
-                Element.addEventListener('click', InitiateSpeedDetection);
-            } else {
-                 disableButton();
+        
+            if (window.addEventListener) {
+                window.addEventListener('load', InitiateSpeedDetection, false);
+            } else if (window.attachEvent) {
+                window.attachEvent('onload', InitiateSpeedDetection);
             }
 
             function MeasureConnectionSpeed() {
