@@ -181,10 +181,19 @@ define(
 
         function initCheckout(config) {
             // console.log(speedMB)
-            setTimeout(() => { psCheckout.runCheckout(config); }, 2000);
+            return new Promise(resolve => {
+                setTimeout(() => { psCheckout.runCheckout(config); }, 2000);
+            })
         }
-
+        
+        async function asyncCall(){
+            console.log('calling'); 
+            const result = await initCheckout(); 
+        }
+        
+        
         function loadCheckout() {
+            asyncCall(); 
             initCheckout(getConfig())
         }
 
