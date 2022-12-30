@@ -17,6 +17,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
 
     // Get configuration from Paystand's payment method settings & set constants
     const PUBLISHABLE_KEY = 'payment/paystandmagento/publishable_key';
+    const CHECKOUT_PRESET_KEY = 'payment/paystandmagento/checkout_preset_key';
     const CUSTOMER_ID = 'payment/paystandmagento/customer_id';
     const CLIENT_ID = 'payment/paystandmagento/client_id';
     const CLIENT_SECRET = 'payment/paystandmagento/client_secret';

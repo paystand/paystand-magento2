@@ -31,6 +31,7 @@ define(
         function getConfig() {
             const billing = quote.billingAddress()
             const config = {
+                "customPreset": window.checkoutConfig.payment.paystandmagento.checkout_preset_key,
                 "publishableKey": window.checkoutConfig.payment.paystandmagento.publishable_key,
                 "paymentAmount": quote.totals().base_grand_total.toString(),
                 "fixedAmount": true,

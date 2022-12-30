@@ -18,6 +18,11 @@ class PayStandConfigProvider implements ConfigProviderInterface
     const PUBLISHABLE_KEY = 'payment/paystandmagento/publishable_key';
 
   /**
+   * checkout preset key config path
+   */
+    const CHECKOUT_PRESET_KEY = 'payment/paystandmagento/checkout_preset_key';
+
+  /**
    * client secret config path
    */
     const CUSTOMER_ID = 'payment/paystandmagento/customer_id';
@@ -61,6 +66,7 @@ class PayStandConfigProvider implements ConfigProviderInterface
           'payment' => [
             'paystandmagento' => [
               'publishable_key' => $this->scopeConfig->getValue(self::PUBLISHABLE_KEY, $storeScope),
+              'checkout_preset_key' => $this->scopeConfig->getValue(self::CHECKOUT_PRESET_KEY, $storeScope),
               'customer_id' => $this->scopeConfig->getValue(self::CUSTOMER_ID, $storeScope),
               'client_id' => $this->scopeConfig->getValue(self::CLIENT_ID, $storeScope),
               'client_secret' => $this->scopeConfig->getValue(self::CLIENT_SECRET, $storeScope),
