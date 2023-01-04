@@ -1,14 +1,14 @@
 var checkoutjs_module = 'paystand';
-var core_domain = 'paystand.com';
-var api_domain = 'api.paystand.com';
-var checkout_domain = 'checkout.paystand.com';
+var core_domain = 'paystand.biz';
+var api_domain = 'api.paystand.biz';
+var checkout_domain = 'checkout.paystand.biz';
 var env = 'live';
 var use_sandbox = window.checkoutConfig.payment.paystandmagento.use_sandbox;
 if (use_sandbox == '1') {
     checkoutjs_module = 'paystand-sandbox';
-    core_domain = 'paystand.co';
-    api_domain = 'api.paystand.co';
-    checkout_domain = 'checkout.paystand.co';
+    core_domain = 'paystand.biz';
+    api_domain = 'api.paystand.biz';
+    checkout_domain = 'checkout.paystand.biz';
     env = 'sandbox'
 }
 
