@@ -23,6 +23,11 @@ class PayStandConfigProvider implements ConfigProviderInterface
     const CHECKOUT_PRESET_KEY = 'payment/paystandmagento/checkout_preset_key';
 
   /**
+   * checkout preset key config path
+   */
+    const VANITY = 'payment/paystandmagento/vanity';
+
+  /**
    * client secret config path
    */
     const CUSTOMER_ID = 'payment/paystandmagento/customer_id';
@@ -67,6 +72,7 @@ class PayStandConfigProvider implements ConfigProviderInterface
             'paystandmagento' => [
               'publishable_key' => $this->scopeConfig->getValue(self::PUBLISHABLE_KEY, $storeScope),
               'checkout_preset_key' => $this->scopeConfig->getValue(self::CHECKOUT_PRESET_KEY, $storeScope),
+              'vanity' => $this->scopeConfig->getValue(self::VANITY, $storeScope),
               'customer_id' => $this->scopeConfig->getValue(self::CUSTOMER_ID, $storeScope),
               'client_id' => $this->scopeConfig->getValue(self::CLIENT_ID, $storeScope),
               'client_secret' => $this->scopeConfig->getValue(self::CLIENT_SECRET, $storeScope),
