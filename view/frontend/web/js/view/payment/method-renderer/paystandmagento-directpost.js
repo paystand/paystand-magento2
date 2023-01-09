@@ -1,14 +1,14 @@
 var checkoutjs_module = 'paystand';
 var core_domain = 'paystand.com';
-var api_domain = 'api.paystand.com';
+var api_domain = 'localhost:3003';
 var checkout_domain = 'checkout.paystand.com';
 var env = 'live';
 var use_sandbox = window.checkoutConfig.payment.paystandmagento.use_sandbox;
 if (use_sandbox == '1') {
     checkoutjs_module = 'paystand-sandbox';
-    core_domain = 'paystand.co';
-    api_domain = 'api.paystand.co';
-    checkout_domain = 'checkout.paystand.co';
+    core_domain = 'localhost:3003';
+    api_domain = 'localhost:3003';
+    checkout_domain = 'localhost:3003';
     env = 'sandbox'
 }
 
@@ -31,8 +31,9 @@ define(
         function getConfig() {
             const billing = quote.billingAddress()
             const config = {
-                "customPreset": window.checkoutConfig.payment.paystandmagento.checkout_preset_key,
                 "publishableKey": window.checkoutConfig.payment.paystandmagento.publishable_key,
+                "vanity": "child2customer",
+                "presetCustom": window.checkoutConfig.payment.paystandmagento.checkout_preset_key,
                 "paymentAmount": quote.totals().base_grand_total.toString(),
                 "fixedAmount": true,
                 "viewReceipt": "close",

@@ -9,6 +9,8 @@
                 <value id="script-api-com" type="host">https://api.paystand.com</value>
                 <value id="script-checkout-biz" type="host">https://checkout.paystand.biz</value>
                 <value id="script-api-biz" type="host">https://api.paystand.biz</value>
+                <value id="script-checkout-local" type="host">https://localhost:3003</value>
+                <value id="script-api-local" type="host">https://localhost:3001</value>
             </values>
         </policy>
         <policy id="style-src">
@@ -16,6 +18,8 @@
                 <value id="style-co" type="host">https://checkout.paystand.co</value>
                 <value id="style-com" type="host">https://checkout.paystand.com</value>
                 <value id="style-biz" type="host">https://checkout.paystand.biz</value>
+                <value id="style-checkout" type="host">https://localhost:3003</value>
+                <value id="style-local" type="host">https://localhost:3001</value>
             </values>
         </policy>
         <policy id="frame-src">
@@ -23,6 +27,8 @@
                 <value id="frame-co" type="host">https://checkout.paystand.co</value>
                 <value id="frame-com" type="host">https://checkout.paystand.com</value>
                 <value id="frame-biz" type="host">https://checkout.paystand.biz</value>
+                <value id="frame-checkout" type="host">https://localhost:3003</value>
+                <value id="frame-local" type="host">https://localhost:3001</value>
             </values>
         </policy>
         <policy id="connect-src">
@@ -33,6 +39,10 @@
                 <value id="connect-api-com" type="host">https://api.paystand.com</value>
                 <value id="connect-biz" type="host">https://checkout.paystand.biz</value>
                 <value id="connect-api-biz" type="host">https://api.paystand.biz</value>
+                <value id="connect-checkout" type="host">https://localhost:3003</value>
+                <value id="connect-checkout-local" type="host">https://localhost:3003</value>
+                <value id="connect-local" type="host">https://localhost:3001</value>
+                <value id="connect-api-local" type="host">https://localhost:3001</value>
             </values>
         </policy>
     </policies>
