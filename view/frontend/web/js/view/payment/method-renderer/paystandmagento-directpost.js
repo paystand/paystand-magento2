@@ -33,7 +33,6 @@ define(
             const config = {
                 "publishableKey": window.checkoutConfig.payment.paystandmagento.publishable_key,
                 "presetCustom": window.checkoutConfig.payment.paystandmagento.checkout_preset_key,
-                "vanity": window.checkoutConfig.payment.paystandmagento.vanity,
                 "paymentAmount": quote.totals().base_grand_total.toString(),
                 "fixedAmount": true,
                 "viewReceipt": "close",
