@@ -9,6 +9,8 @@
                     <a href="https://www.paystand.com" target="_blank">Click here for information about PayStand</a><br/>
                     Note: Before you enable PayStand as a payment method, you need to register with PayStand to receive webhooks so that your Magento system can be updated when payments clear.<br/>
                     The url you need to register is http://{your magento base url}/paystandmagento/webhook/paystand
+                    <br>
+                    Please note that if the Checkout Preset Key is misspelled or doesn't exist, the checkout will show an error.
                     ]]>
                 </comment>
                 <field id="active" translate="label" type="select" sortOrder="1" showInDefault="1" showInWebsite="1" showInStore="0">
