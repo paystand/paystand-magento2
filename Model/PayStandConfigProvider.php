@@ -71,7 +71,7 @@ class PayStandConfigProvider implements ConfigProviderInterface
           'payment' => [
             'paystandmagento' => [
               'publishable_key' => $this->scopeConfig->getValue(self::PUBLISHABLE_KEY, $storeScope),
-              'checkout_preset_key' => $this->scopeConfig->getValue(self::CHECKOUT_PRESET_KEY, $storeScope),
+              'presetCustom' => $this->scopeConfig->getValue(self::CHECKOUT_PRESET_KEY, $storeScope),
               'vanity' => $this->scopeConfig->getValue(self::VANITY, $storeScope),
               'customer_id' => $this->scopeConfig->getValue(self::CUSTOMER_ID, $storeScope),
               'client_id' => $this->scopeConfig->getValue(self::CLIENT_ID, $storeScope),
