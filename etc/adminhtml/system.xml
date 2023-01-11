@@ -23,23 +23,20 @@
                 <field id="checkout_preset_key" translate="label" type="text" sortOrder="3" showInDefault="1" showInWebsite="1" showInStore="1">
                     <label>Checkout Preset Key</label>
                 </field>
-                <field id="vanity" translate="label" type="text" sortOrder="4" showInDefault="1" showInWebsite="1" showInStore="1">
-                    <label>Vanity</label>
-                </field>
-                <field id="customer_id" translate="label" type="text" sortOrder="5" showInDefault="1" showInWebsite="1" showInStore="1">
+                <field id="customer_id" translate="label" type="text" sortOrder="4" showInDefault="1" showInWebsite="1" showInStore="1">
                     <label>Customer Id</label>
                 </field>
-                <field id="client_id" translate="label" type="text" sortOrder="6" showInDefault="1" showInWebsite="1" showInStore="1">
+                <field id="client_id" translate="label" type="text" sortOrder="5" showInDefault="1" showInWebsite="1" showInStore="1">
                     <label>Client Id</label>
                 </field>
-                <field id="client_secret" translate="label" type="text" sortOrder="7" showInDefault="1" showInWebsite="1" showInStore="1">
+                <field id="client_secret" translate="label" type="text" sortOrder="6" showInDefault="1" showInWebsite="1" showInStore="1">
                     <label>Client Secret</label>
                 </field>
-                <field id="update_order_on" translate="label" type="select" sortOrder="8" showInDefault="1" showInWebsite="1" showInStore="0">
+                <field id="update_order_on" translate="label" type="select" sortOrder="7" showInDefault="1" showInWebsite="1" showInStore="0">
                     <label>Update Order On</label>
                     <source_model>PayStand\PayStandMagento\Model\Config\Source\PaymentStatus</source_model>
                 </field>
-                <field id="use_sandbox" translate="label" type="select" sortOrder="9" showInDefault="1" showInWebsite="1" showInStore="1">
+                <field id="use_sandbox" translate="label" type="select" sortOrder="8" showInDefault="1" showInWebsite="1" showInStore="1">
                     <label>Use Sandbox</label>
                     <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
                 </field>
