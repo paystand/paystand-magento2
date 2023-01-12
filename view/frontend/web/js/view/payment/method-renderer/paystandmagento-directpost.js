@@ -32,7 +32,7 @@ define(
             const billing = quote.billingAddress()
             const config = {
                 "publishableKey": window.checkoutConfig.payment.paystandmagento.publishable_key,
-                "presetCustom": window.checkoutConfig.payment.paystandmagento.checkout_preset_key,
+                "presetCustom": window.checkoutConfig.payment.paystandmagento.presetCustom,
                 "paymentAmount": quote.totals().base_grand_total.toString(),
                 "fixedAmount": true,
                 "viewReceipt": "close",
@@ -237,7 +237,6 @@ define(
         function getCountryCode() {
             const billing = quote.billingAddress();
             const publishable_key = window.checkoutConfig.payment.paystandmagento.publishable_key;
-            const checkout_preset_key = window.checkoutConfig.payment.paystandmagento.checkout_preset_key;
             if (billing.countryId) {
                 $.ajax({
                     beforeSend: function (request) {
