@@ -188,7 +188,7 @@ define(
         }
         
         async function asyncCall(){
-            const result = await initCheckout(); 
+            const result = await initCheckout(getConfig()); 
         }
         
         
