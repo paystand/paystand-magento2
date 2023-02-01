@@ -66,15 +66,15 @@ define(
         }
 
         function ShowProgressMessage(msg) {
-            if (console) {
-                if (typeof msg == "string") {
-                    console.log(msg);
-                } else {
-                    for (var i = 0; i < msg.length; i++) {
-                        console.log(msg[i]);
-                    }
-                }
-            }
+            // if (console) {
+            //     if (typeof msg == "string") {
+            //         console.log(msg);
+            //     } else {
+            //         for (var i = 0; i < msg.length; i++) {
+            //             console.log(msg[i]);
+            //         }
+            //     }
+            // }
 
             var oProgress = document.getElementById("progress");
             if (oProgress) {
@@ -181,16 +181,13 @@ define(
         }
 
         function initCheckout(config) {
-            console.log(config)
-            console.log("cuando entro")
             psCheckout.isReady = true; 
             psCheckout.runCheckout(config);
-            setTimeout(() => { console.log(config);console.log("hola");  psCheckout.init(); psCheckout._reset(config); return; }, 2000);
+            setTimeout(() => { psCheckout.init(); psCheckout._reset(config); return; }, 2000);
             // setTimeout(() => { psCheckout.runCheckout(config);}, 2000);
         }
         
         async function asyncCall(){
-            console.log('calling'); 
             const result = await initCheckout(); 
         }
         
@@ -211,11 +208,7 @@ define(
         }
 
         function enableButton() {
-            // console.log("enable button")
-            // psCheckout.isReady = true;
-            // console.log(psCheckout.isReady)
-            // psCheckout.psCheckout.runCheckout(getConfig())
-            $(psButtonSel).prop("disabled", false)
+            // $(psButtonSel).prop("disabled", false)
         }
 
         function hasCountryCode() {
