@@ -12,6 +12,7 @@ if (use_sandbox == '1') {
     env = 'sandbox'
 }
 
+
 define(
     [
         'jquery',
@@ -181,9 +182,16 @@ define(
         }
 
         function initCheckout(config) {
-            psCheckout.isReady = true; 
-            psCheckout.runCheckout(config);
-            setTimeout(() => { psCheckout.init(); psCheckout._reset(config); return; }, 2000);
+            // if(document.getElementById("ps_checkout")!=null){
+                // psCheckout.isReady = true; 
+                // psCheckout.runCheckout(config);
+            // }
+            let timer = setTimeout(() => { if(document.getElementById("ps_checkout")!=null) {psCheckout.isReady = true;psCheckout.runCheckout(config); psCheckout.init();} }, 2000);
+            if(psCheckout?.isReady && !psCheckout?.container){
+                clearTimeout(timer)
+                // psCheckout.init();
+                psCheckout._reset(config);
+            }
             // setTimeout(() => { psCheckout.runCheckout(config);}, 2000);
         }
         
@@ -194,7 +202,7 @@ define(
         
         function loadCheckout() {
             asyncCall(); 
-            initCheckout(getConfig())
+            // initCheckout(getConfig())
         }
 
         function onCompleteCheckout() {
@@ -303,7 +311,7 @@ define(
             watchAgreement: function () {
                 InitiateSpeedDetection()
                 watchAgreement();
-            }
+            },
         });
     }
 );
