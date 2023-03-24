@@ -67,15 +67,15 @@ define(
         }
 
         function ShowProgressMessage(msg) {
-            // if (console) {
-            //     if (typeof msg == "string") {
-            //         console.log(msg);
-            //     } else {
-            //         for (var i = 0; i < msg.length; i++) {
-            //             console.log(msg[i]);
-            //         }
-            //     }
-            // }
+            if (console) {
+                if (typeof msg == "string") {
+                    console.log(msg);
+                } else {
+                    for (var i = 0; i < msg.length; i++) {
+                        console.log(msg[i]);
+                    }
+                }
+            }
 
             var oProgress = document.getElementById("progress");
             if (oProgress) {
@@ -83,26 +83,19 @@ define(
                 oProgress.innerHTML = actualHTML;
             }
         }
-        function reloadPage() {
-            window.location.reload(); 
-            const radiobutton = document.getElementById("payment[method]");
-            radiobutton.addEventListener('click', reloadPage);
-  
-        }
-
 
         function InitiateSpeedDetection() {
             ShowProgressMessage("Loading the image, please wait...");
             window.setTimeout(MeasureConnectionSpeed, 1);
         };
         
-            if (window.addEventListener) {
-                window.addEventListener('load', InitiateSpeedDetection, false);
-            } else if (window.attachEvent) {
-                window.attachEvent('onload', InitiateSpeedDetection);
-            }
+        if (window.addEventListener) {
+            window.addEventListener('load', InitiateSpeedDetection, false);
+        } else if (window.attachEvent) {
+            window.attachEvent('onload', InitiateSpeedDetection);
+        }
 
-            function MeasureConnectionSpeed() {
+        function MeasureConnectionSpeed() {
             var startTime, endTime;
             var download = new Image();
             download.onload = function () {
@@ -186,7 +179,13 @@ define(
                 // psCheckout.isReady = true; 
                 // psCheckout.runCheckout(config);
             // }
-            let timer = setTimeout(() => { if(document.getElementById("ps_checkout")!=null) {psCheckout.isReady = true;psCheckout.runCheckout(config); psCheckout.init();} }, 2000);
+            let timer = setTimeout(() => {
+                if (document.getElementById("ps_checkout") != null) {
+                    psCheckout.isReady = true;
+                    psCheckout.runCheckout(config);
+                    psCheckout.init();
+                }
+            }, 2000);
             if(psCheckout?.isReady && !psCheckout?.container){
                 clearTimeout(timer)
                 // psCheckout.init();
@@ -311,7 +310,7 @@ define(
             watchAgreement: function () {
                 InitiateSpeedDetection()
                 watchAgreement();
-            },
+            }
         });
     }
 );

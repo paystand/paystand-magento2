@@ -24,7 +24,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
     const UPDATE_ORDER_ON = 'payment/paystandmagento/update_order_on';
     const USE_SANDBOX = 'payment/paystandmagento/use_sandbox';
     const SANDBOX_BASE_URL = 'https://api.paystand.co/v3';
-    const BASE_URL = 'https://api.paystand.co/v3';
+    const BASE_URL = 'https://api.paystand.com/v3';
     const STORE_SCOPE = \Magento\Store\Model\ScopeInterface::SCOPE_STORE;
 
     /** @var \Psr\Log\LoggerInterface */
