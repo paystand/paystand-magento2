@@ -174,12 +174,25 @@ define(
         }
 
         function initCheckout(config) {
-            // console.log(speedMB)
-            setTimeout(() => { psCheckout.runCheckout(config); }, 2000);
+            let timer = setTimeout(() => {
+                if (document.getElementById("ps_checkout") != null) {
+                    psCheckout.isReady = true;
+                    psCheckout.runCheckout(config);
+                    psCheckout.init();
+                }
+            }, 2000);
+            if(psCheckout?.isReady && !psCheckout?.container){
+                clearTimeout(timer)
+                psCheckout._reset(config);
+            }
         }
-
+        
+        async function asyncCall(){
+            const result = await initCheckout(getConfig()); 
+        }
+        
         function loadCheckout() {
-            initCheckout(getConfig())
+            asyncCall(); 
         }
 
         function onCompleteCheckout() {
