@@ -12,7 +12,6 @@ if (use_sandbox == '1') {
     env = 'sandbox'
 }
 
-
 define(
     [
         'jquery',
@@ -88,7 +87,7 @@ define(
             ShowProgressMessage("Loading the image, please wait...");
             window.setTimeout(MeasureConnectionSpeed, 1);
         };
-        
+
         if (window.addEventListener) {
             window.addEventListener('load', InitiateSpeedDetection, false);
         } else if (window.attachEvent) {
@@ -175,10 +174,6 @@ define(
         }
 
         function initCheckout(config) {
-            // if(document.getElementById("ps_checkout")!=null){
-                // psCheckout.isReady = true; 
-                // psCheckout.runCheckout(config);
-            // }
             let timer = setTimeout(() => {
                 if (document.getElementById("ps_checkout") != null) {
                     psCheckout.isReady = true;
@@ -188,20 +183,16 @@ define(
             }, 2000);
             if(psCheckout?.isReady && !psCheckout?.container){
                 clearTimeout(timer)
-                // psCheckout.init();
                 psCheckout._reset(config);
             }
-            // setTimeout(() => { psCheckout.runCheckout(config);}, 2000);
         }
         
         async function asyncCall(){
             const result = await initCheckout(getConfig()); 
         }
         
-        
         function loadCheckout() {
             asyncCall(); 
-            // initCheckout(getConfig())
         }
 
         function onCompleteCheckout() {
