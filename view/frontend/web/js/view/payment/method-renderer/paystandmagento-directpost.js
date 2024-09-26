@@ -174,14 +174,17 @@ define(
         }
 
         function initCheckout(config) {
+            console.log('Initializing Paystand checkout with config: ', config)
             let timer = setTimeout(() => {
                 if (document.getElementById("ps_checkout") != null) {
+                    console.log('Paystand checkout ready :)')
                     psCheckout.isReady = true;
                     psCheckout.runCheckout(config);
                     psCheckout.init();
                 }
             }, 2000);
-            if(psCheckout?.isReady && !psCheckout?.container){
+            if (psCheckout?.isReady && !psCheckout?.container) {
+                console.log('Paystand checkout not ready :(')
                 clearTimeout(timer)
                 psCheckout._reset(config);
             }
