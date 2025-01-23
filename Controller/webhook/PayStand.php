@@ -14,18 +14,17 @@ use Magento\Sales\Model\Order;
  */
 class Paystand extends \Magento\Framework\App\Action\Action
 {
-
     // Get configuration from Paystand's payment method settings & set constants
-    const PUBLISHABLE_KEY = 'payment/paystandmagento/publishable_key';
-    const CHECKOUT_PRESET_KEY = 'payment/paystandmagento/checkout_preset_key';
-    const CUSTOMER_ID = 'payment/paystandmagento/customer_id';
-    const CLIENT_ID = 'payment/paystandmagento/client_id';
-    const CLIENT_SECRET = 'payment/paystandmagento/client_secret';
-    const UPDATE_ORDER_ON = 'payment/paystandmagento/update_order_on';
-    const USE_SANDBOX = 'payment/paystandmagento/use_sandbox';
-    const SANDBOX_BASE_URL = 'https://api.paystand.co/v3';
-    const BASE_URL = 'https://api.paystand.com/v3';
-    const STORE_SCOPE = \Magento\Store\Model\ScopeInterface::SCOPE_STORE;
+    public const PUBLISHABLE_KEY = 'payment/paystandmagento/publishable_key';
+    public const CHECKOUT_PRESET_KEY = 'payment/paystandmagento/checkout_preset_key';
+    public const CUSTOMER_ID = 'payment/paystandmagento/customer_id';
+    public const CLIENT_ID = 'payment/paystandmagento/client_id';
+    public const CLIENT_SECRET = 'payment/paystandmagento/client_secret';
+    public const UPDATE_ORDER_ON = 'payment/paystandmagento/update_order_on';
+    public const USE_SANDBOX = 'payment/paystandmagento/use_sandbox';
+    public const SANDBOX_BASE_URL = 'https://api.paystand.co/v3';
+    public const BASE_URL = 'https://api.paystand.com/v3';
+    public const STORE_SCOPE = \Magento\Store\Model\ScopeInterface::SCOPE_STORE;
 
     /** @var \Psr\Log\LoggerInterface */
     protected \Psr\Log\LoggerInterface $_logger;
