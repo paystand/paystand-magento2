@@ -28,27 +28,27 @@ class Paystand extends \Magento\Framework\App\Action\Action
     const STORE_SCOPE = \Magento\Store\Model\ScopeInterface::SCOPE_STORE;
 
     /** @var \Psr\Log\LoggerInterface */
-    protected $_logger;
+    protected \Psr\Log\LoggerInterface $_logger;
 
     /** @var \Magento\Quote\Model\QuoteFactory */
-    protected $_quoteFactory;
+    protected \Magento\Quote\Model\QuoteFactory $_quoteFactory;
 
     /** @var \Magento\Quote\Model\QuoteIdMaskFactory */
-    protected $_quoteIdMaskFactory;
+    protected \Magento\Quote\Model\QuoteIdMaskFactory $_quoteIdMaskFactory;
 
     /** @var \Magento\Framework\App\Request\Http */
-    protected $_request;
+    protected \Magento\Framework\App\Request\Http $_request;
 
     /** @var \Magento\Framework\Controller\Result\JsonFactory */
-    protected $_jsonResultFactory;
+    protected \Magento\Framework\Controller\Result\JsonFactory $_jsonResultFactory;
 
     /**
      * @var \Magento\Framework\App\Config\ScopeConfigInterface
      */
-    protected $scopeConfig;
+    protected \Magento\Framework\App\Config\ScopeConfigInterface $scopeConfig;
 
-    protected $error;
-    protected $errno;
+    protected ?string $error = null;
+    protected ?int $errno = null;
 
     /**
      * @param \Magento\Framework\App\Action\Context $context ,
