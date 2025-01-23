@@ -92,169 +92,80 @@ class Paystand extends \Magento\Framework\App\Action\Action
      */
     public function execute()
     {
-        // Start and Initialize http response
-        $result = $this->_jsonResultFactory->create();
-        $this->_logger->debug('>>>>> PAYSTAND-START: paystandmagento/webhook/paystand endpoint was hit');
+        $json = file_get_contents('php://input');
+        $data = json_decode($json);
+        $resultJson = $this->_jsonResultFactory->create();
 
-        // Get body content from request
-        $body = (!empty($this->_request->getContent()))
-            ? $this->_request->getContent() : $this->getRequest()->getContent();
-        if ($body == null) {
-            $this->_logger->error('>>>>> PAYSTAND-ERROR: error retrieving the body from webhook');
-            $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_INTERNAL_ERROR);
-            $result->setData(['error_message' => __('error retrieving the body from webhook')]);
-            return $result;
-        }
-        $json = json_decode($body);
-        $this->_logger->debug(">>>>> PAYSTAND-REQUEST-RECEIVED: " . json_encode($json));
-
-        // Verify the received event is a Paystand-Magento request
-        if (!isset($json->resource->meta->source) || ($json->resource->meta->source != "magento 2")) {
-            $this->_logger->debug('>>>>> PAYSTAND-FINISH: not a Paystand-Magento request');
-            $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
-            $result->setData(
-                ['success_message' => __('Event finished: Not a Paystand-Magento request')]
-            );
-            return $result;
+        if (!$data) {
+            $resultJson->setHttpResponseCode(400);
+            return $resultJson->setData(['error' => 'No data received']);
         }
 
-        // Get quote id from request
-        $quoteId = $json->resource->meta->quote;
-        $this->_logger->debug('>>>>> PAYSTAND-QUOTE: magento 2 webhook identified with quote id = ' . $quoteId);
-        $quoteIdMask = $this->_quoteIdMaskFactory->create()->load($quoteId, 'masked_id');
-        // If the quoteId is not masked, it comes from a logged in user and should be used as is.
-        $id = (empty($quoteIdMask->getQuoteId())) ? $json->resource->meta->quote : $quoteIdMask->getQuoteId();
+        try {
+            $access_token = $this->getPaystandAccessToken();
+            if (!$access_token) {
+                throw new \Exception('Could not get access token');
+            }
 
-        // Get Order Id from quote
-        $quote = $this->_quoteFactory->create()->load($id);
-        $order = $this->_objectManager->create(
-            \Magento\Sales\Model\Order::class
-        )->loadByIncrementId($quote->getReservedOrderId());
-        // alternate method in case the environment is not using increment_id on the order.
-        if (empty($order)) {
-            $order = $this->_objectManager->create(
-                \Magento\Sales\Model\Order::class
-            )->load($quote->getReservedOrderId());
-        }
+            $event = $this->verifyPaystandEvent($access_token, $data);
+            if (!$event) {
+                throw new \Exception('Could not verify event');
+            }
 
-        // Verify we got an existing Magento order from received quote id
-        if (empty($order->getIncrementId())) {
-            $this->_logger->debug('>>>>> PAYSTAND-ERROR: Could not retrieve order from quoteId');
-            $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_NOT_FOUND);
-            $result->setData(['error_message' => __('Could not retrieve order from quoteId')]);
-            return $result;
-        }
+            $resource = $event->resource;
+            if (!$resource || !isset($resource->payment)) {
+                throw new \Exception('No payment in resource');
+            }
 
-        // Get current order statuses
-        $state = $order->getState();
-        $status = $order->getStatus();
-        $this->_logger->debug(
-            '>>>>> PAYSTAND-ORDER: current order id: "' . $order->getIncrementId()
-                . '", current order state: "' . $state . '", current order status: "' . $status . '"'
-        );
+            $payment = $resource->payment;
+            $quote_id = null;
 
-        // Get an access_token from Paystand using CLIENT_ID & CLIENT_SECRET
-        $access_token = $this->getPaystandAccessToken();
-        if ($access_token == null) {
-            $this->_logger->error(
-                '>>>>> PAYSTAND-ERROR: access_token could not be retrieved, check your Paystand configuration'
-            );
-            $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_BAD_REQUEST);
-            $result->setData(
-                [
-                    'error_message' => __('access_token could not be retrieved from Paystand')
-                ]
-            );
-            return $result;
-        }
+            if (isset($payment->meta) && isset($payment->meta->quote)) {
+                $quote_id = $payment->meta->quote;
+            }
 
-        // Verify received Event is valid with Paystand
-        if (!$this->verifyPaystandEvent($access_token, $json)) {
-            $this->_logger->error('>>>>> PAYSTAND-ERROR: Event verification failed');
-            $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_BAD_REQUEST);
-            $result->setData(['error_message' => __('Event verification failed')]);
-            return $result;
-        }
+            if (!$quote_id) {
+                throw new \Exception('No quote ID in payment meta');
+            }
 
-        // Verify the event is payment related
-        if (!$json->resource->object = "payment") {
-            $this->_logger->debug('>>>>> PAYSTAND-EVENT-VERIFICATION-FINISH');
-            $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
-            $result->setData(
-                ['success_message' => __('Event verified, not a payment, no further action')]
-            );
-            return $result;
-        }
+            $quote = $this->_quoteFactory->create()->load($quote_id);
+            if (!$quote->getId()) {
+                throw new \Exception('No quote found for ID ' . $quote_id);
+            }
 
-        $updateOrderOn = $this->updateOrderOn;
-        $this->_logger->debug(">>>>> PAYSTAND-UPDATE-ORDER-ON: '{$updateOrderOn}'");
-        $psPaymentStatus = $json->resource->status;
-        $this->_logger->debug(">>>>> PAYSTAND-PAYMENT-STATUS: '{$psPaymentStatus}'");
+            $order = $this->_objectManager->create('Magento\Sales\Model\Order')
+                ->loadByIncrementId($quote->getReservedOrderId());
 
-        // Get new order state & status depending on Paystand's payment status
-        if ($psPaymentStatus != $updateOrderOn && $psPaymentStatus != 'failed') {
-            $this->_logger->debug(
-                ">>>>> PAYSTAND-FINISH: payment {$psPaymentStatus}, no need to update order"
-            );
-            $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
-            $result->setData(
-                ['success_message' => __("Event verified, payment {$psPaymentStatus}, no further action")]
-            );
-            return $result;
-        }
+            if (!$order->getId()) {
+                throw new \Exception('No order found for quote ' . $quote_id);
+            }
 
-        // If payment status has already been processed, there is no further action
-        if ($state == 'processing' || $status == 'processing') {
-            $this->_logger->debug(
-                '>>>>> PAYSTAND-FINISH: payment already processed, no further action needed'
-            );
-            $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
-            $result->setData(
-                ['success_message' => __('payment already processed, no further action needed')]
-            );
-            return $result;
-        }
+            $this->_logger->debug('Processing webhook for order ' . $order->getIncrementId());
 
-        $newStatus = $this->newOrderStatus($psPaymentStatus);
+            $payment_data = $this->retrievePaystandPaymentInfo($payment);
+            if (!$payment_data) {
+                throw new \Exception('Could not process payment info');
+            }
 
-        if ($newStatus != '') {
-            $state = $newStatus;
-            $status = $newStatus;
+            $this->createTransaction($order, $payment_data);
 
-            // Assign new status to Magento 2 Order
-            $order->setState($state);
-            $order->setStatus($status);
+            $status = $this->newOrderStatus($payment->status);
+            if ($status === Order::STATE_PROCESSING) {
+                $this->createInvoice($order);
+            }
+
+            $order->setState($status)->setStatus($status);
             $order->save();
-        }
 
-        // Only create transaction and invoice when the payment is on paid status to prevent multiple objects
-        if ($psPaymentStatus == $updateOrderOn) {
-            // Create Transaction for the Order
-            $this->createTransaction($order, json_decode($body, true)['resource']);
-            // Automatically invoice order
-            $this->createInvoice($order);
+            return $resultJson->setData(['success' => true]);
+        } catch (\Exception $e) {
+            $this->_logger->critical($e);
+            $resultJson->setHttpResponseCode(500);
+            return $resultJson->setData(['error' => $e->getMessage()]);
         }
-        
-        // Finish and send back success response
-        $this->_logger->debug(
-            '>>>>> PAYSTAND-FINISH: Paystand payment status: "' . $psPaymentStatus
-                . '", new order state: "' . $state
-                . '", new order status: "' . $status . '"'
-        );
-        $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
-        $result->setData(
-            [
-                'success_message' => __('Event verified, order status changed'),
-                'order' => [
-                    'newState' => __($state),
-                    'newStatus' => __($status)
-                ]
-            ]
-        );
-        return $result;
     }
 
-    private function buildCurl($curl, $verb, $body = "", $extheaders = null)
+    private function buildCurl($curl, string $verb, string $body = "", ?array $extheaders = null): void
     {
         // Initialize default headers
         $headers = [
@@ -278,10 +189,9 @@ class Paystand extends \Magento\Framework\App\Action\Action
             CURLOPT_POSTFIELDS => $body
         ];
         $curl->setOptions($curlOptions);
-        return $curl;
     }
 
-    private function runCurl($curl, $url)
+    private function runCurl($curl, string $url): ?stdClass
     {
         $curl->post($url, null);
         $raw_response = $curl->getBody();
@@ -289,7 +199,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
         return $response;
     }
 
-    private function cleanObject($obj, $whitelist)
+    private function cleanObject(stdClass $obj, array $whitelist): stdClass
     {
         $ret = new stdClass;
         foreach ($whitelist as $prop) {
@@ -298,7 +208,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
         return $ret;
     }
 
-    private function newOrderStatus($status)
+    private function newOrderStatus(string $status): string
     {
         $newStatus = '';
         if ($status == $this->updateOrderOn) {
@@ -309,7 +219,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
         return $newStatus;
     }
 
-    private function getPaystandAccessToken()
+    private function getPaystandAccessToken(): ?string
     {
         $oauthUrl = $this->getBaseUrl() . '/oauth/token';
         $oauth_credentials = [
@@ -331,7 +241,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
         return $authResponse->access_token;
     }
 
-    private function verifyPaystandEvent($access_token, $event)
+    private function verifyPaystandEvent(string $access_token, stdClass $event): ?stdClass
     {
         $auth_header =
             [
@@ -358,7 +268,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
         }
     }
 
-    private function getBaseUrl()
+    private function getBaseUrl(): string
     {
         if ($this->scopeConfig->getValue(self::USE_SANDBOX, self::STORE_SCOPE)) {
             $base_url = self::SANDBOX_BASE_URL;
@@ -368,7 +278,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
         return $base_url;
     }
 
-    private function createTransaction($order = null, $paymentData = [])
+    private function createTransaction(?Order $order = null, array $paymentData = []): void
     {
         try {
             //get payment object from order object
@@ -419,13 +329,12 @@ class Paystand extends \Magento\Framework\App\Action\Action
 
             $transactionId = $transaction->save()->getTransactionId();
             $this->_logger->debug('>>>>> PAYSTAND-CREATE-TRANSACTION-FINISH: transactionId: ' . $transactionId);
-            return  $transactionId;
         } catch (\Magento\Framework\Exception\AlreadyExistsException $e) {
             $this->_logger->debug('>>>>> PAYSTAND-EXCEPTION: ' . $e);
         }
     }
 
-    private function retrievePaystandPaymentInfo($json)
+    private function retrievePaystandPaymentInfo(stdClass $json): ?array
     {
         if ($json) {
             $paymentInfo = [
@@ -444,7 +353,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
         return $paymentInfo;
     }
 
-    private function createInvoice($order)
+    private function createInvoice(Order $order): void
     {
         try {
             $this->_logger->debug('>>>>> PAYSTAND-CREATE-INVOICE-START');
@@ -457,11 +366,11 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 if ((int)$invoices->count() !== 0) {
                     $invoices = $invoices->getFirstItem();
                     $invoice = $this->_invoiceRepository->get($invoices->getId());
-                    return $invoice;
+                    return;
                 }
 
                 if (!$order->canInvoice()) {
-                    return null;
+                    return;
                 }
 
                 $invoice = $this->_invoiceService->prepareInvoice($order);
@@ -476,7 +385,6 @@ class Paystand extends \Magento\Framework\App\Action\Action
                     ->addObject($invoice->getOrder());
                 $transactionSave->save();
                 $this->_logger->debug('>>>>> PAYSTAND-CREATE-INVOICE-FINISH: invoiceId: ' . $invoice->getEntityId());
-                return $invoice;
             }
         } catch (\Exception $e) {
             throw new \Magento\Framework\Exception\LocalizedException(

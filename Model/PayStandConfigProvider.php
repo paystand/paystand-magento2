@@ -58,7 +58,7 @@ class PayStandConfigProvider implements ConfigProviderInterface
   /**
    * {@inheritdoc}
    */
-    public function getConfig()
+    public function getConfig(): array
     {
         $storeScope = \Magento\Store\Model\ScopeInterface::SCOPE_STORE;
 
