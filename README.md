@@ -6,9 +6,9 @@ Use of the extension requires a PayStand account offering fully-featured plans. 
 
 ## Compatibility
 
-- PHP versions: 7.4, 8.0, 8.1, and 8.2
-- Magento versions: 2.x
-- Tested and verified on PHP 8.2 with Magento 2.4.6
+- Compatible with Magento 2.4.x, including 2.4.7 Community Edition
+- PHP: Compatible with PHP 8.1 and 8.2
+- Latest version: 3.4.1
 
 ##  Create a PayStand Account
 
