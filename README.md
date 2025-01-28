@@ -4,6 +4,12 @@ Accept Credit Card, eCheck, and ACH payments using PayStand Payment Gateway's ro
 
 Use of the extension requires a PayStand account offering fully-featured plans.  To learn more and create your own account, visit us at [PayStand.com](http://www.paystand.com), or contact us at support@paystand.com.
 
+## Compatibility
+
+- PHP versions: 7.4, 8.0, 8.1, and 8.2
+- Magento versions: 2.x
+- Tested and verified on PHP 8.2 with Magento 2.4.6
+
 ##  Create a PayStand Account
 
 1.  Contact PayStand at support@paysand.com to set up a Merchant account and be issued a publishable_key.
