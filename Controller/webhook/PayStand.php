@@ -169,10 +169,50 @@ class Paystand extends \Magento\Framework\App\Action\Action
         }
 
         // Verify we got an existing Magento order from received quote id
-        if (empty($order->getIncrementId())) {
-            $this->_logger->debug('>>>>> PAYSTAND-ERROR: Could not retrieve order from quoteId');
+        if (!$order || !$order->getId()) {
+            // This is a valid webhook with a quote but no associated order yet
+            // Let's handle it differently instead of returning an error
+
+            $this->_logger->debug('>>>>> PAYSTAND-WEBHOOK: Handling payment for quote without complete order, quoteId = ' . $quote->getId());
+
+            // Get payment status from the webhook
+            $psPaymentStatus = $json->resource->status;
+            $this->_logger->debug(">>>>> PAYSTAND-PAYMENT-STATUS: '{$psPaymentStatus}' for quote ID " . $quote->getId());
+
+            // Update the quote with payment information
+            try {
+                // First, make sure the quote is valid
+                if ($quote && $quote->getId()) {
+                    // Set a flag on the quote to indicate payment has been received
+                    $quote->setData('paystand_payment_status', $psPaymentStatus);
+                    $quote->setData('paystand_payment_id', $json->resource->id);
+                    $quote->setData('paystand_payment_data', json_encode($json->resource));
+                    $quote->save();
+
+                    $this->_logger->debug('>>>>> PAYSTAND-WEBHOOK: Successfully updated quote with payment information');
+
+                    // Acknowledge the webhook even though we don't have a complete order yet
+                    $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
+                    $result->setData([
+                        'success_message' => __('Payment information recorded for quote, awaiting order completion'),
+                        'quote_id' => $quote->getId(),
+                        'payment_status' => $psPaymentStatus
+                    ]);
+                    
+                    // When the order is created later through the normal checkout process,
+                    // the payment will already be recorded and the order can be set to paid status
+
+                    return $result;
+                }
+            } catch (\Exception $e) {
+                $this->_logger->error('>>>>> PAYSTAND-ERROR: Exception while updating quote: ' . $e->getMessage());
+                // Continue to standard error response
+            }
+
+            // If we reached here, something went wrong with handling the quote
+            $this->_logger->debug('>>>>> PAYSTAND-ERROR: Could not process payment for quote without order');
             $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_NOT_FOUND);
-            $result->setData(['error_message' => __('Could not retrieve order from quoteId')]);
+            $result->setData(['error_message' => __('Could not process payment for quote without order')]);
             return $result;
         }
 
