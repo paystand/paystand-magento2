@@ -47,8 +47,39 @@ class Paystand extends \Magento\Framework\App\Action\Action
      */
     protected $scopeConfig;
 
+    /**
+     * @var \Magento\Sales\Model\Order\Payment\Transaction\BuilderInterface
+     */
+    protected $_builderInterface;
+
+    /**
+     * @var \Magento\Sales\Model\ResourceModel\Order\Invoice\CollectionFactory
+     */
+    protected $_invoiceCollectionFactory;
+
+    /**
+     * @var \Magento\Sales\Model\Service\InvoiceService
+     */
+    protected $_invoiceService;
+
+    /**
+     * @var \Magento\Framework\DB\TransactionFactory
+     */
+    protected $_transactionFactory;
+
+    /**
+     * @var \Magento\Sales\Api\InvoiceRepositoryInterface
+     */
+    protected $_invoiceRepository;
+
+    /**
+     * @var \Magento\Sales\Api\OrderRepositoryInterface
+     */
+    protected $_orderRepository;
+
     protected $error;
     protected $errno;
+    protected $updateOrderOn;
 
     /**
      * @param \Magento\Framework\App\Action\Context $context ,
