@@ -208,14 +208,40 @@ class Paystand extends \Magento\Framework\App\Action\Action
 
         // Get Order Id from quote
         $quote = $this->_quoteFactory->create()->load($id);
-        $order = $this->_objectManager->create(
-            \Magento\Sales\Model\Order::class
-        )->loadByIncrementId($quote->getReservedOrderId());
-        // alternate method in case the environment is not using increment_id on the order.
-        if (empty($order)) {
-            $order = $this->_objectManager->create(
-                \Magento\Sales\Model\Order::class
-            )->load($quote->getReservedOrderId());
+
+        // Hardcoded retry configuration
+        $maxRetries = 3;  // Fixed number of retries
+        $retryDelay = 3;  // Fixed delay in seconds between retries
+
+        // Initial wait to give Magento time to process the order
+        $this->_logger->debug(">>>>> PAYSTAND-WEBHOOK: Initial wait for " . $retryDelay . " seconds before checking for order...");
+        sleep($retryDelay);
+
+        // Try to find the order using multiple methods
+        $order = $this->findOrder($quote);
+
+        $retryCount = 0;
+
+        while ((!$order || !$order->getId()) && $retryCount < $maxRetries) {
+            $this->_logger->debug(
+                ">>>>> PAYSTAND-WEBHOOK: Order not found on attempt " . ($retryCount + 1) . 
+                ", waiting " . $retryDelay . " seconds before retry..."
+            );
+
+            // Sleep for the specified delay
+            sleep($retryDelay);
+
+            // Try to get the order again using multiple methods
+            $order = $this->findOrder($quote);
+
+            $retryCount++;
+        }
+
+        // If we found the order after retries, log it
+        if ($retryCount > 0 && $order && $order->getId()) {
+            $this->_logger->debug(
+                ">>>>> PAYSTAND-WEBHOOK: Order found after " . $retryCount . " retry attempts: " . $order->getIncrementId()
+            );
         }
 
         // Order does not exist, handle it differently
@@ -223,7 +249,8 @@ class Paystand extends \Magento\Framework\App\Action\Action
             // This is a valid webhook with a quote but no associated order yet
             // Let's handle it differently instead of returning an error
 
-            $this->_logger->debug('>>>>> PAYSTAND-WEBHOOK: Handling payment for quote without complete order, quoteId = ' . $quote->getId());
+            $this->_logger->debug('>>>>> PAYSTAND-WEBHOOK: Handling payment for quote without complete order after ' . 
+                $maxRetries . ' retry attempts, quoteId = ' . $quote->getId());
 
             // Get payment status from the webhook
             $psPaymentStatus = $json->resource->status;
@@ -573,5 +600,94 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 __($e->getMessage())
             );
         }
+    }
+
+    /**
+     * Comprehensive method to find an order using multiple approaches
+     * 
+     * @param \Magento\Quote\Model\Quote $quote
+     * @return \Magento\Sales\Model\Order|null
+     */
+    private function findOrder($quote)
+    {
+        $quoteId = $quote->getId();
+        $reservedOrderId = $quote->getReservedOrderId();
+        $this->_logger->debug(">>>>> PAYSTAND-WEBHOOK: Finding order for Quote ID: {$quoteId}, Reserved Order ID: {$reservedOrderId}");
+
+        $order = null;
+
+        // Method 1: Try to load by increment ID
+        try {
+            $order = $this->_objectManager->create(\Magento\Sales\Model\Order::class)
+                ->loadByIncrementId($reservedOrderId);
+
+            if ($order && $order->getId()) {
+                $this->_logger->debug(">>>>> PAYSTAND-WEBHOOK: Found order by increment ID: " . $order->getIncrementId());
+                return $order;
+            }
+        } catch (\Exception $e) {
+            $this->_logger->debug(">>>>> PAYSTAND-WEBHOOK: Error loading order by increment ID: " . $e->getMessage());
+        }
+
+        // Method 2: Try to load by entity ID if the reserved ID is numeric
+        if (is_numeric($reservedOrderId)) {
+            try {
+                $order = $this->_objectManager->create(\Magento\Sales\Model\Order::class)
+                    ->load($reservedOrderId);
+
+                if ($order && $order->getId()) {
+                    $this->_logger->debug(">>>>> PAYSTAND-WEBHOOK: Found order by entity ID: " . $order->getIncrementId());
+                    return $order;
+                }
+            } catch (\Exception $e) {
+                $this->_logger->debug(">>>>> PAYSTAND-WEBHOOK: Error loading order by entity ID: " . $e->getMessage());
+            }
+        }
+
+        // Method 3: Try to find by quote ID
+        try {
+            $orderCollection = $this->_objectManager->create(\Magento\Sales\Model\ResourceModel\Order\Collection::class)
+                ->addFieldToFilter('quote_id', $quoteId)
+                ->setOrder('entity_id', 'DESC')
+                ->setPageSize(1);
+
+            if ($orderCollection->getSize() > 0) {
+                $order = $orderCollection->getFirstItem();
+                $this->_logger->debug(">>>>> PAYSTAND-WEBHOOK: Found order by quote ID: " . $order->getIncrementId());
+                return $order;
+            }
+        } catch (\Exception $e) {
+            $this->_logger->debug(">>>>> PAYSTAND-WEBHOOK: Error finding order by quote ID: " . $e->getMessage());
+        }
+
+        // Method 4: Direct database query as last resort
+        try {
+            $connection = $this->_objectManager->get(\Magento\Framework\App\ResourceConnection::class)->getConnection();
+            $tableName = $connection->getTableName('sales_order');
+
+            // Query by quote_id
+            $select = $connection->select()
+                ->from($tableName)
+                ->where('quote_id = ?', $quoteId)
+                ->order('entity_id DESC')
+                ->limit(1);
+
+            $orderData = $connection->fetchRow($select);
+
+            if ($orderData && isset($orderData['entity_id'])) {
+                $order = $this->_objectManager->create(\Magento\Sales\Model\Order::class)
+                    ->load($orderData['entity_id']);
+
+                if ($order && $order->getId()) {
+                    $this->_logger->debug(">>>>> PAYSTAND-WEBHOOK: Found order by direct database query: " . $order->getIncrementId());
+                    return $order;
+                }
+            }
+        } catch (\Exception $e) {
+            $this->_logger->debug(">>>>> PAYSTAND-WEBHOOK: Error with direct database query: " . $e->getMessage());
+        }
+
+        $this->_logger->debug(">>>>> PAYSTAND-WEBHOOK: Could not find any order for Quote ID: {$quoteId}");
+        return null;
     }
 }
