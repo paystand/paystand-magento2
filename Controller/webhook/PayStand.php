@@ -23,7 +23,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
     const CLIENT_SECRET = 'payment/paystandmagento/client_secret';
     const UPDATE_ORDER_ON = 'payment/paystandmagento/update_order_on';
     const USE_SANDBOX = 'payment/paystandmagento/use_sandbox';
-    const SANDBOX_BASE_URL = 'https://api.paystand.co/v3';
+    const SANDBOX_BASE_URL = 'https://api.paystand.biz/v3';
     const BASE_URL = 'https://api.paystand.com/v3';
     const STORE_SCOPE = \Magento\Store\Model\ScopeInterface::SCOPE_STORE;
 
@@ -149,6 +149,56 @@ class Paystand extends \Magento\Framework\App\Action\Action
             return $result;
         }
 
+        // Verify the event is payment related
+        if (!$json->resource->object = "payment") {
+          $this->_logger->debug('>>>>> PAYSTAND-EVENT-VERIFICATION-FINISH');
+          $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
+          $result->setData(
+              ['success_message' => __('Event verified, not a payment, no further action')]
+          );
+          return $result;
+        }
+
+        // Get an access_token from Paystand using CLIENT_ID & CLIENT_SECRET
+        $access_token = $this->getPaystandAccessToken();
+        if ($access_token == null) {
+            $this->_logger->error(
+                '>>>>> PAYSTAND-ERROR: access_token could not be retrieved, check your Paystand configuration'
+            );
+            $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_BAD_REQUEST);
+            $result->setData(
+                [
+                    'error_message' => __('access_token could not be retrieved from Paystand')
+                ]
+            );
+            return $result;
+        }
+
+        // Verify received Event is valid with Paystand
+        if (!$this->verifyPaystandEvent($access_token, $json)) {
+          $this->_logger->error('>>>>> PAYSTAND-ERROR: Event verification failed');
+          $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_BAD_REQUEST);
+          $result->setData(['error_message' => __('Event verification failed')]);
+          return $result;
+        }
+
+        $updateOrderOn = $this->updateOrderOn;
+        $this->_logger->debug(">>>>> PAYSTAND-UPDATE-ORDER-ON: '{$updateOrderOn}'");
+        $psPaymentStatus = $json->resource->status;
+        $this->_logger->debug(">>>>> PAYSTAND-PAYMENT-STATUS: '{$psPaymentStatus}'");
+
+        // Verify if the payment status is not the same as the updateOrderOn value and is not failed
+        if ($psPaymentStatus != $updateOrderOn && $psPaymentStatus != 'failed') {
+          $this->_logger->debug(
+              ">>>>> PAYSTAND-FINISH: payment {$psPaymentStatus}, no need to update order"
+          );
+          $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
+          $result->setData(
+              ['success_message' => __("Event verified, payment {$psPaymentStatus}, no further action")]
+          );
+          return $result;
+        }
+
         // Get quote id from request
         $quoteId = $json->resource->meta->quote;
         $this->_logger->debug('>>>>> PAYSTAND-QUOTE: magento 2 webhook identified with quote id = ' . $quoteId);
@@ -168,7 +218,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
             )->load($quote->getReservedOrderId());
         }
 
-        // Verify we got an existing Magento order from received quote id
+        // Order does not exist, handle it differently
         if (!$order || !$order->getId()) {
             // This is a valid webhook with a quote but no associated order yet
             // Let's handle it differently instead of returning an error
@@ -179,28 +229,43 @@ class Paystand extends \Magento\Framework\App\Action\Action
             $psPaymentStatus = $json->resource->status;
             $this->_logger->debug(">>>>> PAYSTAND-PAYMENT-STATUS: '{$psPaymentStatus}' for quote ID " . $quote->getId());
 
+            // Get configured updateOrderOn value
+            $updateOrderOn = $this->updateOrderOn;
+            $this->_logger->debug(">>>>> PAYSTAND-UPDATE-ORDER-ON: '{$updateOrderOn}'");
+
             // Update the quote with payment information
             try {
                 // First, make sure the quote is valid
                 if ($quote && $quote->getId()) {
-                    // Set a flag on the quote to indicate payment has been received
-                    $quote->setData('paystand_payment_status', $psPaymentStatus);
-                    $quote->setData('paystand_payment_id', $json->resource->id);
-                    $quote->setData('paystand_payment_data', json_encode($json->resource));
+                    // Make sure quote is active
+                    if (!$quote->getIsActive()) {
+                        $quote->setIsActive(true);
+                    }
+
+                    // Instead of setting attributes directly on the quote (which doesn't persist),
+                    // store the payment information in the payment object
+                    $payment = $quote->getPayment();
+                    if ($payment) {
+                        $payment->setAdditionalInformation('paystand_payment_status', $psPaymentStatus);
+                        $payment->setAdditionalInformation('paystand_payment_id', $json->resource->id);
+                        $payment->setAdditionalInformation('paystand_payment_data', json_encode($json->resource));
+                        $payment->save();
+
+                        $this->_logger->debug('>>>>> PAYSTAND-WEBHOOK: Successfully updated quote payment with payment information');
+                    } else {
+                        $this->_logger->debug('>>>>> PAYSTAND-WEBHOOK: Could not find payment object for quote');
+                    }
+
+                    // Save quote
                     $quote->save();
 
-                    $this->_logger->debug('>>>>> PAYSTAND-WEBHOOK: Successfully updated quote with payment information');
-
-                    // Acknowledge the webhook even though we don't have a complete order yet
+                    // Acknowledge the webhook
                     $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
                     $result->setData([
                         'success_message' => __('Payment information recorded for quote, awaiting order completion'),
                         'quote_id' => $quote->getId(),
                         'payment_status' => $psPaymentStatus
                     ]);
-                    
-                    // When the order is created later through the normal checkout process,
-                    // the payment will already be recorded and the order can be set to paid status
 
                     return $result;
                 }
@@ -208,15 +273,9 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 $this->_logger->error('>>>>> PAYSTAND-ERROR: Exception while updating quote: ' . $e->getMessage());
                 // Continue to standard error response
             }
-
-            // If we reached here, something went wrong with handling the quote
-            $this->_logger->debug('>>>>> PAYSTAND-ERROR: Could not process payment for quote without order');
-            $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_NOT_FOUND);
-            $result->setData(['error_message' => __('Could not process payment for quote without order')]);
-            return $result;
         }
 
-        // Get current order statuses
+        // Order exists, get current order statuses
         $state = $order->getState();
         $status = $order->getStatus();
         $this->_logger->debug(
@@ -224,53 +283,13 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 . '", current order state: "' . $state . '", current order status: "' . $status . '"'
         );
 
-        // Get an access_token from Paystand using CLIENT_ID & CLIENT_SECRET
-        $access_token = $this->getPaystandAccessToken();
-        if ($access_token == null) {
-            $this->_logger->error(
-                '>>>>> PAYSTAND-ERROR: access_token could not be retrieved, check your Paystand configuration'
-            );
-            $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_BAD_REQUEST);
-            $result->setData(
-                [
-                    'error_message' => __('access_token could not be retrieved from Paystand')
-                ]
-            );
-            return $result;
-        }
-
-        // Verify received Event is valid with Paystand
-        if (!$this->verifyPaystandEvent($access_token, $json)) {
-            $this->_logger->error('>>>>> PAYSTAND-ERROR: Event verification failed');
-            $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_BAD_REQUEST);
-            $result->setData(['error_message' => __('Event verification failed')]);
-            return $result;
-        }
-
-        // Verify the event is payment related
-        if (!$json->resource->object = "payment") {
-            $this->_logger->debug('>>>>> PAYSTAND-EVENT-VERIFICATION-FINISH');
+        // Check if order is already processing or canceled
+        if ($state == Order::STATE_PROCESSING || $state == Order::STATE_CANCELED) {
+            $this->_logger->debug('>>>>> PAYSTAND-FINISH: Order already ' . $state . ', no further action needed');
             $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
-            $result->setData(
-                ['success_message' => __('Event verified, not a payment, no further action')]
-            );
-            return $result;
-        }
-
-        $updateOrderOn = $this->updateOrderOn;
-        $this->_logger->debug(">>>>> PAYSTAND-UPDATE-ORDER-ON: '{$updateOrderOn}'");
-        $psPaymentStatus = $json->resource->status;
-        $this->_logger->debug(">>>>> PAYSTAND-PAYMENT-STATUS: '{$psPaymentStatus}'");
-
-        // Get new order state & status depending on Paystand's payment status
-        if ($psPaymentStatus != $updateOrderOn && $psPaymentStatus != 'failed') {
-            $this->_logger->debug(
-                ">>>>> PAYSTAND-FINISH: payment {$psPaymentStatus}, no need to update order"
-            );
-            $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
-            $result->setData(
-                ['success_message' => __("Event verified, payment {$psPaymentStatus}, no further action")]
-            );
+            $result->setData([
+                'success_message' => __('Order already %1, no further action needed', $state)
+            ]);
             return $result;
         }
 
@@ -305,7 +324,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
             // Automatically invoice order
             $this->createInvoice($order);
         }
-        
+
         // Finish and send back success response
         $this->_logger->debug(
             '>>>>> PAYSTAND-FINISH: Paystand payment status: "' . $psPaymentStatus
