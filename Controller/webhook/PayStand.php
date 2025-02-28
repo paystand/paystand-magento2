@@ -47,8 +47,39 @@ class Paystand extends \Magento\Framework\App\Action\Action
      */
     protected $scopeConfig;
 
+    /**
+     * @var \Magento\Sales\Model\Order\Payment\Transaction\BuilderInterface
+     */
+    protected $_builderInterface;
+
+    /**
+     * @var \Magento\Sales\Model\ResourceModel\Order\Invoice\CollectionFactory
+     */
+    protected $_invoiceCollectionFactory;
+
+    /**
+     * @var \Magento\Sales\Model\Service\InvoiceService
+     */
+    protected $_invoiceService;
+
+    /**
+     * @var \Magento\Framework\DB\TransactionFactory
+     */
+    protected $_transactionFactory;
+
+    /**
+     * @var \Magento\Sales\Api\InvoiceRepositoryInterface
+     */
+    protected $_invoiceRepository;
+
+    /**
+     * @var \Magento\Sales\Api\OrderRepositoryInterface
+     */
+    protected $_orderRepository;
+
     protected $error;
     protected $errno;
+    protected $updateOrderOn;
 
     /**
      * @param \Magento\Framework\App\Action\Context $context ,
@@ -118,40 +149,15 @@ class Paystand extends \Magento\Framework\App\Action\Action
             return $result;
         }
 
-        // Get quote id from request
-        $quoteId = $json->resource->meta->quote;
-        $this->_logger->debug('>>>>> PAYSTAND-QUOTE: magento 2 webhook identified with quote id = ' . $quoteId);
-        $quoteIdMask = $this->_quoteIdMaskFactory->create()->load($quoteId, 'masked_id');
-        // If the quoteId is not masked, it comes from a logged in user and should be used as is.
-        $id = (empty($quoteIdMask->getQuoteId())) ? $json->resource->meta->quote : $quoteIdMask->getQuoteId();
-
-        // Get Order Id from quote
-        $quote = $this->_quoteFactory->create()->load($id);
-        $order = $this->_objectManager->create(
-            \Magento\Sales\Model\Order::class
-        )->loadByIncrementId($quote->getReservedOrderId());
-        // alternate method in case the environment is not using increment_id on the order.
-        if (empty($order)) {
-            $order = $this->_objectManager->create(
-                \Magento\Sales\Model\Order::class
-            )->load($quote->getReservedOrderId());
+        // Verify the event is payment related
+        if (!$json->resource->object = "payment") {
+          $this->_logger->debug('>>>>> PAYSTAND-EVENT-VERIFICATION-FINISH');
+          $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
+          $result->setData(
+              ['success_message' => __('Event verified, not a payment, no further action')]
+          );
+          return $result;
         }
-
-        // Verify we got an existing Magento order from received quote id
-        if (empty($order->getIncrementId())) {
-            $this->_logger->debug('>>>>> PAYSTAND-ERROR: Could not retrieve order from quoteId');
-            $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_NOT_FOUND);
-            $result->setData(['error_message' => __('Could not retrieve order from quoteId')]);
-            return $result;
-        }
-
-        // Get current order statuses
-        $state = $order->getState();
-        $status = $order->getStatus();
-        $this->_logger->debug(
-            '>>>>> PAYSTAND-ORDER: current order id: "' . $order->getIncrementId()
-                . '", current order state: "' . $state . '", current order status: "' . $status . '"'
-        );
 
         // Get an access_token from Paystand using CLIENT_ID & CLIENT_SECRET
         $access_token = $this->getPaystandAccessToken();
@@ -170,20 +176,10 @@ class Paystand extends \Magento\Framework\App\Action\Action
 
         // Verify received Event is valid with Paystand
         if (!$this->verifyPaystandEvent($access_token, $json)) {
-            $this->_logger->error('>>>>> PAYSTAND-ERROR: Event verification failed');
-            $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_BAD_REQUEST);
-            $result->setData(['error_message' => __('Event verification failed')]);
-            return $result;
-        }
-
-        // Verify the event is payment related
-        if (!$json->resource->object = "payment") {
-            $this->_logger->debug('>>>>> PAYSTAND-EVENT-VERIFICATION-FINISH');
-            $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
-            $result->setData(
-                ['success_message' => __('Event verified, not a payment, no further action')]
-            );
-            return $result;
+          $this->_logger->error('>>>>> PAYSTAND-ERROR: Event verification failed');
+          $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_BAD_REQUEST);
+          $result->setData(['error_message' => __('Event verification failed')]);
+          return $result;
         }
 
         $updateOrderOn = $this->updateOrderOn;
@@ -191,15 +187,136 @@ class Paystand extends \Magento\Framework\App\Action\Action
         $psPaymentStatus = $json->resource->status;
         $this->_logger->debug(">>>>> PAYSTAND-PAYMENT-STATUS: '{$psPaymentStatus}'");
 
-        // Get new order state & status depending on Paystand's payment status
+        // Verify if the payment status is not the same as the updateOrderOn value and is not failed
         if ($psPaymentStatus != $updateOrderOn && $psPaymentStatus != 'failed') {
+          $this->_logger->debug(
+              ">>>>> PAYSTAND-FINISH: payment {$psPaymentStatus}, no need to update order"
+          );
+          $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
+          $result->setData(
+              ['success_message' => __("Event verified, payment {$psPaymentStatus}, no further action")]
+          );
+          return $result;
+        }
+
+        // Get quote id from request
+        $quoteId = $json->resource->meta->quote;
+        $this->_logger->debug('>>>>> PAYSTAND-QUOTE: magento 2 webhook identified with quote id = ' . $quoteId);
+        $quoteIdMask = $this->_quoteIdMaskFactory->create()->load($quoteId, 'masked_id');
+        // If the quoteId is not masked, it comes from a logged in user and should be used as is.
+        $id = (empty($quoteIdMask->getQuoteId())) ? $json->resource->meta->quote : $quoteIdMask->getQuoteId();
+
+        // Get Order Id from quote
+        $quote = $this->_quoteFactory->create()->load($id);
+
+        // Hardcoded retry configuration
+        $maxRetries = 3;  // Fixed number of retries
+        $retryDelay = 3;  // Fixed delay in seconds between retries
+
+        // Initial wait to give Magento time to process the order
+        $this->_logger->debug(">>>>> PAYSTAND-WEBHOOK: Initial wait for " . $retryDelay . " seconds before checking for order...");
+        sleep($retryDelay);
+
+        // Try to find the order using multiple methods
+        $order = $this->findOrder($quote);
+
+        $retryCount = 0;
+
+        while ((!$order || !$order->getId()) && $retryCount < $maxRetries) {
             $this->_logger->debug(
-                ">>>>> PAYSTAND-FINISH: payment {$psPaymentStatus}, no need to update order"
+                ">>>>> PAYSTAND-WEBHOOK: Order not found on attempt " . ($retryCount + 1) . 
+                ", waiting " . $retryDelay . " seconds before retry..."
             );
+
+            // Sleep for the specified delay
+            sleep($retryDelay);
+
+            // Try to get the order again using multiple methods
+            $order = $this->findOrder($quote);
+
+            $retryCount++;
+        }
+
+        // If we found the order after retries, log it
+        if ($retryCount > 0 && $order && $order->getId()) {
+            $this->_logger->debug(
+                ">>>>> PAYSTAND-WEBHOOK: Order found after " . $retryCount . " retry attempts: " . $order->getIncrementId()
+            );
+        }
+
+        // Order does not exist, handle it differently
+        if (!$order || !$order->getId()) {
+            // This is a valid webhook with a quote but no associated order yet
+            // Let's handle it differently instead of returning an error
+
+            $this->_logger->debug('>>>>> PAYSTAND-WEBHOOK: Handling payment for quote without complete order after ' . 
+                $maxRetries . ' retry attempts, quoteId = ' . $quote->getId());
+
+            // Get payment status from the webhook
+            $psPaymentStatus = $json->resource->status;
+            $this->_logger->debug(">>>>> PAYSTAND-PAYMENT-STATUS: '{$psPaymentStatus}' for quote ID " . $quote->getId());
+
+            // Get configured updateOrderOn value
+            $updateOrderOn = $this->updateOrderOn;
+            $this->_logger->debug(">>>>> PAYSTAND-UPDATE-ORDER-ON: '{$updateOrderOn}'");
+
+            // Update the quote with payment information
+            try {
+                // First, make sure the quote is valid
+                if ($quote && $quote->getId()) {
+                    // Make sure quote is active
+                    if (!$quote->getIsActive()) {
+                        $quote->setIsActive(true);
+                    }
+
+                    // Instead of setting attributes directly on the quote (which doesn't persist),
+                    // store the payment information in the payment object
+                    $payment = $quote->getPayment();
+                    if ($payment) {
+                        $payment->setAdditionalInformation('paystand_payment_status', $psPaymentStatus);
+                        $payment->setAdditionalInformation('paystand_payment_id', $json->resource->id);
+                        $payment->setAdditionalInformation('paystand_payment_data', json_encode($json->resource));
+                        $payment->save();
+
+                        $this->_logger->debug('>>>>> PAYSTAND-WEBHOOK: Successfully updated quote payment with payment information');
+                    } else {
+                        $this->_logger->debug('>>>>> PAYSTAND-WEBHOOK: Could not find payment object for quote');
+                    }
+
+                    // Save quote
+                    $quote->save();
+
+                    // Acknowledge the webhook
+                    $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
+                    $result->setData([
+                        'success_message' => __('Payment information recorded for quote, awaiting order completion'),
+                        'quote_id' => $quote->getId(),
+                        'payment_status' => $psPaymentStatus
+                    ]);
+
+                    return $result;
+                }
+            } catch (\Exception $e) {
+                $this->_logger->error('>>>>> PAYSTAND-ERROR: Exception while updating quote: ' . $e->getMessage());
+                // Continue to standard error response
+            }
+        }
+
+        // Order exists, get current order statuses
+        $state = $order->getState();
+        $status = $order->getStatus();
+        $this->_logger->debug(
+            '>>>>> PAYSTAND-ORDER: current order id: "' . $order->getIncrementId()
+                . '", current order state: "' . $state . '", current order status: "' . $status . '"'
+        );
+
+        // Check if order is already processing or canceled
+        if ($state == Order::STATE_PROCESSING || $state == Order::STATE_CANCELED) {
+            $this->_logger->debug('>>>>> PAYSTAND-FINISH: Order already ' . $state . ', no further action needed');
             $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
-            $result->setData(
-                ['success_message' => __("Event verified, payment {$psPaymentStatus}, no further action")]
-            );
+            $result->setData([
+                'success_message' => __('Order already %1, no further action needed', $state)
+            ]);
             return $result;
         }
 
@@ -234,7 +351,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
             // Automatically invoice order
             $this->createInvoice($order);
         }
-        
+
         // Finish and send back success response
         $this->_logger->debug(
             '>>>>> PAYSTAND-FINISH: Paystand payment status: "' . $psPaymentStatus
@@ -483,5 +600,94 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 __($e->getMessage())
             );
         }
+    }
+
+    /**
+     * Comprehensive method to find an order using multiple approaches
+     * 
+     * @param \Magento\Quote\Model\Quote $quote
+     * @return \Magento\Sales\Model\Order|null
+     */
+    private function findOrder($quote)
+    {
+        $quoteId = $quote->getId();
+        $reservedOrderId = $quote->getReservedOrderId();
+        $this->_logger->debug(">>>>> PAYSTAND-WEBHOOK: Finding order for Quote ID: {$quoteId}, Reserved Order ID: {$reservedOrderId}");
+
+        $order = null;
+
+        // Method 1: Try to load by increment ID
+        try {
+            $order = $this->_objectManager->create(\Magento\Sales\Model\Order::class)
+                ->loadByIncrementId($reservedOrderId);
+
+            if ($order && $order->getId()) {
+                $this->_logger->debug(">>>>> PAYSTAND-WEBHOOK: Found order by increment ID: " . $order->getIncrementId());
+                return $order;
+            }
+        } catch (\Exception $e) {
+            $this->_logger->debug(">>>>> PAYSTAND-WEBHOOK: Error loading order by increment ID: " . $e->getMessage());
+        }
+
+        // Method 2: Try to load by entity ID if the reserved ID is numeric
+        if (is_numeric($reservedOrderId)) {
+            try {
+                $order = $this->_objectManager->create(\Magento\Sales\Model\Order::class)
+                    ->load($reservedOrderId);
+
+                if ($order && $order->getId()) {
+                    $this->_logger->debug(">>>>> PAYSTAND-WEBHOOK: Found order by entity ID: " . $order->getIncrementId());
+                    return $order;
+                }
+            } catch (\Exception $e) {
+                $this->_logger->debug(">>>>> PAYSTAND-WEBHOOK: Error loading order by entity ID: " . $e->getMessage());
+            }
+        }
+
+        // Method 3: Try to find by quote ID
+        try {
+            $orderCollection = $this->_objectManager->create(\Magento\Sales\Model\ResourceModel\Order\Collection::class)
+                ->addFieldToFilter('quote_id', $quoteId)
+                ->setOrder('entity_id', 'DESC')
+                ->setPageSize(1);
+
+            if ($orderCollection->getSize() > 0) {
+                $order = $orderCollection->getFirstItem();
+                $this->_logger->debug(">>>>> PAYSTAND-WEBHOOK: Found order by quote ID: " . $order->getIncrementId());
+                return $order;
+            }
+        } catch (\Exception $e) {
+            $this->_logger->debug(">>>>> PAYSTAND-WEBHOOK: Error finding order by quote ID: " . $e->getMessage());
+        }
+
+        // Method 4: Direct database query as last resort
+        try {
+            $connection = $this->_objectManager->get(\Magento\Framework\App\ResourceConnection::class)->getConnection();
+            $tableName = $connection->getTableName('sales_order');
+
+            // Query by quote_id
+            $select = $connection->select()
+                ->from($tableName)
+                ->where('quote_id = ?', $quoteId)
+                ->order('entity_id DESC')
+                ->limit(1);
+
+            $orderData = $connection->fetchRow($select);
+
+            if ($orderData && isset($orderData['entity_id'])) {
+                $order = $this->_objectManager->create(\Magento\Sales\Model\Order::class)
+                    ->load($orderData['entity_id']);
+
+                if ($order && $order->getId()) {
+                    $this->_logger->debug(">>>>> PAYSTAND-WEBHOOK: Found order by direct database query: " . $order->getIncrementId());
+                    return $order;
+                }
+            }
+        } catch (\Exception $e) {
+            $this->_logger->debug(">>>>> PAYSTAND-WEBHOOK: Error with direct database query: " . $e->getMessage());
+        }
+
+        $this->_logger->debug(">>>>> PAYSTAND-WEBHOOK: Could not find any order for Quote ID: {$quoteId}");
+        return null;
     }
 }
