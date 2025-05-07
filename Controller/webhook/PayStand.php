@@ -348,8 +348,13 @@ class Paystand extends \Magento\Framework\App\Action\Action
         if ($psPaymentStatus == $updateOrderOn) {
             // Create Transaction for the Order
             $this->createTransaction($order, json_decode($body, true)['resource']);
-            // Automatically invoice order
-            $this->createInvoice($order);
+            
+            // Only create a new invoice if one doesn't exist
+            $invoices = $this->_invoiceCollectionFactory->create()
+                ->addAttributeToFilter('order_id', ['eq' => $order->getId()]);
+            if ((int)$invoices->count() === 0) {
+                $this->createInvoice($order);
+            }
         }
 
         // Finish and send back success response
@@ -536,6 +541,81 @@ class Paystand extends \Magento\Framework\App\Action\Action
 
             $transactionId = $transaction->save()->getTransactionId();
             $this->_logger->debug('>>>>> PAYSTAND-CREATE-TRANSACTION-FINISH: transactionId: ' . $transactionId);
+
+            // Check if fee/discount has already been processed
+            $existingFeeAmount = $payment->getAdditionalInformation('paystand_fee_amount');
+            $existingDiscountAmount = $payment->getAdditionalInformation('paystand_discount_amount');
+
+            if ($feeAmount > 0 && !$existingFeeAmount) {
+                // Update Order
+                $order->setFeeAmount($feeAmount);
+                $order->setBaseFeeAmount($feeAmount);
+                $oldGrandTotal = $order->getGrandTotal();
+                $oldBaseGrandTotal = $order->getBaseGrandTotal();
+                $newGrandTotal = $oldGrandTotal + $feeAmount;
+                $newBaseGrandTotal = $oldBaseGrandTotal + $feeAmount;
+                $order->setGrandTotal($newGrandTotal);
+                $order->setBaseGrandTotal($newBaseGrandTotal);
+                $order->setTotalPaid($newGrandTotal);
+                $order->setBaseTotalPaid($newBaseGrandTotal);
+                
+                // Update Invoice if exists
+                $invoice = $order->getInvoiceCollection()->getLastItem();
+                if ($invoice && $invoice->getId()) {
+                    // Load the invoice through the repository to ensure we have the latest version
+                    $invoice = $this->_invoiceRepository->get($invoice->getId());
+                    $invoice->setGrandTotal($newGrandTotal);
+                    $invoice->setBaseGrandTotal($newBaseGrandTotal);
+                    $invoice->setFeeAmount($feeAmount);
+                    $invoice->setBaseFeeAmount($feeAmount);
+                    $invoice->setTotalPaid($newGrandTotal);
+                    $invoice->setBaseTotalPaid($newBaseGrandTotal);
+                    
+                    // Save using the repository
+                    $this->_invoiceRepository->save($invoice);
+                }
+                
+                $payment->setAdditionalInformation('paystand_fee_amount', $feeAmount);
+                $payment->setAmountPaid($newGrandTotal);
+                $payment->setBaseAmountPaid($newBaseGrandTotal);
+                $order->addStatusHistoryComment(__('PayStand Processing Fee Added: %1', $order->formatPrice($feeAmount)));
+                
+            } elseif ($discountAmount > 0 && !$existingDiscountAmount) {
+                // Update Order
+                $order->setDiscountAmount($discountAmount);
+                $order->setBaseDiscountAmount($discountAmount);
+                $order->setDiscountDescription('PayStand Payment Method Discount');
+                $oldGrandTotal = $order->getGrandTotal();
+                $oldBaseGrandTotal = $order->getBaseGrandTotal();
+                $newGrandTotal = $oldGrandTotal - $discountAmount;
+                $newBaseGrandTotal = $oldBaseGrandTotal - $discountAmount;
+                $order->setGrandTotal($newGrandTotal);
+                $order->setBaseGrandTotal($newBaseGrandTotal);
+                $order->setTotalPaid($newGrandTotal);
+                $order->setBaseTotalPaid($newBaseGrandTotal);
+                
+                // Update Invoice if exists
+                $invoice = $order->getInvoiceCollection()->getLastItem();
+                if ($invoice && $invoice->getId()) {
+                    // Load the invoice through the repository to ensure we have the latest version
+                    $invoice = $this->_invoiceRepository->get($invoice->getId());
+                    $invoice->setGrandTotal($newGrandTotal);
+                    $invoice->setBaseGrandTotal($newBaseGrandTotal);
+                    $invoice->setDiscountAmount($discountAmount);
+                    $invoice->setBaseDiscountAmount($discountAmount);
+                    $invoice->setTotalPaid($newGrandTotal);
+                    $invoice->setBaseTotalPaid($newBaseGrandTotal);
+                    
+                    // Save using the repository
+                    $this->_invoiceRepository->save($invoice);
+                }
+                
+                $payment->setAdditionalInformation('paystand_discount_amount', $discountAmount);
+                $payment->setAmountPaid($newGrandTotal);
+                $payment->setBaseAmountPaid($newBaseGrandTotal);
+                $order->addStatusHistoryComment(__('PayStand Payment Discount Applied: %1', $order->formatPrice($discountAmount)));
+            }
+
             return  $transactionId;
         } catch (\Magento\Framework\Exception\AlreadyExistsException $e) {
             $this->_logger->debug('>>>>> PAYSTAND-EXCEPTION: ' . $e);
@@ -553,7 +633,9 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 'payerId' => $json['payerId'],
                 'sourceType' => $json['sourceType'],
                 'sourceId' => $json['sourceId'],
-                'quote' => $json['meta']['quote']
+                'quote' => $json['meta']['quote'],
+                'fees' => isset($json['feeSplit']['payerTotalFees']) ? $json['feeSplit']['payerTotalFees'] : 0,
+                'discount' => isset($json['feeSplit']['payerDiscount']) ? $json['feeSplit']['payerDiscount'] : 0
             ];
         } else {
             $paymentInfo = [];
