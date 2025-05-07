@@ -14,7 +14,7 @@ Use of the extension requires a PayStand account offering fully-featured plans. 
 
 1.  Go to your Magento 2 root folder
 2.  `composer config repositories.paystand-magento2 git https://github.com/paystand/paystand-magento2.git`
-3.  `composer require paystand/paystandmagento:3.4.1`
+3.  `composer require paystand/paystandmagento:3.4.2`
 4.  `composer update`
 5.  `php bin/magento setup:upgrade`  
 **Note**: The above command updates database schema, so in order to preserve previously generated static files run the above command with the flag `--keep-generated`
@@ -31,4 +31,4 @@ If you have any further questions, please email [support@paystand.com](support@p
 
 PayStand is a next-generation payment & eCommerce checkout system that enables any organization to receive money in their Website, Social Network, or Web Application in a flat-rate SaaS model with no transaction markups. We are the first multi-payment gateway to accept credit cards (Visa/MasterCard/Amex/Discover), eCheck, and ACH in a single interface. Thousands of merchants are using PayStand for their online payments, shopping cart, donation management, subscriptions, eCommerce integrations, recurring payments, checkout experience and more.
 
-You can choose which payment rails to activate in your PayStand account dashboard, or let your customers decide which method to use when checking out. Additionally, we pass our wholesale rates on credit cards direct to you, and automatically lower them as we're able to negotiate lower rates on your behalf. 
+You can choose which payment rails to activate in your PayStand account dashboard, or let your customers decide which method to use when checking out. Additionally, we pass our wholesale rates on credit cards direct to you, and automatically lower them as we're able to negotiate lower rates on your behalf.
