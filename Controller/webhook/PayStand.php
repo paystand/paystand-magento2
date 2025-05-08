@@ -127,46 +127,16 @@ class Paystand extends \Magento\Framework\App\Action\Action
         $result = $this->_jsonResultFactory->create();
         $this->_logger->debug('>>>>> PAYSTAND-START: paystandmagento/webhook/paystand endpoint was hit');
 
-        // Get body content from request - try multiple methods
-        $body = null;
-        
-        // Try getting from raw input first
-        $rawBody = file_get_contents('php://input');
-        if (!empty($rawBody)) {
-            $body = $rawBody;
-            $this->_logger->debug('>>>>> PAYSTAND: Retrieved body from raw input');
-        }
-        
-        // If raw input is empty, try request content
-        if (empty($body)) {
-            $body = $this->_request->getContent();
-            if (!empty($body)) {
-                $this->_logger->debug('>>>>> PAYSTAND: Retrieved body from request content');
-            }
-        }
-        
-        // If still empty, try getRequest content
-        if (empty($body)) {
-            $body = $this->getRequest()->getContent();
-            if (!empty($body)) {
-                $this->_logger->debug('>>>>> PAYSTAND: Retrieved body from getRequest content');
-            }
-        }
-
-        if (empty($body)) {
+        // Get body content from request
+        $body = (!empty($this->_request->getContent()))
+            ? $this->_request->getContent() : $this->getRequest()->getContent();
+        if ($body == null) {
             $this->_logger->error('>>>>> PAYSTAND-ERROR: error retrieving the body from webhook');
             $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_INTERNAL_ERROR);
             $result->setData(['error_message' => __('error retrieving the body from webhook')]);
             return $result;
         }
-
         $json = json_decode($body);
-        if (json_last_error() !== JSON_ERROR_NONE) {
-            $this->_logger->error('>>>>> PAYSTAND-ERROR: Invalid JSON in webhook body: ' . json_last_error_msg());
-            $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_BAD_REQUEST);
-            $result->setData(['error_message' => __('Invalid JSON in webhook body')]);
-            return $result;
-        }
         
         $this->_logger->debug(">>>>> PAYSTAND-REQUEST-RECEIVED: " . json_encode($json));
 
