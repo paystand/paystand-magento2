@@ -127,16 +127,47 @@ class Paystand extends \Magento\Framework\App\Action\Action
         $result = $this->_jsonResultFactory->create();
         $this->_logger->debug('>>>>> PAYSTAND-START: paystandmagento/webhook/paystand endpoint was hit');
 
-        // Get body content from request
-        $body = (!empty($this->_request->getContent()))
-            ? $this->_request->getContent() : $this->getRequest()->getContent();
-        if ($body == null) {
+        // Get body content from request - try multiple methods
+        $body = null;
+        
+        // Try getting from raw input first
+        $rawBody = file_get_contents('php://input');
+        if (!empty($rawBody)) {
+            $body = $rawBody;
+            $this->_logger->debug('>>>>> PAYSTAND: Retrieved body from raw input');
+        }
+        
+        // If raw input is empty, try request content
+        if (empty($body)) {
+            $body = $this->_request->getContent();
+            if (!empty($body)) {
+                $this->_logger->debug('>>>>> PAYSTAND: Retrieved body from request content');
+            }
+        }
+        
+        // If still empty, try getRequest content
+        if (empty($body)) {
+            $body = $this->getRequest()->getContent();
+            if (!empty($body)) {
+                $this->_logger->debug('>>>>> PAYSTAND: Retrieved body from getRequest content');
+            }
+        }
+
+        if (empty($body)) {
             $this->_logger->error('>>>>> PAYSTAND-ERROR: error retrieving the body from webhook');
             $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_INTERNAL_ERROR);
             $result->setData(['error_message' => __('error retrieving the body from webhook')]);
             return $result;
         }
+
         $json = json_decode($body);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            $this->_logger->error('>>>>> PAYSTAND-ERROR: Invalid JSON in webhook body: ' . json_last_error_msg());
+            $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_BAD_REQUEST);
+            $result->setData(['error_message' => __('Invalid JSON in webhook body')]);
+            return $result;
+        }
+        
         $this->_logger->debug(">>>>> PAYSTAND-REQUEST-RECEIVED: " . json_encode($json));
 
         // Verify the received event is a Paystand-Magento request
@@ -542,6 +573,17 @@ class Paystand extends \Magento\Framework\App\Action\Action
             $transactionId = $transaction->save()->getTransactionId();
             $this->_logger->debug('>>>>> PAYSTAND-CREATE-TRANSACTION-FINISH: transactionId: ' . $transactionId);
 
+            // Get fee and discount amounts from payment info
+            $feeAmount = $paystandPaymentInfo['fees'] ?? 0;
+            $discountAmount = $paystandPaymentInfo['discount'] ?? 0;
+            $settlementAmount = $paystandPaymentInfo['amount'] ?? $order->getGrandTotal();
+
+            // Set the actual amount paid from PayStand
+            $payment->setAmountPaid($settlementAmount);
+            $payment->setBaseAmountPaid($settlementAmount);
+            $order->setTotalPaid($settlementAmount);
+            $order->setBaseTotalPaid($settlementAmount);
+
             // Check if fee/discount has already been processed
             $existingFeeAmount = $payment->getAdditionalInformation('paystand_fee_amount');
             $existingDiscountAmount = $payment->getAdditionalInformation('paystand_discount_amount');
@@ -556,28 +598,38 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 $newBaseGrandTotal = $oldBaseGrandTotal + $feeAmount;
                 $order->setGrandTotal($newGrandTotal);
                 $order->setBaseGrandTotal($newBaseGrandTotal);
-                $order->setTotalPaid($newGrandTotal);
-                $order->setBaseTotalPaid($newBaseGrandTotal);
                 
                 // Update Invoice if exists
                 $invoice = $order->getInvoiceCollection()->getLastItem();
                 if ($invoice && $invoice->getId()) {
                     // Load the invoice through the repository to ensure we have the latest version
                     $invoice = $this->_invoiceRepository->get($invoice->getId());
-                    $invoice->setGrandTotal($newGrandTotal);
-                    $invoice->setBaseGrandTotal($newBaseGrandTotal);
+                    
+                    // Set fee amounts
                     $invoice->setFeeAmount($feeAmount);
                     $invoice->setBaseFeeAmount($feeAmount);
-                    $invoice->setTotalPaid($newGrandTotal);
-                    $invoice->setBaseTotalPaid($newBaseGrandTotal);
+                    
+                    // Update grand totals
+                    $oldInvoiceGrandTotal = $invoice->getGrandTotal();
+                    $oldInvoiceBaseGrandTotal = $invoice->getBaseGrandTotal();
+                    $invoice->setGrandTotal($oldInvoiceGrandTotal + $feeAmount);
+                    $invoice->setBaseGrandTotal($oldInvoiceBaseGrandTotal + $feeAmount);
+                    
+                    // Set subtotal and tax if needed
+                    if (!$invoice->getSubtotal()) {
+                        $invoice->setSubtotal($order->getSubtotal());
+                        $invoice->setBaseSubtotal($order->getBaseSubtotal());
+                    }
+                    if (!$invoice->getTaxAmount()) {
+                        $invoice->setTaxAmount($order->getTaxAmount());
+                        $invoice->setBaseTaxAmount($order->getBaseTaxAmount());
+                    }
                     
                     // Save using the repository
                     $this->_invoiceRepository->save($invoice);
                 }
                 
                 $payment->setAdditionalInformation('paystand_fee_amount', $feeAmount);
-                $payment->setAmountPaid($newGrandTotal);
-                $payment->setBaseAmountPaid($newBaseGrandTotal);
                 $order->addStatusHistoryComment(__('PayStand Processing Fee Added: %1', $order->formatPrice($feeAmount)));
                 
             } elseif ($discountAmount > 0 && !$existingDiscountAmount) {
@@ -591,8 +643,6 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 $newBaseGrandTotal = $oldBaseGrandTotal - $discountAmount;
                 $order->setGrandTotal($newGrandTotal);
                 $order->setBaseGrandTotal($newBaseGrandTotal);
-                $order->setTotalPaid($newGrandTotal);
-                $order->setBaseTotalPaid($newBaseGrandTotal);
                 
                 // Update Invoice if exists
                 $invoice = $order->getInvoiceCollection()->getLastItem();
@@ -603,18 +653,18 @@ class Paystand extends \Magento\Framework\App\Action\Action
                     $invoice->setBaseGrandTotal($newBaseGrandTotal);
                     $invoice->setDiscountAmount($discountAmount);
                     $invoice->setBaseDiscountAmount($discountAmount);
-                    $invoice->setTotalPaid($newGrandTotal);
-                    $invoice->setBaseTotalPaid($newBaseGrandTotal);
                     
                     // Save using the repository
                     $this->_invoiceRepository->save($invoice);
                 }
                 
                 $payment->setAdditionalInformation('paystand_discount_amount', $discountAmount);
-                $payment->setAmountPaid($newGrandTotal);
-                $payment->setBaseAmountPaid($newBaseGrandTotal);
                 $order->addStatusHistoryComment(__('PayStand Payment Discount Applied: %1', $order->formatPrice($discountAmount)));
             }
+
+            // Save the final state
+            $payment->save();
+            $order->save();
 
             return  $transactionId;
         } catch (\Magento\Framework\Exception\AlreadyExistsException $e) {
@@ -664,16 +714,32 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 }
 
                 $invoice = $this->_invoiceService->prepareInvoice($order);
+                
+                // Set the fee amount on the invoice if it exists on the order
+                if ($order->getFeeAmount()) {
+                    $invoice->setFeeAmount($order->getFeeAmount());
+                    $invoice->setBaseFeeAmount($order->getBaseFeeAmount());
+                }
+                
+                // Update grand totals to include fees
+                if ($order->getFeeAmount()) {
+                    $invoice->setGrandTotal($invoice->getGrandTotal() + $order->getFeeAmount());
+                    $invoice->setBaseGrandTotal($invoice->getBaseGrandTotal() + $order->getBaseFeeAmount());
+                }
+
                 $invoice->setRequestedCaptureCase(\Magento\Sales\Model\Order\Invoice::CAPTURE_ONLINE);
                 $invoice->register();
                 $invoice->getOrder()->setCustomerNoteNotify(false);
                 $invoice->getOrder()->setIsInProcess(true);
                 $order->addStatusHistoryComment(__('Automatically INVOICED by Paystand'), false);
+                
+                // Save both invoice and order
                 $transactionSave = $this->_transactionFactory
                     ->create()
                     ->addObject($invoice)
                     ->addObject($invoice->getOrder());
                 $transactionSave->save();
+                
                 $this->_logger->debug('>>>>> PAYSTAND-CREATE-INVOICE-FINISH: invoiceId: ' . $invoice->getEntityId());
                 return $invoice;
             }
