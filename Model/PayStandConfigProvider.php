@@ -48,6 +48,16 @@ class PayStandConfigProvider implements ConfigProviderInterface
     const USE_SANDBOX = 'payment/paystandmagento/use_sandbox';
 
   /**
+   * show payer email config path
+   */
+    const SHOW_PAYER_EMAIL = 'payment/paystandmagento/show_payer_email';
+
+  /**
+   * checkout mode config path
+   */
+    const CHECKOUT_MODE = 'payment/paystandmagento/checkout_mode';
+
+  /**
    * @param ScopeConfig $scopeConfig
    */
     public function __construct(
@@ -71,7 +81,9 @@ class PayStandConfigProvider implements ConfigProviderInterface
               'client_id' => $this->scopeConfig->getValue(self::CLIENT_ID, $storeScope),
               'client_secret' => $this->scopeConfig->getValue(self::CLIENT_SECRET, $storeScope),
               'update_order_on' => $this->scopeConfig->getValue(self::UPDATE_ORDER_ON, $storeScope),
-              'use_sandbox' => $this->scopeConfig->getValue(self::USE_SANDBOX, $storeScope)
+              'use_sandbox' => $this->scopeConfig->getValue(self::USE_SANDBOX, $storeScope),
+              'show_payer_email' => $this->scopeConfig->getValue(self::SHOW_PAYER_EMAIL, $storeScope) ?: 'show',
+              'checkout_mode' => $this->scopeConfig->getValue(self::CHECKOUT_MODE, $storeScope) ?: 'modal'
             ]
           ]
         ];

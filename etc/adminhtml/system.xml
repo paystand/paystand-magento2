@@ -40,6 +40,14 @@
                     <label>Use Sandbox</label>
                     <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
                 </field>
+                <field id="show_payer_email" translate="label" type="select" sortOrder="9" showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Show Payer Email Field</label>
+                    <source_model>PayStand\PayStandMagento\Model\Config\Source\ShowHide</source_model>
+                </field>
+                <field id="checkout_mode" translate="label" type="select" sortOrder="10" showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Checkout Mode</label>
+                    <source_model>PayStand\PayStandMagento\Model\Config\Source\CheckoutMode</source_model>
+                </field>
             </group>
         </section>
     </system>

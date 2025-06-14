@@ -38,10 +38,12 @@ define(
                 "viewReceipt": "close",
                 "viewCheckout": "mobile",
                 "paymentCurrency": quote.totals().quote_currency_code,
-                "mode": "modal",
+                "mode": window.checkoutConfig.payment.paystandmagento.checkout_mode || 'modal',
                 "env": env,
                 "payerName": billing.firstname + ' ' + billing.lastname,
-                "payerEmail": quote.guestEmail,
+                "payerEmail": window.checkoutConfig.customerData.email,
+                "showField_payerEmail": !window.checkoutConfig.customerData.email ? 'show' : 
+                    (window.checkoutConfig.payment.paystandmagento.show_payer_email || 'show'),
                 "payerAddressCounty": countryISO3,
                 "paymentMeta": {
                     "source": "magento 2",

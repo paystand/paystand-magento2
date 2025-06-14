@@ -14,7 +14,7 @@ Use of the extension requires a PayStand account offering fully-featured plans. 
 
 1.  Go to your Magento 2 root folder
 2.  `composer config repositories.paystand-magento2 git https://github.com/paystand/paystand-magento2.git`
-3.  `composer require paystand/paystandmagento:3.4.1`
+3.  `composer require paystand/paystandmagento:3.4.2`
 4.  `composer update`
 5.  `php bin/magento setup:upgrade`  
 **Note**: The above command updates database schema, so in order to preserve previously generated static files run the above command with the flag `--keep-generated`
@@ -24,6 +24,9 @@ For Magento Installation best practices please refer to the [Magento Installatio
 ##  Configuring the PayStand Payment Gateway
 1.  Go to Stores/Configuration/Sales/Payment Methods/PayStand in your Magento admin interface.
 2.  Enter your publishable_key, or Sandbox publishable_key that you were issued when creating your PayStand account.
+3.  Configure additional options:
+   - Show Payer Email Field: Control whether the email field is shown in the checkout form
+   - Checkout Mode: Choose between 'Modal' or 'Embed' checkout display
 
 If you have any further questions, please email [support@paystand.com](support@paystand.com) or contact us at (800) 708-6413.
 
