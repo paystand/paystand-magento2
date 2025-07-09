@@ -175,7 +175,7 @@ define(
 
         function initCheckout(config) {
             let timer = setTimeout(() => {
-                if (document.getElementById("ps_checkout") != null) {
+                if (document.getElementById("ps_checkout") != null && psCheckout?.script) {
                     psCheckout.isReady = true;
                     psCheckout.runCheckout(config);
                     psCheckout.init();
