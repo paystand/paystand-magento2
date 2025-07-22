@@ -7,9 +7,7 @@
                 <comment>
                     <![CDATA[
                     <a href="https://www.paystand.com" target="_blank">Click here for information about PayStand</a><br/>
-                    Note: Before you enable PayStand as a payment method, you need to register with PayStand to receive webhooks so that your Magento system can be updated when payments clear.<br/>
-                    The url you need to register is http://{your magento base url}/paystandmagento/webhook/paystand
-                    <br>
+                    PayStand uses a polling system to check for payment status updates automatically at the configured interval.<br/>
                     Please note that if the Checkout Preset Key is misspelled or doesn't exist, the checkout will show an error.
                     ]]>
                 </comment>
@@ -39,6 +37,16 @@
                 <field id="use_sandbox" translate="label" type="select" sortOrder="8" showInDefault="1" showInWebsite="1" showInStore="1">
                     <label>Use Sandbox</label>
                     <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                </field>
+                <field id="cron_interval" translate="label" type="select" sortOrder="9" showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Payment Status Check Interval</label>
+                    <source_model>PayStand\PayStandMagento\Model\Config\Source\CronInterval</source_model>
+                    <comment>How often to check PayStand for payment status updates</comment>
+                </field>
+                <field id="cron_order_limit" translate="label" type="text" sortOrder="10" showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Order Processing Limit</label>
+                    <comment>Maximum number of orders to process per cron run (default: 100)</comment>
+                    <validate>validate-greater-than-zero validate-digits</validate>
                 </field>
             </group>
         </section>

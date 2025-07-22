@@ -21,6 +21,8 @@
                 <!--<allowspecific>0</allowspecific>-->
                 <!--<currency>USD</currency>-->
                 <create_order_before>1</create_order_before>
+                <cron_interval>15</cron_interval>
+                <cron_order_limit>100</cron_order_limit>
                 <!--<date_delim>/</date_delim>-->
             </paystandmagento>
         </payment>
