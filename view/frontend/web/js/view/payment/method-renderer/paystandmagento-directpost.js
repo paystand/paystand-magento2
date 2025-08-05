@@ -196,8 +196,24 @@ define(
         }
 
         function onCompleteCheckout() {
-            psCheckout.onComplete(function () {
-                $(submitTrigger).click();
+            psCheckout.onComplete(async function (paymentData) {
+                try {
+                    const response = await fetch('/paystandmagento/checkout/savepaymentdata', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(paymentData.response.data.payerId)
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    // Only trigger submit if the backend operation was successful
+                    $(submitTrigger).click();
+                } catch (error) {
+                    console.error('>>> Error saving payment data:', error);
+                }
             });
         }
 
