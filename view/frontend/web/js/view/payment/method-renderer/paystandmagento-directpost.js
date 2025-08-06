@@ -196,26 +196,52 @@ define(
         }
 
         function onCompleteCheckout() {
-            psCheckout.onComplete(async function (paymentData) {
+            psCheckout.onComplete( async function (paymentData) {
+
+                // Debugging purposes
+                if (paymentData && paymentData.response && paymentData.response.data && paymentData.response.data.payerId) {
+                    console.log('>>>>> PAYSTAND-PAYER-ID-FOUND:', paymentData.response.data.payerId);
+                    console.log('>>>>>>> PAYSTAND-PAYMENT-QUOTE: ', paymentData.response.data.meta.quote)
+                } else {
+                    console.log('>>>>> PAYSTAND-PAYER-ID-NOT-FOUND: No payerId in response');
+                }
+                
+                const response = {
+                    payerId: paymentData.response.data.payerId,
+                    quote: paymentData.response.data.meta.quote,
+                }
+                
                 try {
-                    const response = await fetch('/paystandmagento/checkout/savepaymentdata', {
+                    const fetchResponse = await fetch('/paystandmagento/checkout/savepaymentdata', {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json'
                         },
-                        body: JSON.stringify(paymentData.response.data.payerId)
+                        body: JSON.stringify(response)
                     });
-
-                    if (!response.ok) {
-                        throw new Error(`HTTP error! status: ${response.status}`);
+                    
+                    if (!fetchResponse.ok) {
+                        throw new Error(`HTTP error! status: ${fetchResponse.status}`);
                     }
-                    // Only trigger submit if the backend operation was successful
-                    $(submitTrigger).click();
+                    
+                    await fetchResponse.json();
+                    
+                    
                 } catch (error) {
-                    console.error('>>> Error saving payment data:', error);
+                    console.error('>>> Error al enviar paymentData al backend:', error);
                 }
+                
+                $(submitTrigger).click();
             });
         }
+
+        /*
+        function onCompleteCheckout() {
+            psCheckout.onComplete(function () {
+                $(submitTrigger).click();
+            });
+        }
+            */
 
         function disableButton() {
             $(psButtonSel).prop("disabled", true)
