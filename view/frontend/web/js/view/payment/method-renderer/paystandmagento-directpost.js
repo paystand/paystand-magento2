@@ -18,10 +18,12 @@ define(
         'Magento_Checkout/js/view/payment/default',
         'Magento_Checkout/js/model/quote',
         'Magento_CheckoutAgreements/js/model/agreement-validator',
+        'Magento_Customer/js/model/customer',
+        'Magento_Checkout/js/checkout-data',
         checkoutjs_module,
     ],
 
-    function ($, Component, quote, agreementValidator) {
+    function ($, Component, quote, agreementValidator, customer, checkoutData) {
         'use strict';
         const termsSel = '.ps-payment-method div.checkout-agreements input[type="checkbox"]';
         const psButtonSel = '.ps-payment-method .ps-button';
@@ -30,6 +32,11 @@ define(
 
         function getConfig() {
             const billing = quote.billingAddress()
+
+            // Determinate payer email and payer id
+            let payerEmail = customer.isLoggedIn() ? customer.customerData.email : quote.guestEmail;
+            let payerId = customer.isLoggedIn() ? customerData.custom_attributes.paystand_payer_id.value : null;
+
             const config = {
                 "publishableKey": window.checkoutConfig.payment.paystandmagento.publishable_key,
                 "presetCustom": window.checkoutConfig.payment.paystandmagento.presetCustom,
@@ -41,8 +48,9 @@ define(
                 "mode": "modal",
                 "env": env,
                 "payerName": billing.firstname + ' ' + billing.lastname,
-                "payerEmail": quote.guestEmail,
+                "payerEmail": payerEmail,
                 "payerAddressCounty": countryISO3,
+                "payerId": payerId,
                 "paymentMeta": {
                     "source": "magento 2",
                     "quote": quote.getQuoteId(),
@@ -62,6 +70,14 @@ define(
             if (billing.regionCode) {
                 config.payerAddressState = billing.regionCode;
             }
+
+            // Apply preset flow in config if customer is logged in
+            if(customer.isLoggedIn()){
+                console.log("apply preset flow in config");
+                delete config.presetCustom;
+                config.presetFlow = "flow:magento2"
+            }
+
             return config;
         }
 
@@ -197,14 +213,6 @@ define(
 
         function onCompleteCheckout() {
             psCheckout.onComplete( async function (paymentData) {
-
-                // Debugging purposes
-                if (paymentData && paymentData.response && paymentData.response.data && paymentData.response.data.payerId) {
-                    console.log('>>>>> PAYSTAND-PAYER-ID-FOUND:', paymentData.response.data.payerId);
-                    console.log('>>>>>>> PAYSTAND-PAYMENT-QUOTE: ', paymentData.response.data.meta.quote)
-                } else {
-                    console.log('>>>>> PAYSTAND-PAYER-ID-NOT-FOUND: No payerId in response');
-                }
                 
                 const response = {
                     payerId: paymentData.response.data.payerId,

@@ -52,13 +52,9 @@ class CustomerPayerId extends AbstractHelper
     {
         try {
             $customer = $this->customerRepository->getById($customerId);
+
             $customer->setCustomAttribute(self::PAYSTAND_PAYER_ID_ATTRIBUTE, $paystandPayerId);
             $this->customerRepository->save($customer);
-            
-            $this->logger->info('PayStand Payer ID saved for customer', [
-                'customer_id' => $customerId,
-                'paystand_payer_id' => $paystandPayerId
-            ]);
             
             return true;
         } catch (NoSuchEntityException $e) {

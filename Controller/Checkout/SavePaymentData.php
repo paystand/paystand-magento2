@@ -62,12 +62,43 @@ class SavePaymentData extends Action
                 // Is guest, return success but don't execute further logic
                 return $result->setData(['success' => true, 'type' => 'guest']);
             } else {
-                $this->logger->debug('SAVEPAYMENTDATA >>>>>> IS_CUSTOMER for quote: ' . $quoteId);
-                
                 // Get customer ID from quote
                 $customerId = $quote->getCustomerId();
+
+                // Check if customer already has a payer ID
+                $existingPayerId = $this->customerPayerIdHelper->getPayerIdFromCustomer($customerId);
                 
-                return $result->setData(['success' => true, 'type' => 'customer', 'customer_id' => $customerId]);
+                if ($existingPayerId) {
+                    // Customer already has a payer ID
+                    $this->logger->info('SAVEPAYMENTDATA >>>>>> Customer already has payer ID', [
+                        'customer_id' => $customerId,
+                        'existing_payer_id' => $existingPayerId,
+                        'new_payer_id' => $payerId
+                    ]);
+                    
+                    return $result->setData([
+                        'success' => true, 
+                        'type' => 'customer', 
+                        'customer_id' => $customerId,
+                        'existing_payer_id' => $existingPayerId,
+                        'message' => 'Customer already has payer ID'
+                    ]);
+                } else {
+                    // Save new payer ID
+                    $this->logger->info('SAVEPAYMENTDATA >>>>>> Saving new payer ID', [
+                        'customer_id' => $customerId,
+                        'new_payer_id' => $payerId
+                    ]);
+                    $this->customerPayerIdHelper->savePayerIdToCustomer($customerId, $payerId);
+                    
+                    return $result->setData([
+                        'success' => true, 
+                        'type' => 'customer', 
+                        'customer_id' => $customerId,
+                        'new_payer_id' => $payerId,
+                        'message' => 'New payer ID saved'
+                    ]);
+                }
             }
             
         } catch (\Exception $e) {
