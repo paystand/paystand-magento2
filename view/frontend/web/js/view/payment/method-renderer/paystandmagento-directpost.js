@@ -35,7 +35,7 @@ define(
 
             // Determinate payer email and payer id
             let payerEmail = customer.isLoggedIn() ? customer.customerData.email : quote.guestEmail;
-            let payerId = customer.isLoggedIn() ? customerData.custom_attributes.paystand_payer_id.value : null;
+            let payerId = customer.isLoggedIn() && customerData.custom_attributes && customerData.custom_attributes.paystand_payer_id ? customerData.custom_attributes.paystand_payer_id.value : null;
 
             const config = {
                 "publishableKey": window.checkoutConfig.payment.paystandmagento.publishable_key,
@@ -58,6 +58,11 @@ define(
                 }
             };
 
+            // Add access token if available (when user is logged in)
+            if (window.checkoutConfig.payment.paystandmagento.access_token) {
+                config.accessToken = window.checkoutConfig.payment.paystandmagento.access_token;
+            }
+
             if (billing.street && billing.street.length > 0) {
                 config.payerAddressStreet = billing.street[0];
             }
@@ -72,10 +77,10 @@ define(
             }
 
             // Apply preset flow in config if customer is logged in
-            if(customer.isLoggedIn()){
-                console.log("apply preset flow in config");
+            if(customer.isLoggedIn() && payerId){
                 delete config.presetCustom;
-                config.presetFlow = "flow:magento2"
+                config.presetName = "flow:magento2"
+                config.paymentMeta.extCustomerId = customer.customerData.id
             }
 
             return config;
@@ -191,7 +196,7 @@ define(
 
         function initCheckout(config) {
             let timer = setTimeout(() => {
-                if (document.getElementById("ps_checkout") != null) {
+                if (document.getElementById("ps_checkout") != null && psCheckout?.script) {
                     psCheckout.isReady = true;
                     psCheckout.runCheckout(config);
                     psCheckout.init();
