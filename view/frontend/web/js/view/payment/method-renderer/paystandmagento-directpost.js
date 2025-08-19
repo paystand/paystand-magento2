@@ -77,9 +77,11 @@ define(
             }
 
             // Apply preset flow in config if customer is logged in
-            if(customer.isLoggedIn() && payerId){
+            if (customer.isLoggedIn() && payerId && config.accessToken){
                 delete config.presetCustom;
-                config.presetName = "flow:magento2"
+                delete config.publishableKey;
+                config.presetName = "flow:magento2";
+                config.customerId = window.checkoutConfig.payment.paystandmagento.customer_id;
                 config.paymentMeta.extCustomerId = customer.customerData.id
             }
 
