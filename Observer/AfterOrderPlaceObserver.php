@@ -135,9 +135,29 @@ class AfterOrderPlaceObserver implements ObserverInterface
                     $paystandAdjustment = $quote->getData('paystand_adjustment');
                     $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER: paystand_adjustment from quote is " . var_export($paystandAdjustment, true));
                     if ($paystandAdjustment !== null && $paystandAdjustment !== '') {
-                        $order->setData('paystand_adjustment', $paystandAdjustment);
+                        $adjustment = (float)$paystandAdjustment;
+
+                        // Store custom field on order
+                        $order->setData('paystand_adjustment', $adjustment);
+
+                        // Recalculate order grand totals to reconcile with displayed totals
+                        $currentGrandTotal      = (float)$order->getGrandTotal();
+                        $currentBaseGrandTotal  = (float)$order->getBaseGrandTotal();
+                        $newGrandTotal          = max(0.0, $currentGrandTotal + $adjustment);
+                        $newBaseGrandTotal      = max(0.0, $currentBaseGrandTotal + $adjustment); // assumes same currency rate
+
+                        $order->setGrandTotal($newGrandTotal);
+                        $order->setBaseGrandTotal($newBaseGrandTotal);
+
+                        // Recompute due amounts (guard against negatives)
+                        $totalPaid         = (float)$order->getTotalPaid();
+                        $baseTotalPaid     = (float)$order->getBaseTotalPaid();
+                        $order->setTotalDue(max(0.0, $newGrandTotal - $totalPaid));
+                        $order->setBaseTotalDue(max(0.0, $newBaseGrandTotal - $baseTotalPaid));
+
                         $this->_orderRepository->save($order);
-                        $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER: Set paystand_adjustment=" . $paystandAdjustment . " for order " . $order->getIncrementId());
+                        $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER: Set paystand_adjustment=" . $adjustment .
+                            ", grand_total from {$currentGrandTotal} to {$newGrandTotal}, base_grand_total from {$currentBaseGrandTotal} to {$newBaseGrandTotal} for order " . $order->getIncrementId());
                     }
                 }
             }
