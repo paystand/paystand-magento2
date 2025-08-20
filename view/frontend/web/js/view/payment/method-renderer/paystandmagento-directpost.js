@@ -125,6 +125,11 @@ define(
 
             download.onerror = function (err, msg) {
                 ShowProgressMessage("Invalid image, or error downloading");
+                // Do not block checkout if speed test asset is unavailable
+                try {
+                    document.getElementById("progressBar").style.display = "none";
+                } catch (e) {}
+                $(psButtonSel).prop("disabled", false);
             }
 
             startTime = (new Date()).getTime();
@@ -150,7 +155,6 @@ define(
                         timeleft -= 1;
                     }, 1000);
                     setTimeout(() => {
-                        document.getElementById("ps_checkout").style.display = "none";
                         $(psButtonSel).prop("disabled", false)
                     }, 15000);
                 } else {
@@ -165,7 +169,6 @@ define(
                             timeleft -= 1;
                         }, 1000);
                         setTimeout(() => {
-                            document.getElementById("ps_checkout").style.display = "none";
                             $(psButtonSel).prop("disabled", false)
                         }, 5000);
                     } else {
@@ -179,7 +182,6 @@ define(
                             timeleft -= 1;
                         }, 1000);
                         setTimeout(() => {
-                            document.getElementById("ps_checkout").style.display = "none";
                             $(psButtonSel).prop("disabled", false)
                         }, 3000);
                     }
@@ -265,7 +267,7 @@ define(
         }
 
         function enableButton() {
-            // $(psButtonSel).prop("disabled", false)
+            $(psButtonSel).prop("disabled", false)
         }
 
         function hasCountryCode() {
