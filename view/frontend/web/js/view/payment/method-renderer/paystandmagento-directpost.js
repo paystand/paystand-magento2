@@ -2,14 +2,14 @@ var checkoutjs_module = 'paystand';
 var core_domain = 'paystand.com';
 var api_domain = 'api.paystand.com';
 var checkout_domain = 'checkout.paystand.com';
-var env = 'live';
+var env = 'biz';
 var use_sandbox = window.checkoutConfig.payment.paystandmagento.use_sandbox;
 if (use_sandbox == '1') {
     checkoutjs_module = 'paystand-sandbox';
-    core_domain = 'paystand.co';
-    api_domain = 'api.paystand.co';
-    checkout_domain = 'checkout.paystand.co';
-    env = 'sandbox'
+    core_domain = 'paystand.biz';
+    api_domain = 'api.paystand.biz';
+    checkout_domain = 'checkout.paystand.biz';
+    env = 'biz'
 }
 
 define(
@@ -127,6 +127,11 @@ define(
 
             download.onerror = function (err, msg) {
                 ShowProgressMessage("Invalid image, or error downloading");
+                // Do not block checkout if speed test asset is unavailable
+                try {
+                    document.getElementById("progressBar").style.display = "none";
+                } catch (e) {}
+                $(psButtonSel).prop("disabled", false);
             }
 
             startTime = (new Date()).getTime();
@@ -152,7 +157,6 @@ define(
                         timeleft -= 1;
                     }, 1000);
                     setTimeout(() => {
-                        document.getElementById("ps_checkout").style.display = "none";
                         $(psButtonSel).prop("disabled", false)
                     }, 15000);
                 } else {
@@ -167,7 +171,6 @@ define(
                             timeleft -= 1;
                         }, 1000);
                         setTimeout(() => {
-                            document.getElementById("ps_checkout").style.display = "none";
                             $(psButtonSel).prop("disabled", false)
                         }, 5000);
                     } else {
@@ -181,7 +184,6 @@ define(
                             timeleft -= 1;
                         }, 1000);
                         setTimeout(() => {
-                            document.getElementById("ps_checkout").style.display = "none";
                             $(psButtonSel).prop("disabled", false)
                         }, 3000);
                     }
@@ -224,7 +226,11 @@ define(
                 const response = {
                     payerId: paymentData.response.data.payerId,
                     quote: paymentData.response.data.meta.quote,
+                    payerDiscount: paymentData.response.data.feeSplit.payerDiscount,
+                    payerTotalFees: paymentData.response.data.feeSplit.payerTotalFees,
                 }
+
+                console.log('Response:', response);
                 
                 try {
                     const fetchResponse = await fetch('/paystandmagento/checkout/savepaymentdata', {
@@ -263,7 +269,7 @@ define(
         }
 
         function enableButton() {
-            // $(psButtonSel).prop("disabled", false)
+            $(psButtonSel).prop("disabled", false)
         }
 
         function hasCountryCode() {
