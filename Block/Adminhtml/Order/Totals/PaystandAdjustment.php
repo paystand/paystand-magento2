@@ -27,6 +27,15 @@ class PaystandAdjustment extends Template
             return $this;
         }
 
+        // Remove Total Paid and Total Due rows from admin order totals
+        if (method_exists($totals, 'removeTotal')) {
+            // Cover both naming variants used across Magento blocks
+            $totals->removeTotal('paid');
+            $totals->removeTotal('due');
+            $totals->removeTotal('total_paid');
+            $totals->removeTotal('total_due');
+        }
+
         $amount = (float)$order->getData('paystand_adjustment');
         if ($amount === 0.0) {
             return $this;
