@@ -471,6 +471,23 @@ class AfterOrderPlaceObserver implements ObserverInterface
                 }
 
                 $invoice = $this->_invoiceService->prepareInvoice($order);
+
+                // Align invoice totals with paystand_adjustment so Total Paid matches Order Grand Total
+                $adjustment = (float)$order->getData('paystand_adjustment');
+                if ($adjustment !== 0.0) {
+                    if ($adjustment > 0) {
+                        // Use invoice adjustments API to reflect fee
+                        $invoice->setAdjustmentPositive(abs($adjustment));
+                    } else {
+                        // Use invoice adjustments API to reflect discount
+                        $invoice->setAdjustmentNegative(abs($adjustment));
+                    }
+
+                    // Also explicitly bump the computed grand totals for safety
+                    $invoice->setGrandTotal(max(0.0, (float)$invoice->getGrandTotal() + $adjustment));
+                    $invoice->setBaseGrandTotal(max(0.0, (float)$invoice->getBaseGrandTotal() + $adjustment));
+                }
+
                 $invoice->setRequestedCaptureCase(\Magento\Sales\Model\Order\Invoice::CAPTURE_ONLINE);
                 $invoice->register();
                 $invoice->getOrder()->setCustomerNoteNotify(false);
