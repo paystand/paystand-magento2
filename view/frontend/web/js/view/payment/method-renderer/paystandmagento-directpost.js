@@ -35,7 +35,13 @@ define(
 
             // Determinate payer email and payer id
             let payerEmail = customer.isLoggedIn() ? customer.customerData.email : quote.guestEmail;
-            let payerId = customer.isLoggedIn() && customerData.custom_attributes && customerData.custom_attributes.paystand_payer_id ? customerData.custom_attributes.paystand_payer_id.value : null;
+            let payerId = null;
+            if (customer.isLoggedIn() && customer.customerData && customer.customerData.custom_attributes) {
+                var payerIdAttr = customer.customerData.custom_attributes.paystand_payer_id;
+                if (payerIdAttr && payerIdAttr.value) {
+                    payerId = payerIdAttr.value;
+                }
+            }
 
             const config = {
                 "publishableKey": window.checkoutConfig.payment.paystandmagento.publishable_key,
@@ -197,15 +203,28 @@ define(
         }
 
         function initCheckout(config) {
-            let timer = setTimeout(() => {
-                if (document.getElementById("ps_checkout") != null && psCheckout?.script) {
+            var startTimeMs = (new Date()).getTime();
+            var maxWaitMs = 15000; // 15s max wait
+            var intervalMs = 500;
+            var intervalId = setInterval(function () {
+                var container = document.getElementById("ps_checkout");
+                var psReady = (typeof psCheckout !== 'undefined' && psCheckout && psCheckout.script);
+                if (container && psReady) {
+                    clearInterval(intervalId);
                     psCheckout.isReady = true;
                     psCheckout.runCheckout(config);
                     psCheckout.init();
+                    return;
                 }
-            }, 2000);
-            if(psCheckout?.isReady && !psCheckout?.container){
-                clearTimeout(timer)
+                if (((new Date()).getTime() - startTimeMs) > maxWaitMs) {
+                    clearInterval(intervalId);
+                    try { $(psButtonSel).prop("disabled", false); } catch (e) {}
+                    console.log('PayStand checkout failed to initialize within timeout');
+                }
+            }, intervalMs);
+
+            // Reset stale instance if detected
+            if (typeof psCheckout !== 'undefined' && psCheckout && psCheckout.isReady && !psCheckout.container) {
                 psCheckout._reset(config);
             }
         }
