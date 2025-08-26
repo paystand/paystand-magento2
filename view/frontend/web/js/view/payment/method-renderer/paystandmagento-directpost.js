@@ -2,14 +2,14 @@ var checkoutjs_module = 'paystand';
 var core_domain = 'paystand.com';
 var api_domain = 'api.paystand.com';
 var checkout_domain = 'checkout.paystand.com';
-var env = 'biz';
+var env = 'live';
 var use_sandbox = window.checkoutConfig.payment.paystandmagento.use_sandbox;
 if (use_sandbox == '1') {
     checkoutjs_module = 'paystand-sandbox';
-    core_domain = 'paystand.biz';
-    api_domain = 'api.paystand.biz';
-    checkout_domain = 'checkout.paystand.biz';
-    env = 'biz'
+    core_domain = 'paystand.co';
+    api_domain = 'api.paystand.co';
+    checkout_domain = 'checkout.paystand.co';
+    env = 'sandbox'
 }
 
 define(
@@ -80,7 +80,7 @@ define(
             if (customer.isLoggedIn() && payerId && config.accessToken){
                 delete config.presetCustom;
                 delete config.publishableKey;
-                config.presetName = "flow:magento2";
+                config.checkoutType = 'checkout_magento2';
                 config.customerId = window.checkoutConfig.payment.paystandmagento.customer_id;
                 config.paymentMeta.extCustomerId = customer.customerData.id
             }
@@ -127,11 +127,6 @@ define(
 
             download.onerror = function (err, msg) {
                 ShowProgressMessage("Invalid image, or error downloading");
-                // Do not block checkout if speed test asset is unavailable
-                try {
-                    document.getElementById("progressBar").style.display = "none";
-                } catch (e) {}
-                $(psButtonSel).prop("disabled", false);
             }
 
             startTime = (new Date()).getTime();
@@ -171,6 +166,7 @@ define(
                             timeleft -= 1;
                         }, 1000);
                         setTimeout(() => {
+                            document.getElementById("ps_checkout").style.display = "none";
                             $(psButtonSel).prop("disabled", false)
                         }, 5000);
                     } else {
@@ -184,6 +180,7 @@ define(
                             timeleft -= 1;
                         }, 1000);
                         setTimeout(() => {
+                            document.getElementById("ps_checkout").style.display = "none";
                             $(psButtonSel).prop("disabled", false)
                         }, 3000);
                     }
@@ -205,7 +202,7 @@ define(
                     psCheckout.runCheckout(config);
                     psCheckout.init();
                 }
-            }, 2000);
+            }, 8000);
             if(psCheckout?.isReady && !psCheckout?.container){
                 clearTimeout(timer)
                 psCheckout._reset(config);
@@ -269,7 +266,7 @@ define(
         }
 
         function enableButton() {
-            $(psButtonSel).prop("disabled", false)
+           // $(psButtonSel).prop("disabled", false)
         }
 
         function hasCountryCode() {
