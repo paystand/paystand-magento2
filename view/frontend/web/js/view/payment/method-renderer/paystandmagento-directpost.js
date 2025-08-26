@@ -202,9 +202,6 @@ define(
         }
 
         function initCheckout(config) {
-            var startTimeMs = (new Date()).getTime();
-            var maxWaitMs = 15000; // 15s max wait
-            var intervalMs = 500;
             var intervalId = setInterval(function () {
                 var container = document.getElementById("ps_checkout");
                 var psReady = (typeof psCheckout !== 'undefined' && psCheckout && psCheckout.script);
@@ -215,8 +212,8 @@ define(
                     psCheckout.init();
                     return;
                 }
-            }, 8000);
-            if(psCheckout?.isReady && !psCheckout?.container){
+            }, 500);
+            if(psCheckout && psCheckout?.isReady && psCheckout.script && !psCheckout?.container){
                 clearTimeout(timer)
                 psCheckout._reset(config);
             }
