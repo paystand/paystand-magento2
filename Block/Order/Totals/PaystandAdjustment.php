@@ -1,8 +1,8 @@
 <?php
-namespace PayStand\PayStandMagento\Block\Adminhtml\Order\Totals;
+namespace PayStand\PayStandMagento\Block\Order\Totals;
 
 use Magento\Framework\View\Element\Template;
-use Magento\Sales\Block\Adminhtml\Order\Totals as ParentTotals;
+use Magento\Sales\Block\Order\Totals as ParentTotals;
 
 class PaystandAdjustment extends Template
 {
@@ -27,15 +27,6 @@ class PaystandAdjustment extends Template
             return $this;
         }
 
-        // Remove Total Paid and Total Due rows from admin order totals
-        if (method_exists($totals, 'removeTotal')) {
-            // Cover both naming variants used across Magento blocks
-            $totals->removeTotal('paid');
-            $totals->removeTotal('due');
-            $totals->removeTotal('total_paid');
-            $totals->removeTotal('total_due');
-        }
-
         $amount = (float)$order->getData('paystand_adjustment');
         if ($amount === 0.0) {
             return $this;
@@ -51,8 +42,9 @@ class PaystandAdjustment extends Template
             'label' => $label,
         ]);
 
-        // Insert before/after an existing row (e.g. before 'grand_total' or after 'shipping')
         $totals->addTotal($total, 'shipping');
         return $this;
     }
 }
+
+
