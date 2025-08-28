@@ -122,6 +122,48 @@ class AfterOrderPlaceObserver implements ObserverInterface
     {
         /** @var \Magento\Sales\Model\Order $order */
         $order = $observer->getEvent()->getOrder();
+        // Transfer paystand_adjustment from quote to order if present
+        try {
+            $quoteId = $order->getQuoteId();
+            if ($quoteId) {
+                try {
+                    $quote = $this->_cartRepository->get($quoteId);
+                } catch (\Exception $e) {
+                    $quote = $this->_quoteFactory->create()->load($quoteId);
+                }
+                if ($quote && $quote->getId()) {
+                    $paystandAdjustment = $quote->getData('paystand_adjustment');
+                    $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER: paystand_adjustment from quote is " . var_export($paystandAdjustment, true));
+                    if ($paystandAdjustment !== null && $paystandAdjustment !== '') {
+                        $adjustment = (float)$paystandAdjustment;
+
+                        // Store custom field on order
+                        $order->setData('paystand_adjustment', $adjustment);
+
+                        // Recalculate order grand totals to reconcile with displayed totals
+                        $currentGrandTotal      = (float)$order->getGrandTotal();
+                        $currentBaseGrandTotal  = (float)$order->getBaseGrandTotal();
+                        $newGrandTotal          = max(0.0, $currentGrandTotal + $adjustment);
+                        $newBaseGrandTotal      = max(0.0, $currentBaseGrandTotal + $adjustment); // assumes same currency rate
+
+                        $order->setGrandTotal($newGrandTotal);
+                        $order->setBaseGrandTotal($newBaseGrandTotal);
+
+                        // Recompute due amounts (guard against negatives)
+                        $totalPaid         = (float)$order->getTotalPaid();
+                        $baseTotalPaid     = (float)$order->getBaseTotalPaid();
+                        $order->setTotalDue(max(0.0, $newGrandTotal - $totalPaid));
+                        $order->setBaseTotalDue(max(0.0, $newBaseGrandTotal - $baseTotalPaid));
+
+                        $this->_orderRepository->save($order);
+                        $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER: Set paystand_adjustment=" . $adjustment .
+                            ", grand_total from {$currentGrandTotal} to {$newGrandTotal}, base_grand_total from {$currentBaseGrandTotal} to {$newBaseGrandTotal} for order " . $order->getIncrementId());
+                    }
+                }
+            }
+        } catch (\Exception $e) {
+            $this->_logger->error(">>>>> PAYSTAND-ORDER-OBSERVER: Failed to transfer paystand_adjustment from quote: " . $e->getMessage());
+        }
         $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER-START: Observer triggered for order " . $order->getIncrementId());
 
         $payment = $order->getPayment();
@@ -429,6 +471,23 @@ class AfterOrderPlaceObserver implements ObserverInterface
                 }
 
                 $invoice = $this->_invoiceService->prepareInvoice($order);
+
+                // Align invoice totals with paystand_adjustment so Total Paid matches Order Grand Total
+                $adjustment = (float)$order->getData('paystand_adjustment');
+                if ($adjustment !== 0.0) {
+                    if ($adjustment > 0) {
+                        // Use invoice adjustments API to reflect fee
+                        $invoice->setAdjustmentPositive(abs($adjustment));
+                    } else {
+                        // Use invoice adjustments API to reflect discount
+                        $invoice->setAdjustmentNegative(abs($adjustment));
+                    }
+
+                    // Also explicitly bump the computed grand totals for safety
+                    $invoice->setGrandTotal(max(0.0, (float)$invoice->getGrandTotal() + $adjustment));
+                    $invoice->setBaseGrandTotal(max(0.0, (float)$invoice->getBaseGrandTotal() + $adjustment));
+                }
+
                 $invoice->setRequestedCaptureCase(\Magento\Sales\Model\Order\Invoice::CAPTURE_ONLINE);
                 $invoice->register();
                 $invoice->getOrder()->setCustomerNoteNotify(false);
