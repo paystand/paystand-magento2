@@ -18,10 +18,12 @@ define(
         'Magento_Checkout/js/view/payment/default',
         'Magento_Checkout/js/model/quote',
         'Magento_CheckoutAgreements/js/model/agreement-validator',
+        'Magento_Customer/js/model/customer',
+        'Magento_Checkout/js/checkout-data',
         checkoutjs_module,
     ],
 
-    function ($, Component, quote, agreementValidator) {
+    function ($, Component, quote, agreementValidator, customer, checkoutData) {
         'use strict';
         const termsSel = '.ps-payment-method div.checkout-agreements input[type="checkbox"]';
         const psButtonSel = '.ps-payment-method .ps-button';
@@ -30,6 +32,17 @@ define(
 
         function getConfig() {
             const billing = quote.billingAddress()
+
+            // Determinate payer email and payer id
+            let payerEmail = customer.isLoggedIn() ? customer.customerData.email : quote.guestEmail;
+            let payerId = null;
+            if (customer.isLoggedIn() && customer.customerData && customer.customerData.custom_attributes) {
+                var payerIdAttr = customer.customerData.custom_attributes.paystand_payer_id;
+                if (payerIdAttr && payerIdAttr.value) {
+                    payerId = payerIdAttr.value;
+                }
+            }
+
             const config = {
                 "publishableKey": window.checkoutConfig.payment.paystandmagento.publishable_key,
                 "presetCustom": window.checkoutConfig.payment.paystandmagento.presetCustom,
@@ -41,14 +54,20 @@ define(
                 "mode": "modal",
                 "env": env,
                 "payerName": billing.firstname + ' ' + billing.lastname,
-                "payerEmail": quote.guestEmail,
+                "payerEmail": payerEmail,
                 "payerAddressCounty": countryISO3,
+                "payerId": payerId,
                 "paymentMeta": {
                     "source": "magento 2",
                     "quote": quote.getQuoteId(),
                     "quoteDetails": quote.totals()
                 }
             };
+
+            // Add access token if available (when user is logged in)
+            if (window.checkoutConfig.payment.paystandmagento.access_token) {
+                config.accessToken = window.checkoutConfig.payment.paystandmagento.access_token;
+            }
 
             if (billing.street && billing.street.length > 0) {
                 config.payerAddressStreet = billing.street[0];
@@ -62,6 +81,16 @@ define(
             if (billing.regionCode) {
                 config.payerAddressState = billing.regionCode;
             }
+
+            // Apply preset flow in config if customer is logged in
+            if (customer.isLoggedIn() && payerId && config.accessToken){
+                delete config.presetCustom;
+                delete config.publishableKey;
+                config.checkoutType = 'checkout_magento2';
+                config.customerId = window.checkoutConfig.payment.paystandmagento.customer_id;
+                config.paymentMeta.extCustomerId = customer.customerData.id
+            }
+
             return config;
         }
 
@@ -129,7 +158,6 @@ define(
                         timeleft -= 1;
                     }, 1000);
                     setTimeout(() => {
-                        document.getElementById("ps_checkout").style.display = "none";
                         $(psButtonSel).prop("disabled", false)
                     }, 15000);
                 } else {
@@ -174,14 +202,18 @@ define(
         }
 
         function initCheckout(config) {
-            let timer = setTimeout(() => {
-                if (document.getElementById("ps_checkout") != null && psCheckout?.script) {
+            var intervalId = setInterval(function () {
+                var container = document.getElementById("ps_checkout");
+                var psReady = (typeof psCheckout !== 'undefined' && psCheckout && psCheckout.script);
+                if (container && psReady) {
+                    clearInterval(intervalId);
                     psCheckout.isReady = true;
                     psCheckout.runCheckout(config);
                     psCheckout.init();
+                    return;
                 }
-            }, 2000);
-            if(psCheckout?.isReady && !psCheckout?.container){
+            }, 500);
+            if(psCheckout && psCheckout?.isReady && psCheckout.script && !psCheckout?.container){
                 clearTimeout(timer)
                 psCheckout._reset(config);
             }
@@ -196,17 +228,55 @@ define(
         }
 
         function onCompleteCheckout() {
+            psCheckout.onComplete( async function (paymentData) {
+                
+                const response = {
+                    payerId: paymentData.response.data.payerId,
+                    quote: paymentData.response.data.meta.quote,
+                    payerDiscount: paymentData.response.data.feeSplit.payerDiscount,
+                    payerTotalFees: paymentData.response.data.feeSplit.payerTotalFees,
+                }
+
+                console.log('Response:', response);
+                
+                try {
+                    const fetchResponse = await fetch('/paystandmagento/checkout/savepaymentdata', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(response)
+                    });
+                    
+                    if (!fetchResponse.ok) {
+                        throw new Error(`HTTP error! status: ${fetchResponse.status}`);
+                    }
+                    
+                    await fetchResponse.json();
+                    
+                    
+                } catch (error) {
+                    console.error('>>> Error al enviar paymentData al backend:', error);
+                }
+                
+                $(submitTrigger).click();
+            });
+        }
+
+        /*
+        function onCompleteCheckout() {
             psCheckout.onComplete(function () {
                 $(submitTrigger).click();
             });
         }
+            */
 
         function disableButton() {
             $(psButtonSel).prop("disabled", true)
         }
 
         function enableButton() {
-            // $(psButtonSel).prop("disabled", false)
+           // $(psButtonSel).prop("disabled", false)
         }
 
         function hasCountryCode() {
