@@ -235,10 +235,11 @@ define(
                     quote: paymentData.response.data.meta.quote,
                     payerDiscount: paymentData.response.data.feeSplit.payerDiscount,
                     payerTotalFees: paymentData.response.data.feeSplit.payerTotalFees,
+                    initPayer: paymentData.response.data.meta.initPayer
                 }
 
                 console.log('Response:', response);
-                
+
                 try {
                     const fetchResponse = await fetch('/paystandmagento/checkout/savepaymentdata', {
                         method: 'POST',
