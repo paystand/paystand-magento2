@@ -83,7 +83,7 @@ define(
             }
 
             // Apply preset flow in config if customer is logged in
-            if (customer.isLoggedIn() && payerId && config.accessToken){
+            if (customer.isLoggedIn() && config.accessToken){
                 delete config.presetCustom;
                 delete config.publishableKey;
                 config.checkoutType = 'checkout_magento2';
