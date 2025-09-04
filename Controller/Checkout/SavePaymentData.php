@@ -122,6 +122,7 @@ class SavePaymentData extends Action
         $quoteIdIncoming = $data['quote'] ?? null;
         $payerDiscount   = isset($data['payerDiscount']) ? (float)$data['payerDiscount'] : 0.0;
         $payerTotalFees  = isset($data['payerTotalFees']) ? (float)$data['payerTotalFees'] : 0.0;
+        $initPayer       = $data['initPayer'];
 
         if (!$payerId || !$quoteIdIncoming) {
             $this->logger->error('SAVEPAYMENTDATA >>>>>> Missing payerId or quote');
@@ -198,20 +199,24 @@ class SavePaymentData extends Action
                 ]);
             }
 
-            // Store new payer ID on customer
-            $this->logger->info('SAVEPAYMENTDATA >>>>>> Saving new payer ID', [
-                'customer_id'  => $customerId,
-                'new_payer_id' => $payerId
-            ]);
-            $this->customerPayerIdHelper->savePayerIdToCustomer($customerId, $payerId);
+            if ($payerId && $initPayer) {
+                // Store new payer ID on customer
+                $this->logger->info('SAVEPAYMENTDATA >>>>>> Saving new payer ID', [
+                    'customer_id'  => $customerId,
+                    'new_payer_id' => $payerId
+                ]);
+                $this->customerPayerIdHelper->savePayerIdToCustomer($customerId, $payerId);
 
-            return $result->setData([
-                'success'      => true,
-                'type'         => 'customer',
-                'customer_id'  => $customerId,
-                'new_payer_id' => $payerId,
-                'message'      => 'New payer ID saved'
-            ]);
+                return $result->setData([
+                    'success'      => true,
+                    'type'         => 'customer',
+                    'customer_id'  => $customerId,
+                    'new_payer_id' => $payerId,
+                    'message'      => 'New payer ID saved'
+                ]);
+            } else {
+                $this->logger->info('SAVEPAYMENTDATA >>>>>> Not saving new payer ID');
+            }
 
         } catch (NoSuchEntityException $e) {
             // Masked id could not be resolved or quote not found
