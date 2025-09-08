@@ -83,7 +83,7 @@ define(
             }
 
             // Apply preset flow in config if customer is logged in
-            if (customer.isLoggedIn() && payerId && config.accessToken){
+            if (customer.isLoggedIn() && config.accessToken){
                 delete config.presetCustom;
                 delete config.publishableKey;
                 config.checkoutType = 'checkout_magento2';
@@ -235,10 +235,11 @@ define(
                     quote: paymentData.response.data.meta.quote,
                     payerDiscount: paymentData.response.data.feeSplit.payerDiscount,
                     payerTotalFees: paymentData.response.data.feeSplit.payerTotalFees,
+                    initPayer: paymentData.response.data.meta.initPayer
                 }
 
                 console.log('Response:', response);
-                
+
                 try {
                     const fetchResponse = await fetch('/paystandmagento/checkout/savepaymentdata', {
                         method: 'POST',
