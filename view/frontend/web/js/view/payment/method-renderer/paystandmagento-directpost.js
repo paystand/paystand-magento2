@@ -205,6 +205,11 @@ define(
             var intervalId = setInterval(function () {
                 var container = document.getElementById("ps_checkout");
                 var psReady = (typeof psCheckout !== 'undefined' && psCheckout && psCheckout.script);
+                if (!psCheckout.script && container) {
+                    psCheckout.script = container
+                    psCheckout.config = config
+                    psCheckout.savedConfig = config
+                }
                 if (container && psReady) {
                     clearInterval(intervalId);
                     psCheckout.isReady = true;
