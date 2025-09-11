@@ -122,7 +122,7 @@ class SavePaymentData extends Action
         $quoteIdIncoming = $data['quote'] ?? null;
         $payerDiscount   = isset($data['payerDiscount']) ? (float)$data['payerDiscount'] : 0.0;
         $payerTotalFees  = isset($data['payerTotalFees']) ? (float)$data['payerTotalFees'] : 0.0;
-        $initPayer       = $data['initPayer'];
+        $initPayer       = $data['initPayer'] ?? false;
 
         if (!$payerId || !$quoteIdIncoming) {
             $this->logger->error('SAVEPAYMENTDATA >>>>>> Missing payerId or quote');
