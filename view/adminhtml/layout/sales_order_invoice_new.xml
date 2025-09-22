@@ -5,7 +5,7 @@
         <referenceBlock name="invoice_totals">
             <block class="PayStand\PayStandMagento\Block\Adminhtml\Invoice\Totals\PaystandAdjustment"
                    name="paystand.admin.invoice.total.adjustment"
-                   before="-"/>
+                   before="grand_total"/>
         </referenceBlock>
     </body>
 </page>
