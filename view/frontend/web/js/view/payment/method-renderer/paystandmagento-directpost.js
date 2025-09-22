@@ -243,8 +243,6 @@ define(
                     initPayer: paymentData.response.data.meta.initPayer
                 }
 
-                console.log('Response:', response);
-
                 try {
                     const fetchResponse = await fetch('/paystandmagento/checkout/savepaymentdata', {
                         method: 'POST',
