@@ -38,7 +38,7 @@ class PaystandAdjustment extends Template
             'label' => $label,
         ]);
 
-        $totalsBlock->addTotal($total, 'shipping');
+        $totalsBlock->addTotal($total, 'grand_total');
         return $this;
     }
 }
