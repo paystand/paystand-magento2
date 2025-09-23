@@ -1,0 +1,7 @@
+<?xml version="1.0"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+    <!-- Configure invoice total collectors -->
+    <type name="Magento\Sales\Model\Order\Invoice\Total\Subtotal">
+        <plugin name="paystand_invoice_total_collector" type="PayStand\PayStandMagento\Plugin\InvoiceTotalCollector" sortOrder="100"/>
+    </type>
+</config>

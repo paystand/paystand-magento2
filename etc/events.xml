@@ -3,4 +3,10 @@
     <event name="sales_order_place_after">
         <observer name="sales_order_place_after" instance="PayStand\PayStandMagento\Observer\AfterOrderPlaceObserver" />
     </event>
+    <event name="sales_order_invoice_register">
+        <observer name="paystand_invoice_register" instance="PayStand\PayStandMagento\Observer\InvoiceSaveAfterObserver" />
+    </event>
+    <event name="sales_order_invoice_save_after">
+        <observer name="paystand_invoice_grid_update" instance="PayStand\PayStandMagento\Observer\InvoiceGridUpdateObserver" />
+    </event>
 </config>
