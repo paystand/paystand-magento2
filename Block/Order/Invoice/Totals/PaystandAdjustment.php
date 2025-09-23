@@ -1,8 +1,8 @@
 <?php
-namespace PayStand\PayStandMagento\Block\Adminhtml\Order\Totals;
+namespace PayStand\PayStandMagento\Block\Order\Invoice\Totals;
 
 use Magento\Framework\View\Element\Template;
-use Magento\Sales\Block\Adminhtml\Order\Totals as ParentTotals;
+use Magento\Sales\Block\Order\Invoice\Totals as ParentTotals;
 
 class PaystandAdjustment extends Template
 {
@@ -22,21 +22,20 @@ class PaystandAdjustment extends Template
             return $this;
         }
 
-        $order = $totals->getOrder();
-        if (!$order) {
+        $invoice = $totals->getInvoice();
+        if (!$invoice) {
             return $this;
         }
 
-        // Remove Total Paid and Total Due rows from admin order totals
-        if (method_exists($totals, 'removeTotal')) {
-            // Cover both naming variants used across Magento blocks
-            $totals->removeTotal('paid');
-            $totals->removeTotal('due');
-            $totals->removeTotal('total_paid');
-            $totals->removeTotal('total_due');
+        // Get paystand_adjustment from invoice or order
+        $amount = (float)$invoice->getData('paystand_adjustment');
+        if ($amount === 0.0) {
+            $order = $invoice->getOrder();
+            if ($order) {
+                $amount = (float)$order->getData('paystand_adjustment');
+            }
         }
 
-        $amount = (float)$order->getData('paystand_adjustment');
         if ($amount === 0.0) {
             return $this;
         }
@@ -51,8 +50,7 @@ class PaystandAdjustment extends Template
             'label' => $label,
         ]);
 
-        // Insert without positioning to avoid foreach on null totals during early layout
-        $totals->addTotal($total);
+        $totals->addTotal($total, 'shipping');
         return $this;
     }
 }

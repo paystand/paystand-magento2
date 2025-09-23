@@ -208,11 +208,11 @@ define(
                 if (psCheckout && !psCheckout.script && container) {
                     psCheckout.script = container
                     psCheckout.config = config
-                    psCheckout.savedConfig = config
                 }
                 if (container && psReady) {
                     clearInterval(intervalId);
                     psCheckout.isReady = true;
+                    psCheckout.savedConfig = Object.assign({}, config, psCheckout.savedConfig);
                     psCheckout.runCheckout(config);
                     psCheckout.init();
                     return;
@@ -242,8 +242,6 @@ define(
                     payerTotalFees: paymentData.response.data.feeSplit.payerTotalFees,
                     initPayer: paymentData.response.data.meta.initPayer
                 }
-
-                console.log('Response:', response);
 
                 try {
                     const fetchResponse = await fetch('/paystandmagento/checkout/savepaymentdata', {
