@@ -174,14 +174,23 @@ define(
         }
 
         function initCheckout(config) {
-            let timer = setTimeout(() => {
-                if (document.getElementById("ps_checkout") != null && psCheckout?.script) {
+            var intervalId = setInterval(function () {
+                var container = document.getElementById("ps_checkout");
+                var psReady = (typeof psCheckout !== 'undefined' && psCheckout && psCheckout.script);
+                if (psCheckout && !psCheckout.script && container) {
+                    psCheckout.script = container
+                    psCheckout.config = config
+                }
+                if (container && psReady) {
+                    clearInterval(intervalId);
                     psCheckout.isReady = true;
+                    psCheckout.savedConfig = Object.assign({}, config, psCheckout.savedConfig);
                     psCheckout.runCheckout(config);
                     psCheckout.init();
+                    return;
                 }
-            }, 2000);
-            if(psCheckout?.isReady && !psCheckout?.container){
+            }, 500);
+            if(psCheckout && psCheckout?.isReady && psCheckout.script && !psCheckout?.container){
                 clearTimeout(timer)
                 psCheckout._reset(config);
             }
