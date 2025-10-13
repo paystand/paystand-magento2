@@ -210,8 +210,8 @@ define(
         function initCheckout(config) {
             var intervalId = setInterval(function () {
                 var container = document.getElementById("ps_checkout");
-                var psReady = (typeof psCheckout !== 'undefined' && psCheckout && psCheckout.script);
-                if (psCheckout && !psCheckout.script && container) {
+                var psReady = (typeof window.psCheckout !== 'undefined' && psCheckout && psCheckout.script);
+                if (window.psCheckout && !psCheckout.script && container) {
                     psCheckout.script = container
                     psCheckout.config = config
                     psCheckout.savedConfig = config
@@ -224,7 +224,7 @@ define(
                     return;
                 }
             }, 500);
-            if(psCheckout && psCheckout?.isReady && psCheckout.script && !psCheckout?.container){
+            if(window.psCheckout && psCheckout?.isReady && psCheckout.script && !psCheckout?.container){
                 clearTimeout(timer)
                 psCheckout._reset(config);
             }
