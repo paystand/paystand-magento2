@@ -158,7 +158,9 @@ define(
                         timeleft -= 1;
                     }, 1000);
                     setTimeout(() => {
-                        $(psButtonSel).prop("disabled", false)
+                        if (areAllTermsSelected()) {
+                            $(psButtonSel).prop("disabled", false)
+                        }
                     }, 15000);
                 } else {
                     if (speedMbps < 60) {
@@ -173,7 +175,9 @@ define(
                         }, 1000);
                         setTimeout(() => {
                             document.getElementById("ps_checkout").style.display = "none";
-                            $(psButtonSel).prop("disabled", false)
+                            if (areAllTermsSelected()) {
+                                $(psButtonSel).prop("disabled", false)
+                            }
                         }, 5000);
                     } else {
                         var timeleft = 3;
@@ -187,7 +191,9 @@ define(
                         }, 1000);
                         setTimeout(() => {
                             document.getElementById("ps_checkout").style.display = "none";
-                            $(psButtonSel).prop("disabled", false)
+                            if (areAllTermsSelected()) {
+                                $(psButtonSel).prop("disabled", false)
+                            }
                         }, 3000);
                     }
                 }
