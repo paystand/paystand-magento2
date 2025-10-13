@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Sales:etc/pdf_file.xsd">
+    <totals>
+        <total name="paystand_adjustment">
+            <title translate="true">Paystand Adjustment</title>
+            <source_field>paystand_adjustment</source_field>
+            <model>Magento\Sales\Model\Order\Pdf\Total\DefaultTotal</model>
+            <sort_order>995</sort_order> 
+        </total>
+
+        <total name="grand_total">
+            <sort_order>1000</sort_order>
+        </total>
+    </totals>
+</config>

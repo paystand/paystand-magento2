@@ -157,7 +157,7 @@ class SavePaymentData extends Action
                 ]);
             }
 
-            // 4) Persist the adjustment on the quote
+            // 4) Persist only the adjustment on the quote; totals will be updated in the PayStand observer
             $quote->setData('paystand_adjustment', $paystandAdjustment);
             $this->cartRepository->save($quote);
 

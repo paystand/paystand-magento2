@@ -137,7 +137,31 @@ class AfterOrderPlaceObserver implements ObserverInterface
                     if ($paystandAdjustment !== null && $paystandAdjustment !== '') {
                         $adjustment = (float)$paystandAdjustment;
 
-                        // Store custom field on order
+                        // 1) Update quote totals to include paystand_adjustment and save
+                        try {
+                            $quoteGrandTotal      = (float)$quote->getGrandTotal();
+                            $quoteBaseGrandTotal  = (float)$quote->getBaseGrandTotal();
+                            $quoteNewGrandTotal   = max(0.0, $quoteGrandTotal + $adjustment);
+                            $quoteNewBaseGrand    = max(0.0, $quoteBaseGrandTotal + $adjustment);
+
+                            $quote->setGrandTotal($quoteNewGrandTotal);
+                            $quote->setBaseGrandTotal($quoteNewBaseGrand);
+
+                            // Prevent re-collection from overwriting values if supported
+                            if (method_exists($quote, 'setTriggerRecollect')) {
+                                $quote->setTriggerRecollect(0);
+                            }
+                            if (method_exists($quote, 'setTotalsCollectedFlag')) {
+                                $quote->setTotalsCollectedFlag(true);
+                            }
+
+                            $this->_cartRepository->save($quote);
+                            $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER: Updated QUOTE totals with adjustment: grand_total {$quoteGrandTotal} -> {$quoteNewGrandTotal}, base_grand_total {$quoteBaseGrandTotal} -> {$quoteNewBaseGrand}");
+                        } catch (\Exception $e) {
+                            $this->_logger->error(">>>>> PAYSTAND-ORDER-OBSERVER: Failed updating quote totals: " . $e->getMessage());
+                        }
+
+                        // 2) Store custom field on order and update order totals
                         $order->setData('paystand_adjustment', $adjustment);
 
                         // Recalculate order grand totals to reconcile with displayed totals
@@ -156,8 +180,24 @@ class AfterOrderPlaceObserver implements ObserverInterface
                         $order->setBaseTotalDue(max(0.0, $newBaseGrandTotal - $baseTotalPaid));
 
                         $this->_orderRepository->save($order);
-                        $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER: Set paystand_adjustment=" . $adjustment .
+                        $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER: Set ORDER paystand_adjustment=" . $adjustment .
                             ", grand_total from {$currentGrandTotal} to {$newGrandTotal}, base_grand_total from {$currentBaseGrandTotal} to {$newBaseGrandTotal} for order " . $order->getIncrementId());
+
+                        // 3) Update SALES_ORDER_PAYMENT amounts to reflect adjusted totals
+                        try {
+                            $paymentEntity = $order->getPayment();
+                            if ($paymentEntity) {
+                                $paymentEntity->setData('paystand_adjustment', $adjustment);
+                                $paymentEntity->setAmountOrdered($newGrandTotal);
+                                $paymentEntity->setBaseAmountOrdered($newBaseGrandTotal);
+                                $paymentEntity->save();
+                                $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER: Updated PAYMENT amounts: amount_ordered={$newGrandTotal}, base_amount_ordered={$newBaseGrandTotal}");
+                            } else {
+                                $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER: Payment entity not available to update ordered amounts");
+                            }
+                        } catch (\Exception $e) {
+                            $this->_logger->error(">>>>> PAYSTAND-ORDER-OBSERVER: Failed updating payment ordered amounts: " . $e->getMessage());
+                        }
                     }
                 }
             }
@@ -287,8 +327,8 @@ class AfterOrderPlaceObserver implements ObserverInterface
                                                         // Only attempt to create invoice if transaction was successful
                                                         // Create invoice
                                                         $invoice = $this->createInvoice($order);
-                                                        if ($invoice) {
-                                                            $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER: Invoice created with ID: " . $invoice->getEntityId());
+                    if ($invoice) {
+                        $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER: Invoice created with ID: " . $invoice->getEntityId());
                                                         } else {
                                                             $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER: Invoice creation failed");
                                                         }
@@ -472,20 +512,21 @@ class AfterOrderPlaceObserver implements ObserverInterface
 
                 $invoice = $this->_invoiceService->prepareInvoice($order);
 
-                // Align invoice totals with paystand_adjustment so Total Paid matches Order Grand Total
-                $adjustment = (float)$order->getData('paystand_adjustment');
-                if ($adjustment !== 0.0) {
-                    if ($adjustment > 0) {
-                        // Use invoice adjustments API to reflect fee
-                        $invoice->setAdjustmentPositive(abs($adjustment));
-                    } else {
-                        // Use invoice adjustments API to reflect discount
-                        $invoice->setAdjustmentNegative(abs($adjustment));
-                    }
-
-                    // Also explicitly bump the computed grand totals for safety
-                    $invoice->setGrandTotal(max(0.0, (float)$invoice->getGrandTotal() + $adjustment));
-                    $invoice->setBaseGrandTotal(max(0.0, (float)$invoice->getBaseGrandTotal() + $adjustment));
+                // Transfer paystand_adjustment from order to invoice if present
+                $paystandAdjustment = (float)$order->getData('paystand_adjustment');
+                if ($paystandAdjustment !== 0.0) {
+                    $invoice->setData('paystand_adjustment', $paystandAdjustment);
+                    
+                    // Update invoice grand totals to include the adjustment
+                    $currentGrandTotal = (float)$invoice->getGrandTotal();
+                    $currentBaseGrandTotal = (float)$invoice->getBaseGrandTotal();
+                    $newGrandTotal = max(0.0, $currentGrandTotal + $paystandAdjustment);
+                    $newBaseGrandTotal = max(0.0, $currentBaseGrandTotal + $paystandAdjustment);
+                    
+                    $invoice->setGrandTotal($newGrandTotal);
+                    $invoice->setBaseGrandTotal($newBaseGrandTotal);
+                    
+                    $this->_logger->debug(">>>>> PAYSTAND-CREATE-INVOICE: Added paystand_adjustment={$paystandAdjustment} to invoice, grand_total from {$currentGrandTotal} to {$newGrandTotal}");
                 }
 
                 $invoice->setRequestedCaptureCase(\Magento\Sales\Model\Order\Invoice::CAPTURE_ONLINE);
@@ -493,6 +534,41 @@ class AfterOrderPlaceObserver implements ObserverInterface
                 $invoice->getOrder()->setCustomerNoteNotify(false);
                 $invoice->getOrder()->setIsInProcess(true);
                 $order->addStatusHistoryComment(__('Automatically INVOICED by Paystand'), false);
+                
+                // Update order totals to reflect the paystand_adjustment in invoice totals
+                if ($paystandAdjustment !== 0.0) {
+                    $currentTotalInvoiced = (float)$order->getTotalInvoiced();
+                    $currentBaseTotalInvoiced = (float)$order->getBaseTotalInvoiced();
+                    $currentTotalPaid = (float)$order->getTotalPaid();
+                    $currentBaseTotalPaid = (float)$order->getBaseTotalPaid();
+                    
+                    $newTotalInvoiced = $currentTotalInvoiced + $paystandAdjustment;
+                    $newBaseTotalInvoiced = $currentBaseTotalInvoiced + $paystandAdjustment;
+                    $newTotalPaid = $currentTotalPaid + $paystandAdjustment;
+                    $newBaseTotalPaid = $currentBaseTotalPaid + $paystandAdjustment;
+                    
+                    $order->setTotalInvoiced($newTotalInvoiced);
+                    $order->setBaseTotalInvoiced($newBaseTotalInvoiced);
+                    $order->setTotalPaid($newTotalPaid);
+                    $order->setBaseTotalPaid($newBaseTotalPaid);
+                    
+                    $this->_logger->debug(">>>>> PAYSTAND-CREATE-INVOICE: Updated order invoice totals - total_invoiced from {$currentTotalInvoiced} to {$newTotalInvoiced}, total_paid from {$currentTotalPaid} to {$newTotalPaid}");
+                    
+                    // Update payment amounts to include the adjustment
+                    $payment = $order->getPayment();
+                    if ($payment) {
+                        $currentAmountPaid = (float)$payment->getAmountPaid();
+                        $currentBaseAmountPaid = (float)$payment->getBaseAmountPaid();
+                        
+                        $newAmountPaid = $currentAmountPaid + $paystandAdjustment;
+                        $newBaseAmountPaid = $currentBaseAmountPaid + $paystandAdjustment;
+                        
+                        $payment->setAmountPaid($newAmountPaid);
+                        $payment->setBaseAmountPaid($newBaseAmountPaid);
+                        
+                        $this->_logger->debug(">>>>> PAYSTAND-CREATE-INVOICE: Updated payment amounts - amount_paid from {$currentAmountPaid} to {$newAmountPaid}, base_amount_paid from {$currentBaseAmountPaid} to {$newBaseAmountPaid}");
+                    }
+                }
 
                 // Create transaction to save invoice and order
                 $transactionSave = $this->_transactionFactory
