@@ -23,7 +23,7 @@ define(
         checkoutjs_module,
     ],
 
-    function ($, Component, quote, agreementValidator, customer, checkoutData) {
+    function ($, Component, quote, agreementValidator, customer) {
         'use strict';
         const termsSel = '.ps-payment-method div.checkout-agreements input[type="checkbox"]';
         const psButtonSel = '.ps-payment-method .ps-button';
@@ -157,11 +157,7 @@ define(
                         document.getElementById("countdown").textContent = timeleft + " seconds remaining";
                         timeleft -= 1;
                     }, 1000);
-                    setTimeout(() => {
-                        if (areAllTermsSelected()) {
-                            $(psButtonSel).prop("disabled", false)
-                        }
-                    }, 15000);
+                    buttonDisabler(15000, true);
                 } else {
                     if (speedMbps < 60) {
                         var timeleft = 5;
@@ -173,12 +169,7 @@ define(
                             document.getElementById("countdown").textContent = timeleft + " seconds remaining";
                             timeleft -= 1;
                         }, 1000);
-                        setTimeout(() => {
-                            document.getElementById("ps_checkout").style.display = "none";
-                            if (areAllTermsSelected()) {
-                                $(psButtonSel).prop("disabled", false)
-                            }
-                        }, 5000);
+                        buttonDisabler(5000, true);
                     } else {
                         var timeleft = 3;
                         var downloadTimer = setInterval(function () {
@@ -189,12 +180,7 @@ define(
                             document.getElementById("countdown").textContent = timeleft + " seconds remaining";
                             timeleft -= 1;
                         }, 1000);
-                        setTimeout(() => {
-                            document.getElementById("ps_checkout").style.display = "none";
-                            if (areAllTermsSelected()) {
-                                $(psButtonSel).prop("disabled", false)
-                            }
-                        }, 3000);
+                        buttonDisabler(3000, true);
                     }
                 }
 
@@ -210,23 +196,23 @@ define(
         function initCheckout(config) {
             var intervalId = setInterval(function () {
                 var container = document.getElementById("ps_checkout");
-                var psReady = (typeof window.psCheckout !== 'undefined' && psCheckout && psCheckout.script);
-                if (window.psCheckout && !psCheckout.script && container) {
-                    psCheckout.script = container
-                    psCheckout.config = config
+                var psReady = (typeof window.psCheckout !== 'undefined' && window.psCheckout.script);
+                if (window.psCheckout && !window.psCheckout.script && container) {
+                    window.psCheckout.script = container
+                    window.psCheckout.config = config
                 }
                 if (container && psReady) {
                     clearInterval(intervalId);
-                    psCheckout.isReady = true;
-                    psCheckout.savedConfig = Object.assign({}, config, psCheckout.savedConfig);
-                    psCheckout.runCheckout(config);
-                    psCheckout.init();
+                    window.psCheckout.isReady = true;
+                    window.psCheckout.savedConfig = Object.assign({}, config, window.psCheckout.savedConfig);
+                    window.psCheckout.runCheckout(config);
+                    window.psCheckout.init();
                     return;
                 }
             }, 500);
-            if(window.psCheckout && psCheckout?.isReady && psCheckout.script && !psCheckout?.container){
+            if(window.psCheckout && window.psCheckout?.isReady && window.psCheckout.script && !window.psCheckout?.container){
                 clearTimeout(timer)
-                psCheckout._reset(config);
+                window.psCheckout._reset(config);
             }
         }
         
@@ -266,7 +252,7 @@ define(
                     
                     
                 } catch (error) {
-                    console.error('>>> Error al enviar paymentData al backend:', error);
+                    console.error('>>> Error sending paymentData to backend:', error);
                 }
                 
                 $(submitTrigger).click();
@@ -286,15 +272,34 @@ define(
         }
 
         function enableButton() {
-           // $(psButtonSel).prop("disabled", false)
+            $(psButtonSel).prop("disabled", false)
         }
 
         function hasCountryCode() {
             return !!countryISO3;
         }
 
+        function buttonDisabler(timeout, hideCheckout) {
+            setTimeout(() => {
+                if (hideCheckout) {
+                    document.getElementById("ps_checkout").style.display = "none";
+                }
+                if (areAllTermsSelected()) {
+                    $(psButtonSel).prop("disabled", false)
+                }
+            }, timeout);
+        }
+
+        function areTermsVisible() {
+            return $(termsSel).filter(':visible').length > 0;
+        }
+
         function areAllTermsSelected() {
+            if (!areTermsVisible()) {
+                return true; // If no terms are visible, consider them as "all selected"
+            }
             return $(termsSel)
+                .filter(':visible')
                 .map(function () { return $(this).prop("checked") })
                 .filter(function (key, value) { return value === false; })
                 .toArray()
