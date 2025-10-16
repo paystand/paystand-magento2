@@ -211,17 +211,13 @@ define(
                 }
             }, 500);
             if(window.psCheckout && window.psCheckout?.isReady && window.psCheckout.script && !window.psCheckout?.container){
-                clearTimeout(timer)
+                clearInterval(intervalId);
                 window.psCheckout._reset(config);
             }
         }
         
-        async function asyncCall(){
-            const result = await initCheckout(getConfig()); 
-        }
-        
         function loadCheckout() {
-            asyncCall(); 
+            initCheckout(getConfig()); 
         }
 
         function onCompleteCheckout() {
@@ -356,14 +352,18 @@ define(
 
         function watchAgreement() {
             const interval = setInterval(function () {
-                if ($(termsSel).length > 0) {
-                    disableButton();
-                    registerClicks();
-                    getCountryCode()
+                if (areTermsEnabled()) {
+                    if ($(termsSel).length > 0) {
+                        disableButton();
+                        registerClicks();
+                        getCountryCode();
+                        clearInterval(interval);
+                        return;
+                    }
+                } else {
+                    getCountryCode();
                     clearInterval(interval);
                     return;
-                } else {
-                    enableButton();
                 }
             }, 500)
         }
