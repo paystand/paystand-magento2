@@ -290,16 +290,16 @@ define(
             }, timeout);
         }
 
-        function areTermsVisible() {
-            return $(termsSel).filter(':visible').length > 0;
+        function areTermsEnabled() {
+            return window.checkoutConfig.checkoutAgreements && 
+                   window.checkoutConfig.checkoutAgreements.isEnabled;
         }
 
         function areAllTermsSelected() {
-            if (!areTermsVisible()) {
-                return true; // If no terms are visible, consider them as "all selected"
+            if (!areTermsEnabled()) {
+                return true; // If terms are not enabled, consider them as "all selected"
             }
             return $(termsSel)
-                .filter(':visible')
                 .map(function () { return $(this).prop("checked") })
                 .filter(function (key, value) { return value === false; })
                 .toArray()
