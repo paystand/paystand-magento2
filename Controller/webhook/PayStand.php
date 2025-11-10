@@ -382,6 +382,11 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 ]
             );
             return $result;
+        } else {
+            $this->_logger->error('>>>>> PAYSTAND-ERROR: Order not found after retries for quote: ' . $id);
+            $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_NOT_FOUND);
+            $result->setData(['error_message' => __('Order not found')]);
+            return $result;
         }
     }
 
