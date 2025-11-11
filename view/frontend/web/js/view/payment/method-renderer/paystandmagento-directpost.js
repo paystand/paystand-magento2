@@ -194,6 +194,13 @@ define(
         }
 
         function initCheckout(config) {
+            // If checkout is ready but container doesn't exist, create it
+            if (!window.psCheckout.container) {
+                window.psCheckout = window.psCheckout.initScript(config);
+                window.psCheckout.config = config
+                window.psCheckout.savedConfig = config
+                window.psCheckout.reboot(config);
+            }
             var intervalId = setInterval(function () {
                 var container = document.getElementById("ps_checkout");
                 var psReady = (typeof window.psCheckout !== 'undefined' && window.psCheckout.script);
@@ -203,17 +210,11 @@ define(
                 }
                 if (container && psReady) {
                     clearInterval(intervalId);
-                    window.psCheckout.isReady = true;
                     window.psCheckout.savedConfig = Object.assign({}, config, window.psCheckout.savedConfig);
-                    window.psCheckout.runCheckout(config);
-                    window.psCheckout.init();
+                    window.psCheckout = window.psCheckout.runCheckout(config);
                     return;
                 }
             }, 500);
-            if(window.psCheckout && window.psCheckout?.isReady && window.psCheckout.script && !window.psCheckout?.container){
-                clearInterval(intervalId);
-                window.psCheckout._reset(config);
-            }
         }
         
         function loadCheckout() {
