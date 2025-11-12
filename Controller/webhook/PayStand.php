@@ -3,8 +3,8 @@
 namespace PayStand\PayStandMagento\Controller\Webhook;
 
 use \Magento\Framework\App\Config\ScopeConfigInterface as ScopeConfig;
-use \Magento\Quote\Model\QuoteFactory as QuoteFactory;
 use \Magento\Quote\Model\QuoteIdMaskFactory as QuoteIdMaskFactory;
+use Magento\Quote\Api\CartRepositoryInterface;
 use \stdClass;
 use Magento\Sales\Model\Order\Payment\Transaction\BuilderInterface as BuilderInterface;
 use Magento\Sales\Model\Order;
@@ -29,9 +29,6 @@ class Paystand extends \Magento\Framework\App\Action\Action
 
     /** @var \Psr\Log\LoggerInterface */
     protected $_logger;
-
-    /** @var \Magento\Quote\Model\QuoteFactory */
-    protected $_quoteFactory;
 
     /** @var \Magento\Quote\Model\QuoteIdMaskFactory */
     protected $_quoteIdMaskFactory;
@@ -81,6 +78,9 @@ class Paystand extends \Magento\Framework\App\Action\Action
     protected $errno;
     protected $updateOrderOn;
 
+    /** @var CartRepositoryInterface */
+    private $cartRepository;
+
     /**
      * @param \Magento\Framework\App\Action\Context $context ,
      * @param \Psr\Log\LoggerInterface $logger
@@ -91,7 +91,6 @@ class Paystand extends \Magento\Framework\App\Action\Action
         \Magento\Framework\App\Request\Http $request,
         \Magento\Framework\Controller\Result\JsonFactory $jsonResultFactory,
         \Magento\Framework\ObjectManagerInterface $objectManager,
-        QuoteFactory $quoteFactory,
         QuoteIdMaskFactory $quoteIdMaskFactory,
         ScopeConfig $scopeConfig,
         BuilderInterface $builderInterface,
@@ -99,13 +98,13 @@ class Paystand extends \Magento\Framework\App\Action\Action
         \Magento\Sales\Model\Service\InvoiceService $invoiceService,
         \Magento\Framework\DB\TransactionFactory $transactionFactory,
         \Magento\Sales\Api\InvoiceRepositoryInterface $invoiceRepository,
-        \Magento\Sales\Api\OrderRepositoryInterface $orderRepository
+        \Magento\Sales\Api\OrderRepositoryInterface $orderRepository,
+        CartRepositoryInterface $cartRepository
     ) {
         $this->_logger = $logger;
         $this->_request = $request;
         $this->_jsonResultFactory = $jsonResultFactory;
         $this->_objectManager = $objectManager;
-        $this->_quoteFactory = $quoteFactory;
         $this->_quoteIdMaskFactory = $quoteIdMaskFactory;
         $this->scopeConfig = $scopeConfig;
         $this->_builderInterface = $builderInterface;
@@ -114,6 +113,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
         $this->_transactionFactory = $transactionFactory;
         $this->_invoiceRepository = $invoiceRepository;
         $this->_orderRepository = $orderRepository;
+        $this->cartRepository = $cartRepository;
         $this->updateOrderOn = $this->scopeConfig->getValue(self::UPDATE_ORDER_ON, self::STORE_SCOPE);
         parent::__construct($context);
     }
@@ -206,8 +206,20 @@ class Paystand extends \Magento\Framework\App\Action\Action
         // If the quoteId is not masked, it comes from a logged in user and should be used as is.
         $id = (empty($quoteIdMask->getQuoteId())) ? $json->resource->meta->quote : $quoteIdMask->getQuoteId();
 
-        // Get Order Id from quote
-        $quote = $this->_quoteFactory->create()->load($id);
+        // Get Order Id from quote using repository (service contract)
+        try {
+            $quote = $this->cartRepository->get((int)$id);
+        } catch (\Magento\Framework\Exception\NoSuchEntityException $e) {
+            $this->_logger->error('>>>>> PAYSTAND-ERROR: Quote not found for ID: ' . $id);
+            $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_BAD_REQUEST);
+            $result->setData(['error_message' => __('Quote not found')]);
+            return $result;
+        } catch (\Magento\Framework\Exception\StateException $e) {
+            $this->_logger->error('>>>>> PAYSTAND-ERROR: Quote in invalid state for ID: ' . $id . ' - ' . $e->getMessage());
+            $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_BAD_REQUEST);
+            $result->setData(['error_message' => __('Quote cannot be loaded')]);
+            return $result;
+        }
 
         // Hardcoded retry configuration
         $maxRetries = 3;  // Fixed number of retries
@@ -302,73 +314,80 @@ class Paystand extends \Magento\Framework\App\Action\Action
             }
         }
 
-        // Order exists, get current order statuses
-        $state = $order->getState();
-        $status = $order->getStatus();
-        $this->_logger->debug(
-            '>>>>> PAYSTAND-ORDER: current order id: "' . $order->getIncrementId()
-                . '", current order state: "' . $state . '", current order status: "' . $status . '"'
-        );
-
-        // Check if order is already processing or canceled
-        if ($state == Order::STATE_PROCESSING || $state == Order::STATE_CANCELED) {
-            $this->_logger->debug('>>>>> PAYSTAND-FINISH: Order already ' . $state . ', no further action needed');
-            $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
-            $result->setData([
-                'success_message' => __('Order already %1, no further action needed', $state)
-            ]);
-            return $result;
-        }
-
-        // If payment status has already been processed, there is no further action
-        if ($state == 'processing' || $status == 'processing') {
+        if ($order) {
+            // Order exists, get current order statuses
+            $state = $order->getState();
+            $status = $order->getStatus();
             $this->_logger->debug(
-                '>>>>> PAYSTAND-FINISH: payment already processed, no further action needed'
+                '>>>>> PAYSTAND-ORDER: current order id: "' . $order->getIncrementId()
+                    . '", current order state: "' . $state . '", current order status: "' . $status . '"'
+            );
+
+            // Check if order is already processing or canceled
+            if ($state == Order::STATE_PROCESSING || $state == Order::STATE_CANCELED) {
+                $this->_logger->debug('>>>>> PAYSTAND-FINISH: Order already ' . $state . ', no further action needed');
+                $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
+                $result->setData([
+                    'success_message' => __('Order already %1, no further action needed', $state)
+                ]);
+                return $result;
+            }
+
+            // If payment status has already been processed, there is no further action
+            if ($state == 'processing' || $status == 'processing') {
+                $this->_logger->debug(
+                    '>>>>> PAYSTAND-FINISH: payment already processed, no further action needed'
+                );
+                $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
+                $result->setData(
+                    ['success_message' => __('payment already processed, no further action needed')]
+                );
+                return $result;
+            }
+
+            $newStatus = $this->newOrderStatus($psPaymentStatus);
+
+            if ($newStatus != '') {
+                $state = $newStatus;
+                $status = $newStatus;
+
+                // Assign new status to Magento 2 Order
+                $order->setState($state);
+                $order->setStatus($status);
+                $order->save();
+            }
+
+            // Only create transaction and invoice when the payment is on paid status to prevent multiple objects
+            if ($psPaymentStatus == $updateOrderOn) {
+                // Create Transaction for the Order
+                $this->createTransaction($order, json_decode($body, true)['resource']);
+                // Automatically invoice order
+                $this->createInvoice($order);
+            }
+
+            // Finish and send back success response
+            $this->_logger->debug(
+                '>>>>> PAYSTAND-FINISH: Paystand payment status: "' . $psPaymentStatus
+                    . '", new order state: "' . $state
+                    . '", new order status: "' . $status . '"'
             );
             $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
             $result->setData(
-                ['success_message' => __('payment already processed, no further action needed')]
+                [
+                    'success_message' => __('Event verified, order status changed'),
+                    'order' => [
+                        'newState' => __($state),
+                        'newStatus' => __($status)
+                    ]
+                ]
             );
             return $result;
+        } else {
+            $this->_logger->error('>>>>> PAYSTAND-ERROR: Order not found after retries for quote: ' . $id);
+            $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_NOT_FOUND);
+            $result->setData(['error_message' => __('Order not found')]);
+            return $result;
         }
-
-        $newStatus = $this->newOrderStatus($psPaymentStatus);
-
-        if ($newStatus != '') {
-            $state = $newStatus;
-            $status = $newStatus;
-
-            // Assign new status to Magento 2 Order
-            $order->setState($state);
-            $order->setStatus($status);
-            $order->save();
-        }
-
-        // Only create transaction and invoice when the payment is on paid status to prevent multiple objects
-        if ($psPaymentStatus == $updateOrderOn) {
-            // Create Transaction for the Order
-            $this->createTransaction($order, json_decode($body, true)['resource']);
-            // Automatically invoice order
-            $this->createInvoice($order);
-        }
-
-        // Finish and send back success response
-        $this->_logger->debug(
-            '>>>>> PAYSTAND-FINISH: Paystand payment status: "' . $psPaymentStatus
-                . '", new order state: "' . $state
-                . '", new order status: "' . $status . '"'
-        );
-        $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
-        $result->setData(
-            [
-                'success_message' => __('Event verified, order status changed'),
-                'order' => [
-                    'newState' => __($state),
-                    'newStatus' => __($status)
-                ]
-            ]
-        );
-        return $result;
     }
 
     private function buildCurl($curl, $verb, $body = "", $extheaders = null)
