@@ -225,7 +225,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
         // Similar to setTimeout approach used in BigC to give observer time to complete
         $maxRetries = 3;  // Fixed number of retries
         $retryDelay = 3;  // Fixed delay in seconds between retries
-        $initialDelay = 10;  // Increased initial delay (similar to setTimeout) to ensure observer completes
+        $initialDelay = 28;  // Increased initial delay (similar to setTimeout) to ensure observer completes
         $webhookStartTime = microtime(true);
         $this->_logger->debug(">>>>> PAYSTAND-WEBHOOK-START: Webhook execution started at " . date('Y-m-d H:i:s.u'));
         $this->_logger->debug(">>>>> PAYSTAND-WEBHOOK-RACE-CONDITION-FIX: Using initial delay of {$initialDelay} seconds to allow observer to complete");
