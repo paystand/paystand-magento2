@@ -74,6 +74,7 @@ class AfterOrderPlaceObserver implements ObserverInterface
      * PayStand configuration paths
      */
     const UPDATE_ORDER_ON = 'payment/paystandmagento/update_order_on';
+    const ENABLE_PAYSTAND_ADJUSTMENT = 'payment/paystandmagento/enable_paystand_adjustment';
     const STORE_SCOPE = \Magento\Store\Model\ScopeInterface::SCOPE_STORE;
 
     /**
@@ -122,7 +123,19 @@ class AfterOrderPlaceObserver implements ObserverInterface
     {
         /** @var \Magento\Sales\Model\Order $order */
         $order = $observer->getEvent()->getOrder();
-        // Transfer paystand_adjustment from quote to order if present
+        
+        // Check if paystand adjustment is enabled
+        $isAdjustmentEnabled = $this->scopeConfig->isSetFlag(
+            self::ENABLE_PAYSTAND_ADJUSTMENT,
+            self::STORE_SCOPE
+        );
+        
+        if (!$isAdjustmentEnabled) {
+            $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER: Paystand adjustment is disabled, skipping adjustment processing");
+        }
+        
+        // Transfer paystand_adjustment from quote to order if present and enabled
+        if ($isAdjustmentEnabled) {
         try {
             $quoteId = $order->getQuoteId();
             if ($quoteId) {
@@ -203,6 +216,7 @@ class AfterOrderPlaceObserver implements ObserverInterface
             }
         } catch (\Exception $e) {
             $this->_logger->error(">>>>> PAYSTAND-ORDER-OBSERVER: Failed to transfer paystand_adjustment from quote: " . $e->getMessage());
+            }
         }
         $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER-START: Observer triggered for order " . $order->getIncrementId());
 
@@ -514,6 +528,8 @@ class AfterOrderPlaceObserver implements ObserverInterface
 
                 // Transfer paystand_adjustment from order to invoice if present
                 $paystandAdjustment = (float)$order->getData('paystand_adjustment');
+                
+                // If there's an existing adjustment (!=0), always transfer it to invoice
                 if ($paystandAdjustment !== 0.0) {
                     $invoice->setData('paystand_adjustment', $paystandAdjustment);
                     
@@ -536,6 +552,9 @@ class AfterOrderPlaceObserver implements ObserverInterface
                 $order->addStatusHistoryComment(__('Automatically INVOICED by Paystand'), false);
                 
                 // Update order totals to reflect the paystand_adjustment in invoice totals
+                $paystandAdjustment = (float)$order->getData('paystand_adjustment');
+                
+                // If there's an existing adjustment (!=0), always update order totals
                 if ($paystandAdjustment !== 0.0) {
                     $currentTotalInvoiced = (float)$order->getTotalInvoiced();
                     $currentBaseTotalInvoiced = (float)$order->getBaseTotalInvoiced();
