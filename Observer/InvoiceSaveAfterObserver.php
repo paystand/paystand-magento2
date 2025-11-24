@@ -6,6 +6,8 @@ namespace PayStand\PayStandMagento\Observer;
 
 use Magento\Framework\Event\ObserverInterface;
 use Psr\Log\LoggerInterface;
+use Magento\Framework\App\Config\ScopeConfigInterface;
+use Magento\Store\Model\ScopeInterface;
 
 class InvoiceSaveAfterObserver implements ObserverInterface
 {
@@ -15,12 +17,25 @@ class InvoiceSaveAfterObserver implements ObserverInterface
     protected $_logger;
 
     /**
+     * @var ScopeConfigInterface
+     */
+    protected $scopeConfig;
+
+    /**
+     * PayStand configuration path
+     */
+    const ENABLE_PAYSTAND_ADJUSTMENT = 'payment/paystandmagento/enable_paystand_adjustment';
+
+    /**
      * @param LoggerInterface $logger
+     * @param ScopeConfigInterface $scopeConfig
      */
     public function __construct(
-        LoggerInterface $logger
+        LoggerInterface $logger,
+        ScopeConfigInterface $scopeConfig
     ) {
         $this->_logger = $logger;
+        $this->scopeConfig = $scopeConfig;
     }
 
     /**
@@ -41,8 +56,23 @@ class InvoiceSaveAfterObserver implements ObserverInterface
         $order = $invoice->getOrder();
         $paystandAdjustment = (float)$order->getData('paystand_adjustment');
         
-        // Only process if there's a paystand adjustment and it's not already set on invoice
-        if ($paystandAdjustment !== 0.0 && $invoice->getData('paystand_adjustment') === null) {
+        // If there's no existing adjustment, check if feature is enabled
+        if ($paystandAdjustment === 0.0) {
+            $isAdjustmentEnabled = $this->scopeConfig->isSetFlag(
+                self::ENABLE_PAYSTAND_ADJUSTMENT,
+                ScopeInterface::SCOPE_STORE
+            );
+            
+            if (!$isAdjustmentEnabled) {
+                return;
+            }
+            // If enabled but amount is 0, don't process anything
+            return;
+        }
+        
+        // If there's an existing adjustment (!=0), always transfer it to invoice
+        // Only process if it's not already set on invoice
+        if ($invoice->getData('paystand_adjustment') === null) {
             $this->_logger->debug(">>>>> PAYSTAND-INVOICE-OBSERVER: Processing manual invoice creation with adjustment " . $paystandAdjustment);
             
             // Set the adjustment on the invoice
