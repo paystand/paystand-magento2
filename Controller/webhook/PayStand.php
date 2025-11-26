@@ -221,18 +221,16 @@ class Paystand extends \Magento\Framework\App\Action\Action
             return $result;
         }
 
-        // Retry configuration - Increased initial delay to prevent race conditions
-        // Similar to setTimeout approach used in BigC to give observer time to complete
+        // Retry configuration - Initial delay for production stability
         $maxRetries = 3;  // Fixed number of retries
         $retryDelay = 3;  // Fixed delay in seconds between retries
-        $initialDelay = 28;  // Increased initial delay (similar to setTimeout) to ensure observer completes
+        $initialDelay = 10;  // Initial delay to ensure observer completes (production-safe value)
         $webhookStartTime = microtime(true);
         $this->_logger->debug(">>>>> PAYSTAND-WEBHOOK-START: Webhook execution started at " . date('Y-m-d H:i:s.u'));
         $this->_logger->debug(">>>>> PAYSTAND-WEBHOOK-RACE-CONDITION-FIX: Using initial delay of {$initialDelay} seconds to allow observer to complete");
 
         // Initial wait to give Magento observer time to set order to Pending state
-        // This is critical to prevent race condition where webhook processes order before observer finishes
-        $this->_logger->debug(">>>>> PAYSTAND-WEBHOOK: Initial wait for {$initialDelay} seconds before checking for order (race condition prevention)...");
+        $this->_logger->debug(">>>>> PAYSTAND-WEBHOOK: Initial wait for {$initialDelay} seconds before checking for order...");
         sleep($initialDelay);
         $afterInitialDelay = microtime(true);
         $this->_logger->debug(
@@ -326,20 +324,10 @@ class Paystand extends \Magento\Framework\App\Action\Action
         }
 
         if ($order) {
-            // Order exists, wait for order to be in pending state (race condition fix)
-            // This ensures the observer has finished setting the order to pending
-            $orderStateCheckTime = microtime(true);
-            $orderWaitTime = $this->waitForOrderPendingState($order, $maxRetries, $retryDelay);
-            $this->_logger->debug(
-                ">>>>> PAYSTAND-WEBHOOK: Order state check completed. " .
-                "Wait time: {$orderWaitTime}ms, " .
-                "Total webhook time so far: " . round((microtime(true) - $webhookStartTime) * 1000, 2) . "ms"
-            );
-
-            // Reload order to get latest state after waiting
+            // Reload order to get latest state
             $order = $this->_orderRepository->get($order->getId());
             
-            // Order exists, get current order statuses
+            // Get current order statuses
             $state = $order->getState();
             $status = $order->getStatus();
             $this->_logger->debug(
@@ -347,40 +335,11 @@ class Paystand extends \Magento\Framework\App\Action\Action
                     . '", current order state: "' . $state . '", current order status: "' . $status . '"'
             );
 
-            // Enhanced race condition check: If order is in processing too early, wait and retry
-            // This handles cases where observer hasn't finished setting order to pending yet
-            if ($state == Order::STATE_PROCESSING) {
-                $timeSinceWebhookStart = microtime(true) - $webhookStartTime;
-                $this->_logger->debug(
-                    ">>>>> PAYSTAND-WEBHOOK-RACE-CONDITION: Order found in PROCESSING state. " .
-                    "Time since webhook start: " . round($timeSinceWebhookStart, 2) . "s"
-                );
-                
-                // If order is in processing very early (less than 8 seconds), it might be a race condition
-                // Wait a bit more and check again to see if observer will set it back to pending
-                if ($timeSinceWebhookStart < 8) {
-                    $this->_logger->debug(
-                        ">>>>> PAYSTAND-WEBHOOK-RACE-CONDITION: Order in processing too early, " .
-                        "waiting additional {$retryDelay} seconds for observer to complete..."
-                    );
-                    sleep($retryDelay);
-                    
-                    // Reload order again
-                    $order = $this->_orderRepository->get($order->getId());
-                    $state = $order->getState();
-                    $status = $order->getStatus();
-                    $this->_logger->debug(
-                        ">>>>> PAYSTAND-WEBHOOK-RACE-CONDITION: After additional wait, " .
-                        "order state: '{$state}', status: '{$status}'"
-                    );
-                }
-            }
-
-            // Check if order is already processing or canceled (after potential retry)
+            // Only skip processing if order is ALREADY in a final state (processing or canceled)
+            // If order is in pending, we MUST process it
             if ($state == Order::STATE_PROCESSING || $state == Order::STATE_CANCELED) {
                 $this->_logger->debug(
-                    '>>>>> PAYSTAND-FINISH: Order already ' . $state . 
-                    ', no further action needed. Race condition handled successfully.'
+                    '>>>>> PAYSTAND-FINISH: Order already in final state: ' . $state . ', no further action needed'
                 );
                 $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
                 $result->setData([
@@ -389,21 +348,16 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 return $result;
             }
 
-            // If payment status has already been processed, there is no further action
-            if ($state == 'processing' || $status == 'processing') {
-                $this->_logger->debug(
-                    '>>>>> PAYSTAND-FINISH: payment already processed, no further action needed'
-                );
-                $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
-                $result->setData(
-                    ['success_message' => __('payment already processed, no further action needed')]
-                );
-                return $result;
-            }
+            // If we're here, order is in pending (or another non-final state) and needs to be processed
+            $this->_logger->debug(
+                ">>>>> PAYSTAND-PROCESSING: Order is in state '{$state}', payment status is '{$psPaymentStatus}', proceeding to update..."
+            );
 
             $newStatus = $this->newOrderStatus($psPaymentStatus);
 
             if ($newStatus != '') {
+                $this->_logger->debug(">>>>> PAYSTAND-PROCESSING: Changing order state from '{$state}' to '{$newStatus}'");
+                
                 $state = $newStatus;
                 $status = $newStatus;
 
@@ -411,14 +365,25 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 $order->setState($state);
                 $order->setStatus($status);
                 $order->save();
+                
+                $this->_logger->debug(">>>>> PAYSTAND-PROCESSING: Order state set to '{$newStatus}' and saved immediately. Order ID: " . $order->getIncrementId());
+            } else {
+                $this->_logger->debug(">>>>> PAYSTAND-PROCESSING: newOrderStatus() returned empty for payment status '{$psPaymentStatus}'");
             }
 
-            // Only create transaction and invoice when the payment is on paid status to prevent multiple objects
+            // Only create transaction and invoice when the payment is on paid/posted status
             if ($psPaymentStatus == $updateOrderOn) {
+                $this->_logger->debug(">>>>> PAYSTAND-PROCESSING: Payment status matches configured updateOrderOn ('{$updateOrderOn}'), creating transaction and invoice...");
+                
                 // Create Transaction for the Order
                 $this->createTransaction($order, json_decode($body, true)['resource']);
+                
                 // Automatically invoice order
                 $this->createInvoice($order);
+                
+                $this->_logger->debug(">>>>> PAYSTAND-PROCESSING: Transaction and invoice created successfully for order " . $order->getIncrementId());
+            } else {
+                $this->_logger->debug(">>>>> PAYSTAND-PROCESSING: Payment status '{$psPaymentStatus}' does not match updateOrderOn '{$updateOrderOn}', skipping transaction/invoice creation");
             }
 
             // Finish and send back success response
@@ -677,98 +642,6 @@ class Paystand extends \Magento\Framework\App\Action\Action
         }
     }
 
-    /**
-     * Wait for order to be in pending state to prevent race conditions
-     * This ensures the observer has finished setting the order to pending before webhook processes it
-     * 
-     * @param \Magento\Sales\Model\Order $order
-     * @param int $maxRetries Maximum number of retry attempts
-     * @param int $retryDelay Delay in seconds between retries
-     * @return float Time waited in milliseconds
-     */
-    private function waitForOrderPendingState($order, $maxRetries, $retryDelay)
-    {
-        $startTime = microtime(true);
-        $retryCount = 0;
-        $orderId = $order->getId();
-        
-        $this->_logger->debug(
-            ">>>>> PAYSTAND-WEBHOOK-WAIT-PENDING: Starting wait for order {$orderId} to be in pending state"
-        );
-        
-        // Reload order to get latest state
-        $order = $this->_orderRepository->get($orderId);
-        $currentState = $order->getState();
-        $currentStatus = $order->getStatus();
-        
-        $this->_logger->debug(
-            ">>>>> PAYSTAND-WEBHOOK-WAIT-PENDING: Initial order state: '{$currentState}', status: '{$currentStatus}'"
-        );
-        
-        // If order is already in pending, no need to wait
-        if ($currentState == Order::STATE_PENDING || $currentState == 'pending') {
-            $waitTime = (microtime(true) - $startTime) * 1000;
-            $this->_logger->debug(
-                ">>>>> PAYSTAND-WEBHOOK-WAIT-PENDING: Order already in pending state. Wait time: " . 
-                round($waitTime, 2) . "ms"
-            );
-            return $waitTime;
-        }
-        
-        // Wait and retry if order is not in pending yet
-        while ($retryCount < $maxRetries) {
-            $this->_logger->debug(
-                ">>>>> PAYSTAND-WEBHOOK-WAIT-PENDING: Order not in pending yet (state: '{$currentState}'), " .
-                "waiting {$retryDelay} seconds before retry " . ($retryCount + 1) . "/{$maxRetries}..."
-            );
-            
-            sleep($retryDelay);
-            
-            // Reload order to get latest state
-            try {
-                $order = $this->_orderRepository->get($orderId);
-                $currentState = $order->getState();
-                $currentStatus = $order->getStatus();
-                
-                $this->_logger->debug(
-                    ">>>>> PAYSTAND-WEBHOOK-WAIT-PENDING: After wait, order state: '{$currentState}', status: '{$currentStatus}'"
-                );
-                
-                // Check if order is now in pending
-                if ($currentState == Order::STATE_PENDING || $currentState == 'pending') {
-                    $waitTime = (microtime(true) - $startTime) * 1000;
-                    $this->_logger->debug(
-                        ">>>>> PAYSTAND-WEBHOOK-WAIT-PENDING: Order is now in pending state. " .
-                        "Total wait time: " . round($waitTime, 2) . "ms after " . ($retryCount + 1) . " retries"
-                    );
-                    return $waitTime;
-                }
-                
-                // If order is in processing, it might be a race condition - continue waiting
-                if ($currentState == Order::STATE_PROCESSING) {
-                    $this->_logger->debug(
-                        ">>>>> PAYSTAND-WEBHOOK-WAIT-PENDING: Order in processing state, " .
-                        "this may indicate observer hasn't finished yet. Continuing to wait..."
-                    );
-                }
-                
-            } catch (\Exception $e) {
-                $this->_logger->error(
-                    ">>>>> PAYSTAND-WEBHOOK-WAIT-PENDING: Error reloading order: " . $e->getMessage()
-                );
-            }
-            
-            $retryCount++;
-        }
-        
-        $waitTime = (microtime(true) - $startTime) * 1000;
-        $this->_logger->debug(
-            ">>>>> PAYSTAND-WEBHOOK-WAIT-PENDING: Finished waiting after {$maxRetries} retries. " .
-            "Final state: '{$currentState}', Total wait time: " . round($waitTime, 2) . "ms"
-        );
-        
-        return $waitTime;
-    }
 
     /**
      * Comprehensive method to find an order using multiple approaches
