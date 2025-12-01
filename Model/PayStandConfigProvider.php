@@ -62,8 +62,8 @@ class PayStandConfigProvider implements ConfigProviderInterface
   /**
    * Base URLs for API
    */
-    const BASE_URL = 'https://api.paystand.com/v3';
-    const SANDBOX_BASE_URL = 'https://api.paystand.co/v3';
+    const BASE_URL = 'https://api.paystand.biz/v3';
+    const SANDBOX_BASE_URL = 'https://api.paystand.biz/v3';
 
   /**
    * @param ScopeConfig $scopeConfig
