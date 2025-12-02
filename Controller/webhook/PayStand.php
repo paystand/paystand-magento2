@@ -23,8 +23,8 @@ class Paystand extends \Magento\Framework\App\Action\Action
     const CLIENT_SECRET = 'payment/paystandmagento/client_secret';
     const UPDATE_ORDER_ON = 'payment/paystandmagento/update_order_on';
     const USE_SANDBOX = 'payment/paystandmagento/use_sandbox';
-    const SANDBOX_BASE_URL = 'https://api.paystand.co/v3';
-    const BASE_URL = 'https://api.paystand.com/v3';
+    const SANDBOX_BASE_URL = 'https://api.paystand.biz/v3';
+    const BASE_URL = 'https://api.paystand.biz/v3';
     const STORE_SCOPE = \Magento\Store\Model\ScopeInterface::SCOPE_STORE;
 
     /** @var \Psr\Log\LoggerInterface */
@@ -221,13 +221,22 @@ class Paystand extends \Magento\Framework\App\Action\Action
             return $result;
         }
 
-        // Hardcoded retry configuration
+        // Retry configuration - Initial delay for production stability
         $maxRetries = 3;  // Fixed number of retries
         $retryDelay = 3;  // Fixed delay in seconds between retries
+        $initialDelay = 10;  // Initial delay to ensure observer completes (production-safe value)
+        $webhookStartTime = microtime(true);
+        $this->_logger->debug(">>>>> PAYSTAND-WEBHOOK-START: Webhook execution started at " . date('Y-m-d H:i:s.u'));
+        $this->_logger->debug(">>>>> PAYSTAND-WEBHOOK-RACE-CONDITION-FIX: Using initial delay of {$initialDelay} seconds to allow observer to complete");
 
-        // Initial wait to give Magento time to process the order
-        $this->_logger->debug(">>>>> PAYSTAND-WEBHOOK: Initial wait for " . $retryDelay . " seconds before checking for order...");
-        sleep($retryDelay);
+        // Initial wait to give Magento observer time to set order to Pending state
+        $this->_logger->debug(">>>>> PAYSTAND-WEBHOOK: Initial wait for {$initialDelay} seconds before checking for order...");
+        sleep($initialDelay);
+        $afterInitialDelay = microtime(true);
+        $this->_logger->debug(
+            ">>>>> PAYSTAND-WEBHOOK: Initial delay completed. " .
+            "Time elapsed: " . round(($afterInitialDelay - $webhookStartTime) * 1000, 2) . "ms"
+        );
 
         // Try to find the order using multiple methods
         $order = $this->findOrder($quote);
@@ -315,7 +324,10 @@ class Paystand extends \Magento\Framework\App\Action\Action
         }
 
         if ($order) {
-            // Order exists, get current order statuses
+            // Reload order to get latest state
+            $order = $this->_orderRepository->get($order->getId());
+            
+            // Get current order statuses
             $state = $order->getState();
             $status = $order->getStatus();
             $this->_logger->debug(
@@ -323,9 +335,12 @@ class Paystand extends \Magento\Framework\App\Action\Action
                     . '", current order state: "' . $state . '", current order status: "' . $status . '"'
             );
 
-            // Check if order is already processing or canceled
+            // Only skip processing if order is ALREADY in a final state (processing or canceled)
+            // If order is in pending, we MUST process it
             if ($state == Order::STATE_PROCESSING || $state == Order::STATE_CANCELED) {
-                $this->_logger->debug('>>>>> PAYSTAND-FINISH: Order already ' . $state . ', no further action needed');
+                $this->_logger->debug(
+                    '>>>>> PAYSTAND-FINISH: Order already in final state: ' . $state . ', no further action needed'
+                );
                 $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
                 $result->setData([
                     'success_message' => __('Order already %1, no further action needed', $state)
@@ -333,21 +348,16 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 return $result;
             }
 
-            // If payment status has already been processed, there is no further action
-            if ($state == 'processing' || $status == 'processing') {
-                $this->_logger->debug(
-                    '>>>>> PAYSTAND-FINISH: payment already processed, no further action needed'
-                );
-                $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
-                $result->setData(
-                    ['success_message' => __('payment already processed, no further action needed')]
-                );
-                return $result;
-            }
+            // If we're here, order is in pending (or another non-final state) and needs to be processed
+            $this->_logger->debug(
+                ">>>>> PAYSTAND-PROCESSING: Order is in state '{$state}', payment status is '{$psPaymentStatus}', proceeding to update..."
+            );
 
             $newStatus = $this->newOrderStatus($psPaymentStatus);
 
             if ($newStatus != '') {
+                $this->_logger->debug(">>>>> PAYSTAND-PROCESSING: Changing order state from '{$state}' to '{$newStatus}'");
+                
                 $state = $newStatus;
                 $status = $newStatus;
 
@@ -355,14 +365,25 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 $order->setState($state);
                 $order->setStatus($status);
                 $order->save();
+                
+                $this->_logger->debug(">>>>> PAYSTAND-PROCESSING: Order state set to '{$newStatus}' and saved immediately. Order ID: " . $order->getIncrementId());
+            } else {
+                $this->_logger->debug(">>>>> PAYSTAND-PROCESSING: newOrderStatus() returned empty for payment status '{$psPaymentStatus}'");
             }
 
-            // Only create transaction and invoice when the payment is on paid status to prevent multiple objects
+            // Only create transaction and invoice when the payment is on paid/posted status
             if ($psPaymentStatus == $updateOrderOn) {
+                $this->_logger->debug(">>>>> PAYSTAND-PROCESSING: Payment status matches configured updateOrderOn ('{$updateOrderOn}'), creating transaction and invoice...");
+                
                 // Create Transaction for the Order
                 $this->createTransaction($order, json_decode($body, true)['resource']);
+                
                 // Automatically invoice order
                 $this->createInvoice($order);
+                
+                $this->_logger->debug(">>>>> PAYSTAND-PROCESSING: Transaction and invoice created successfully for order " . $order->getIncrementId());
+            } else {
+                $this->_logger->debug(">>>>> PAYSTAND-PROCESSING: Payment status '{$psPaymentStatus}' does not match updateOrderOn '{$updateOrderOn}', skipping transaction/invoice creation");
             }
 
             // Finish and send back success response
@@ -620,6 +641,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
             );
         }
     }
+
 
     /**
      * Comprehensive method to find an order using multiple approaches

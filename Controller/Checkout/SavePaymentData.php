@@ -10,6 +10,8 @@ use PayStand\PayStandMagento\Helper\CustomerPayerId;
 use Magento\Quote\Api\CartRepositoryInterface;
 use Magento\Quote\Model\QuoteIdMaskFactory;
 use Magento\Framework\Exception\NoSuchEntityException;
+use Magento\Framework\App\Config\ScopeConfigInterface;
+use Magento\Store\Model\ScopeInterface;
 
 /**
  * SavePaymentData Controller
@@ -49,6 +51,14 @@ class SavePaymentData extends Action
     /** @var QuoteIdMaskFactory */
     protected $quoteIdMaskFactory;
 
+    /** @var ScopeConfigInterface */
+    protected $scopeConfig;
+
+    /**
+     * PayStand configuration path
+     */
+    const ENABLE_PAYSTAND_ADJUSTMENT = 'payment/paystandmagento/enable_paystand_adjustment';
+
     /**
      * @param Context $context
      * @param LoggerInterface $logger
@@ -56,6 +66,7 @@ class SavePaymentData extends Action
      * @param CustomerPayerId $customerPayerIdHelper
      * @param CartRepositoryInterface $cartRepository
      * @param QuoteIdMaskFactory $quoteIdMaskFactory
+     * @param ScopeConfigInterface $scopeConfig
      */
     public function __construct(
         Context $context,
@@ -63,13 +74,15 @@ class SavePaymentData extends Action
         JsonFactory $resultJsonFactory,
         CustomerPayerId $customerPayerIdHelper,
         CartRepositoryInterface $cartRepository,
-        QuoteIdMaskFactory $quoteIdMaskFactory
+        QuoteIdMaskFactory $quoteIdMaskFactory,
+        ScopeConfigInterface $scopeConfig
     ) {
         $this->logger = $logger;
         $this->resultJsonFactory = $resultJsonFactory;
         $this->customerPayerIdHelper = $customerPayerIdHelper;
         $this->cartRepository = $cartRepository;
         $this->quoteIdMaskFactory = $quoteIdMaskFactory;
+        $this->scopeConfig = $scopeConfig;
         parent::__construct($context);
     }
 
@@ -136,11 +149,18 @@ class SavePaymentData extends Action
             // 2) Load quote (use get() to support possibly inactive quotes after order placement)
             $quote = $this->cartRepository->get($realQuoteId);
 
-            // 3) Compute paystand_adjustment with enforced signs:
+            // 3) Check if paystand adjustment is enabled
+            $isAdjustmentEnabled = $this->scopeConfig->isSetFlag(
+                self::ENABLE_PAYSTAND_ADJUSTMENT,
+                ScopeInterface::SCOPE_STORE
+            );
+
+            // 4) Compute paystand_adjustment with enforced signs (only if enabled):
             //    - If payerDiscount != 0 -> NEGATIVE
             //    - Else if payerTotalFees != 0 -> POSITIVE
             $paystandAdjustment = 0.0;
 
+            if ($isAdjustmentEnabled) {
             if ($payerDiscount != 0.0) {
                 $paystandAdjustment = -abs($payerDiscount);
                 $this->logger->info('SAVEPAYMENTDATA >>>>>> Using payerDiscount as adjustment (negative)', [
@@ -155,19 +175,24 @@ class SavePaymentData extends Action
                     'payerTotalFees' => $payerTotalFees,
                     'stored_value'   => $paystandAdjustment
                 ]);
+                }
+            } else {
+                $this->logger->info('SAVEPAYMENTDATA >>>>>> Paystand adjustment is disabled, not storing adjustment');
             }
 
-            // 4) Persist only the adjustment on the quote; totals will be updated in the PayStand observer
+            // 5) Persist only the adjustment on the quote; totals will be updated in the PayStand observer
             $quote->setData('paystand_adjustment', $paystandAdjustment);
             $this->cartRepository->save($quote);
 
+            if ($isAdjustmentEnabled) {
             $this->logger->info('SAVEPAYMENTDATA >>>>>> Saved paystand_adjustment to quote', [
                 'quote_id'            => $realQuoteId,
                 'incoming_quote'      => $quoteIdIncoming,
                 'paystand_adjustment' => $paystandAdjustment
             ]);
+            }
 
-            // 5) Branch by guest vs. customer
+            // 6) Branch by guest vs. customer
             $isGuest = (int)$quote->getCustomerIsGuest() === 1;
 
             if ($isGuest) {
