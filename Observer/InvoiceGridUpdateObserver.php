@@ -7,6 +7,8 @@ namespace PayStand\PayStandMagento\Observer;
 use Magento\Framework\Event\ObserverInterface;
 use Psr\Log\LoggerInterface;
 use Magento\Framework\App\ResourceConnection;
+use Magento\Framework\App\Config\ScopeConfigInterface;
+use Magento\Store\Model\ScopeInterface;
 
 class InvoiceGridUpdateObserver implements ObserverInterface
 {
@@ -21,15 +23,28 @@ class InvoiceGridUpdateObserver implements ObserverInterface
     protected $_resourceConnection;
 
     /**
+     * @var ScopeConfigInterface
+     */
+    protected $scopeConfig;
+
+    /**
+     * PayStand configuration path
+     */
+    const ENABLE_PAYSTAND_ADJUSTMENT = 'payment/paystandmagento/enable_paystand_adjustment';
+
+    /**
      * @param LoggerInterface $logger
      * @param ResourceConnection $resourceConnection
+     * @param ScopeConfigInterface $scopeConfig
      */
     public function __construct(
         LoggerInterface $logger,
-        ResourceConnection $resourceConnection
+        ResourceConnection $resourceConnection,
+        ScopeConfigInterface $scopeConfig
     ) {
         $this->_logger = $logger;
         $this->_resourceConnection = $resourceConnection;
+        $this->scopeConfig = $scopeConfig;
     }
 
     /**
@@ -44,6 +59,16 @@ class InvoiceGridUpdateObserver implements ObserverInterface
         $invoice = $observer->getEvent()->getInvoice();
         
         if (!$invoice || !$invoice->getId()) {
+            return;
+        }
+
+        // Check if paystand adjustment is enabled
+        $isAdjustmentEnabled = $this->scopeConfig->isSetFlag(
+            self::ENABLE_PAYSTAND_ADJUSTMENT,
+            ScopeInterface::SCOPE_STORE
+        );
+        
+        if (!$isAdjustmentEnabled) {
             return;
         }
 

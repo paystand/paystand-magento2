@@ -40,6 +40,11 @@
                     <label>Use Sandbox</label>
                     <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
                 </field>
+                <field id="enable_paystand_adjustment" translate="label" type="select" sortOrder="9" showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Enable Paystand Adjustment</label>
+                    <comment>Enable or disable the Paystand adjustment feature (discounts and fees)</comment>
+                    <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                </field>
             </group>
         </section>
     </system>

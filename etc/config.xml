@@ -21,6 +21,7 @@
                 <!--<allowspecific>0</allowspecific>-->
                 <!--<currency>USD</currency>-->
                 <create_order_before>1</create_order_before>
+                <enable_paystand_adjustment>1</enable_paystand_adjustment>
                 <!--<date_delim>/</date_delim>-->
             </paystandmagento>
         </payment>

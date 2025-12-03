@@ -74,6 +74,7 @@ class AfterOrderPlaceObserver implements ObserverInterface
      * PayStand configuration paths
      */
     const UPDATE_ORDER_ON = 'payment/paystandmagento/update_order_on';
+    const ENABLE_PAYSTAND_ADJUSTMENT = 'payment/paystandmagento/enable_paystand_adjustment';
     const STORE_SCOPE = \Magento\Store\Model\ScopeInterface::SCOPE_STORE;
 
     /**
@@ -122,7 +123,19 @@ class AfterOrderPlaceObserver implements ObserverInterface
     {
         /** @var \Magento\Sales\Model\Order $order */
         $order = $observer->getEvent()->getOrder();
-        // Transfer paystand_adjustment from quote to order if present
+        
+        // Check if paystand adjustment is enabled
+        $isAdjustmentEnabled = $this->scopeConfig->isSetFlag(
+            self::ENABLE_PAYSTAND_ADJUSTMENT,
+            self::STORE_SCOPE
+        );
+        
+        if (!$isAdjustmentEnabled) {
+            $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER: Paystand adjustment is disabled, skipping adjustment processing");
+        }
+        
+        // Transfer paystand_adjustment from quote to order if present and enabled
+        if ($isAdjustmentEnabled) {
         try {
             $quoteId = $order->getQuoteId();
             if ($quoteId) {
@@ -203,8 +216,17 @@ class AfterOrderPlaceObserver implements ObserverInterface
             }
         } catch (\Exception $e) {
             $this->_logger->error(">>>>> PAYSTAND-ORDER-OBSERVER: Failed to transfer paystand_adjustment from quote: " . $e->getMessage());
+            }
         }
-        $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER-START: Observer triggered for order " . $order->getIncrementId());
+        $observerStartTime = microtime(true);
+        $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER-START: Observer triggered for order " . $order->getIncrementId() . " at " . date('Y-m-d H:i:s.u'));
+        
+        // Log initial order state for race condition diagnosis
+        $initialState = $order->getState();
+        $initialStatus = $order->getStatus();
+        $this->_logger->debug(
+            ">>>>> PAYSTAND-ORDER-OBSERVER-RACE-CONDITION: Initial order state: '{$initialState}', status: '{$initialStatus}'"
+        );
 
         $payment = $order->getPayment();
         $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER: Payment method is: " . $payment->getMethod());
@@ -213,8 +235,49 @@ class AfterOrderPlaceObserver implements ObserverInterface
             $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER: Payment method matches Paystand, continuing with processing");
 
             // Default state for new PayStand orders
+            // CRITICAL: Set to pending and save immediately to prevent race condition with webhook
+            // This must complete before webhook can process the order
+            $beforeSetStateTime = microtime(true);
             $order->setState('pending');
             $order->setStatus('pending');
+            $this->_logger->debug(
+                ">>>>> PAYSTAND-ORDER-OBSERVER-RACE-CONDITION: Setting order to PENDING state. " .
+                "Time since observer start: " . round(($beforeSetStateTime - $observerStartTime) * 1000, 2) . "ms"
+            );
+            
+            // Save order immediately to ensure state is persisted before webhook can process it
+            try {
+                $this->_orderRepository->save($order);
+                $saveTime = microtime(true);
+                $saveDuration = round(($saveTime - $beforeSetStateTime) * 1000, 2);
+                $totalDuration = round(($saveTime - $observerStartTime) * 1000, 2);
+                
+                // Verify the save was successful by reloading
+                $savedOrder = $this->_orderRepository->get($order->getId());
+                $savedState = $savedOrder->getState();
+                $savedStatus = $savedOrder->getStatus();
+                
+                $this->_logger->debug(
+                    ">>>>> PAYSTAND-ORDER-OBSERVER-RACE-CONDITION: Order state set to PENDING and saved immediately. " .
+                    "Order ID: " . $order->getIncrementId() . 
+                    ", Save duration: {$saveDuration}ms" .
+                    ", Total observer time: {$totalDuration}ms" .
+                    ", Verified state after save: '{$savedState}', status: '{$savedStatus}'"
+                );
+                
+                if ($savedState != 'pending' && $savedState != Order::STATE_PENDING) {
+                    $this->_logger->error(
+                        ">>>>> PAYSTAND-ORDER-OBSERVER-RACE-CONDITION-ERROR: " .
+                        "Order state verification failed! Expected 'pending', got '{$savedState}'"
+                    );
+                }
+            } catch (\Exception $e) {
+                $this->_logger->error(
+                    ">>>>> PAYSTAND-ORDER-OBSERVER-RACE-CONDITION-ERROR: " .
+                    "Failed to save order to pending state: " . $e->getMessage() . 
+                    ", Stack trace: " . $e->getTraceAsString()
+                );
+            }
 
             // Check if the quote has already received payment information via webhook
             $quoteId = $order->getQuoteId();
@@ -371,7 +434,13 @@ class AfterOrderPlaceObserver implements ObserverInterface
             $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER: Not a Paystand payment method, skipping");
         }
 
-        $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER-END: Finished processing for order " . $order->getIncrementId());
+        $observerEndTime = microtime(true);
+        $totalTime = round(($observerEndTime - $observerStartTime) * 1000, 2);
+        $this->_logger->debug(
+            ">>>>> PAYSTAND-ORDER-OBSERVER-END: Finished processing for order " . $order->getIncrementId() . 
+            " at " . date('Y-m-d H:i:s.u') . 
+            ", Total time: {$totalTime}ms"
+        );
     }
 
     /**
@@ -514,6 +583,8 @@ class AfterOrderPlaceObserver implements ObserverInterface
 
                 // Transfer paystand_adjustment from order to invoice if present
                 $paystandAdjustment = (float)$order->getData('paystand_adjustment');
+                
+                // If there's an existing adjustment (!=0), always transfer it to invoice
                 if ($paystandAdjustment !== 0.0) {
                     $invoice->setData('paystand_adjustment', $paystandAdjustment);
                     
@@ -536,6 +607,9 @@ class AfterOrderPlaceObserver implements ObserverInterface
                 $order->addStatusHistoryComment(__('Automatically INVOICED by Paystand'), false);
                 
                 // Update order totals to reflect the paystand_adjustment in invoice totals
+                $paystandAdjustment = (float)$order->getData('paystand_adjustment');
+                
+                // If there's an existing adjustment (!=0), always update order totals
                 if ($paystandAdjustment !== 0.0) {
                     $currentTotalInvoiced = (float)$order->getTotalInvoiced();
                     $currentBaseTotalInvoiced = (float)$order->getBaseTotalInvoiced();
