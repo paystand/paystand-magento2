@@ -45,6 +45,11 @@
                     <comment>Enable or disable the Paystand adjustment feature (discounts and fees)</comment>
                     <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
                 </field>
+                <field id="enable_event_tracking" translate="label" type="select" sortOrder="10" showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Enable Event Tracking</label>
+                    <comment>Enable or disable sending important plugin events. This feature is disabled by default.</comment>
+                    <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                </field>
             </group>
         </section>
     </system>

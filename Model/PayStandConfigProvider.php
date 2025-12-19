@@ -6,6 +6,7 @@ use Magento\Checkout\Model\ConfigProviderInterface;
 use \Magento\Framework\App\Config\ScopeConfigInterface as ScopeConfig;
 use Magento\Customer\Model\Session as CustomerSession;
 use Magento\Framework\HTTP\Client\Curl;
+use PayStand\PayStandMagento\Helper\EventMonitoring;
 
 class PayStandConfigProvider implements ConfigProviderInterface
 {
@@ -23,6 +24,11 @@ class PayStandConfigProvider implements ConfigProviderInterface
    * @var \Magento\Framework\HTTP\Client\Curl
    */
     protected $curl;
+
+  /**
+   * @var EventMonitoring
+   */
+    protected $eventMonitoring;
 
   /**
    * publishable key config path
@@ -69,15 +75,18 @@ class PayStandConfigProvider implements ConfigProviderInterface
    * @param ScopeConfig $scopeConfig
    * @param CustomerSession $customerSession
    * @param Curl $curl
+   * @param EventMonitoring $eventMonitoring
    */
     public function __construct(
         ScopeConfig $scopeConfig,
         CustomerSession $customerSession,
-        Curl $curl
+        Curl $curl,
+        EventMonitoring $eventMonitoring
     ) {
         $this->scopeConfig = $scopeConfig;
         $this->customerSession = $customerSession;
         $this->curl = $curl;
+        $this->eventMonitoring = $eventMonitoring;
     }
   /**
    * {@inheritdoc}
@@ -142,13 +151,16 @@ class PayStandConfigProvider implements ConfigProviderInterface
             $response = json_decode($this->curl->getBody());
 
             if (isset($response->access_token)) {
+                $this->eventMonitoring->logEvent('api.oauth.success');
                 return $response->access_token;
             }
         } catch (\Exception $e) {
             // Log error but don't break checkout process
+            $this->eventMonitoring->logEvent('api.oauth.failed');
             return null;
         }
 
+        $this->eventMonitoring->logEvent('api.oauth.failed');
         return null;
     }
 

@@ -8,6 +8,7 @@ use Magento\Quote\Api\CartRepositoryInterface;
 use \stdClass;
 use Magento\Sales\Model\Order\Payment\Transaction\BuilderInterface as BuilderInterface;
 use Magento\Sales\Model\Order;
+use PayStand\PayStandMagento\Helper\EventMonitoring;
 
 /**
  * Webhook Receiver Controller for Paystand
@@ -81,6 +82,9 @@ class Paystand extends \Magento\Framework\App\Action\Action
     /** @var CartRepositoryInterface */
     private $cartRepository;
 
+    /** @var EventMonitoring */
+    protected $eventMonitoring;
+
     /**
      * @param \Magento\Framework\App\Action\Context $context ,
      * @param \Psr\Log\LoggerInterface $logger
@@ -99,7 +103,8 @@ class Paystand extends \Magento\Framework\App\Action\Action
         \Magento\Framework\DB\TransactionFactory $transactionFactory,
         \Magento\Sales\Api\InvoiceRepositoryInterface $invoiceRepository,
         \Magento\Sales\Api\OrderRepositoryInterface $orderRepository,
-        CartRepositoryInterface $cartRepository
+        CartRepositoryInterface $cartRepository,
+        EventMonitoring $eventMonitoring
     ) {
         $this->_logger = $logger;
         $this->_request = $request;
@@ -114,6 +119,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
         $this->_invoiceRepository = $invoiceRepository;
         $this->_orderRepository = $orderRepository;
         $this->cartRepository = $cartRepository;
+        $this->eventMonitoring = $eventMonitoring;
         $this->updateOrderOn = $this->scopeConfig->getValue(self::UPDATE_ORDER_ON, self::STORE_SCOPE);
         parent::__construct($context);
     }
@@ -126,6 +132,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
         // Start and Initialize http response
         $result = $this->_jsonResultFactory->create();
         $this->_logger->debug('>>>>> PAYSTAND-START: paystandmagento/webhook/paystand endpoint was hit');
+        $this->eventMonitoring->logEvent('webhook.received');
 
         // Get body content from request
         $body = (!empty($this->_request->getContent()))
@@ -177,6 +184,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
         // Verify received Event is valid with Paystand
         if (!$this->verifyPaystandEvent($access_token, $json)) {
           $this->_logger->error('>>>>> PAYSTAND-ERROR: Event verification failed');
+          $this->eventMonitoring->logEvent('webhook.verification.failed');
           $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_BAD_REQUEST);
           $result->setData(['error_message' => __('Event verification failed')]);
           return $result;
@@ -211,11 +219,13 @@ class Paystand extends \Magento\Framework\App\Action\Action
             $quote = $this->cartRepository->get((int)$id);
         } catch (\Magento\Framework\Exception\NoSuchEntityException $e) {
             $this->_logger->error('>>>>> PAYSTAND-ERROR: Quote not found for ID: ' . $id);
+            $this->eventMonitoring->logEvent('webhook.quote_not_found');
             $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_BAD_REQUEST);
             $result->setData(['error_message' => __('Quote not found')]);
             return $result;
         } catch (\Magento\Framework\Exception\StateException $e) {
             $this->_logger->error('>>>>> PAYSTAND-ERROR: Quote in invalid state for ID: ' . $id . ' - ' . $e->getMessage());
+            $this->eventMonitoring->logEvent('webhook.quote_not_found');
             $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_BAD_REQUEST);
             $result->setData(['error_message' => __('Quote cannot be loaded')]);
             return $result;
@@ -272,6 +282,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
 
             $this->_logger->debug('>>>>> PAYSTAND-WEBHOOK: Handling payment for quote without complete order after ' . 
                 $maxRetries . ' retry attempts, quoteId = ' . $quote->getId());
+            $this->eventMonitoring->logEvent('webhook.order_not_found');
 
             // Get payment status from the webhook
             $psPaymentStatus = $json->resource->status;
@@ -367,6 +378,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 $order->save();
                 
                 $this->_logger->debug(">>>>> PAYSTAND-PROCESSING: Order state set to '{$newStatus}' and saved immediately. Order ID: " . $order->getIncrementId());
+                $this->eventMonitoring->logEvent('order.updated');
             } else {
                 $this->_logger->debug(">>>>> PAYSTAND-PROCESSING: newOrderStatus() returned empty for payment status '{$psPaymentStatus}'");
             }
@@ -392,6 +404,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
                     . '", new order state: "' . $state
                     . '", new order status: "' . $status . '"'
             );
+            $this->eventMonitoring->logEvent('webhook.processing.completed');
             $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
             $result->setData(
                 [
@@ -482,9 +495,11 @@ class Paystand extends \Magento\Framework\App\Action\Action
         );
         $authResponse = $this->runCurl($authCurl, $oauthUrl);
         if ($authResponse == null) {
+            $this->eventMonitoring->logEvent('api.oauth.failed');
             return null;
         }
         $this->_logger->debug('>>>>> PAYSTAND-FETCH-ACCESS-TOKEN-SUCCESS');
+        $this->eventMonitoring->logEvent('api.oauth.success');
         return $authResponse->access_token;
     }
 
@@ -579,6 +594,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
             return  $transactionId;
         } catch (\Magento\Framework\Exception\AlreadyExistsException $e) {
             $this->_logger->debug('>>>>> PAYSTAND-EXCEPTION: ' . $e);
+            $this->eventMonitoring->logEvent('transaction.creation.failed');
         }
     }
 
@@ -636,6 +652,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 return $invoice;
             }
         } catch (\Exception $e) {
+            $this->eventMonitoring->logEvent('invoice.creation.failed');
             throw new \Magento\Framework\Exception\LocalizedException(
                 __($e->getMessage())
             );

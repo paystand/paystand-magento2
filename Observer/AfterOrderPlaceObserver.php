@@ -17,6 +17,7 @@ use Magento\Sales\Model\ResourceModel\Order\Invoice\CollectionFactory;
 use Magento\Quote\Model\QuoteFactory;
 use Magento\Quote\Api\CartRepositoryInterface;
 use Magento\Sales\Api\OrderRepositoryInterface;
+use PayStand\PayStandMagento\Helper\EventMonitoring;
 
 class AfterOrderPlaceObserver implements ObserverInterface
 {
@@ -71,6 +72,11 @@ class AfterOrderPlaceObserver implements ObserverInterface
     protected $_orderRepository;
 
     /**
+     * @var EventMonitoring
+     */
+    protected $eventMonitoring;
+
+    /**
      * PayStand configuration paths
      */
     const UPDATE_ORDER_ON = 'payment/paystandmagento/update_order_on';
@@ -88,6 +94,7 @@ class AfterOrderPlaceObserver implements ObserverInterface
      * @param QuoteFactory $quoteFactory
      * @param CartRepositoryInterface $cartRepository
      * @param OrderRepositoryInterface $orderRepository
+     * @param EventMonitoring $eventMonitoring
      */
     public function __construct(
         LoggerInterface $logger,
@@ -99,7 +106,8 @@ class AfterOrderPlaceObserver implements ObserverInterface
         CollectionFactory $invoiceCollectionFactory,
         QuoteFactory $quoteFactory,
         CartRepositoryInterface $cartRepository,
-        OrderRepositoryInterface $orderRepository
+        OrderRepositoryInterface $orderRepository,
+        EventMonitoring $eventMonitoring
     ) {
         $this->_logger = $logger;
         $this->scopeConfig = $scopeConfig;
@@ -111,6 +119,7 @@ class AfterOrderPlaceObserver implements ObserverInterface
         $this->_quoteFactory = $quoteFactory;
         $this->_cartRepository = $cartRepository;
         $this->_orderRepository = $orderRepository;
+        $this->eventMonitoring = $eventMonitoring;
     }
 
     /**
@@ -123,6 +132,8 @@ class AfterOrderPlaceObserver implements ObserverInterface
     {
         /** @var \Magento\Sales\Model\Order $order */
         $order = $observer->getEvent()->getOrder();
+        
+        $this->eventMonitoring->logEvent('order.placed');
         
         // Check if paystand adjustment is enabled
         $isAdjustmentEnabled = $this->scopeConfig->isSetFlag(
@@ -270,6 +281,7 @@ class AfterOrderPlaceObserver implements ObserverInterface
                         ">>>>> PAYSTAND-ORDER-OBSERVER-RACE-CONDITION-ERROR: " .
                         "Order state verification failed! Expected 'pending', got '{$savedState}'"
                     );
+                    $this->eventMonitoring->logEvent('order.race_condition_detected');
                 }
             } catch (\Exception $e) {
                 $this->_logger->error(
@@ -277,6 +289,7 @@ class AfterOrderPlaceObserver implements ObserverInterface
                     "Failed to save order to pending state: " . $e->getMessage() . 
                     ", Stack trace: " . $e->getTraceAsString()
                 );
+                $this->eventMonitoring->logEvent('order.race_condition_detected');
             }
 
             // Check if the quote has already received payment information via webhook
@@ -394,9 +407,11 @@ class AfterOrderPlaceObserver implements ObserverInterface
                         $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER: Invoice created with ID: " . $invoice->getEntityId());
                                                         } else {
                                                             $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER: Invoice creation failed");
+                                                            $this->eventMonitoring->logEvent('invoice.creation.failed');
                                                         }
                                                     } else {
                                                         $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER: Transaction creation failed");
+                                                        $this->eventMonitoring->logEvent('transaction.creation.failed');
                                                     }
                                                 } else {
                                                     $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER: Payment data could not be decoded from JSON");
@@ -656,6 +671,7 @@ class AfterOrderPlaceObserver implements ObserverInterface
             }
         } catch (\Exception $e) {
             $this->_logger->error('>>>>> PAYSTAND-EXCEPTION: ' . $e->getMessage());
+            $this->eventMonitoring->logEvent('invoice.creation.failed');
             return null;
         }
         return null;

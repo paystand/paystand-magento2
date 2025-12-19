@@ -12,6 +12,7 @@ use Magento\Quote\Model\QuoteIdMaskFactory;
 use Magento\Framework\Exception\NoSuchEntityException;
 use Magento\Framework\App\Config\ScopeConfigInterface;
 use Magento\Store\Model\ScopeInterface;
+use PayStand\PayStandMagento\Helper\EventMonitoring;
 
 /**
  * SavePaymentData Controller
@@ -54,6 +55,9 @@ class SavePaymentData extends Action
     /** @var ScopeConfigInterface */
     protected $scopeConfig;
 
+    /** @var EventMonitoring */
+    protected $eventMonitoring;
+
     /**
      * PayStand configuration path
      */
@@ -67,6 +71,7 @@ class SavePaymentData extends Action
      * @param CartRepositoryInterface $cartRepository
      * @param QuoteIdMaskFactory $quoteIdMaskFactory
      * @param ScopeConfigInterface $scopeConfig
+     * @param EventMonitoring $eventMonitoring
      */
     public function __construct(
         Context $context,
@@ -75,7 +80,8 @@ class SavePaymentData extends Action
         CustomerPayerId $customerPayerIdHelper,
         CartRepositoryInterface $cartRepository,
         QuoteIdMaskFactory $quoteIdMaskFactory,
-        ScopeConfigInterface $scopeConfig
+        ScopeConfigInterface $scopeConfig,
+        EventMonitoring $eventMonitoring
     ) {
         $this->logger = $logger;
         $this->resultJsonFactory = $resultJsonFactory;
@@ -83,6 +89,7 @@ class SavePaymentData extends Action
         $this->cartRepository = $cartRepository;
         $this->quoteIdMaskFactory = $quoteIdMaskFactory;
         $this->scopeConfig = $scopeConfig;
+        $this->eventMonitoring = $eventMonitoring;
         parent::__construct($context);
     }
 
@@ -192,6 +199,8 @@ class SavePaymentData extends Action
             ]);
             }
 
+            $this->eventMonitoring->logEvent('checkout.payment_data.saved');
+
             // 6) Branch by guest vs. customer
             $isGuest = (int)$quote->getCustomerIsGuest() === 1;
 
@@ -249,6 +258,7 @@ class SavePaymentData extends Action
                 'SAVEPAYMENTDATA >>>>>> Quote not found / masked id invalid: ' . $e->getMessage(),
                 ['incoming_quote' => $quoteIdIncoming]
             );
+            $this->eventMonitoring->logEvent('checkout.payment_data.failed');
             // Return success=true to avoid blocking checkout flow, but include error
             return $result->setData(['success' => true, 'error' => 'Could not load quote']);
         } catch (\Exception $e) {
@@ -256,6 +266,7 @@ class SavePaymentData extends Action
                 'SAVEPAYMENTDATA >>>>>> Error loading quote: ' . $e->getMessage(),
                 ['incoming_quote' => $quoteIdIncoming]
             );
+            $this->eventMonitoring->logEvent('checkout.payment_data.failed');
             return $result->setData(['success' => true, 'error' => 'Could not load quote']);
         }
     }
