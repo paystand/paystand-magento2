@@ -28,7 +28,8 @@ class Directpost extends \Magento\Payment\Model\Method\AbstractMethod
      */
     public function isAvailable(?\Magento\Quote\Api\Data\CartInterface $quote = null): bool
     {
-        return parent::isAvailable($quote)
-        && $this->getConfigData('publishable_key', $quote ? $quote->getStoreId() : null);
+        // For now, just check if the method is enabled
+        // Later we can add the publishable_key requirement back
+        return parent::isAvailable($quote);
     }
 }
