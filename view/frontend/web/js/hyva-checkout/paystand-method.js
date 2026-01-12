@@ -320,13 +320,6 @@
                 return;
             }
             
-            // Log configuration for debugging
-            console.log('========================================');
-            console.log('PAYSTAND MODAL CONFIGURATION (HYVÄ)');
-            console.log('========================================');
-            console.log(JSON.stringify(config, null, 2));
-            console.log('========================================');
-            
             // Create container
             let container = document.getElementById('ps_checkout');
             if (!container) {
@@ -376,7 +369,6 @@
                 clearInterval(countdownInterval);
                 button.textContent = 'Pay with Paystand';
                 button.disabled = false;
-                console.log('[Paystand] Button enabled - SDK ready');
             }
         }, 1000);
         
@@ -403,12 +395,12 @@
             
             // Add logo to label
             const label = radioInput.nextElementSibling;
-            if (label && !label.querySelector('.paystand-logo')) {
-                const logo = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-                logo.setAttribute('viewBox', '0 0 100 20');
-                logo.setAttribute('class', 'paystand-logo');
-                logo.style.cssText = 'height: 18px; width: auto; margin-right: 8px;';
-                logo.innerHTML = '<text x="0" y="15" font-family="Arial,sans-serif" font-size="16" font-weight="bold" fill="#00ACEE">Pay</text><text x="28" y="15" font-family="Arial,sans-serif" font-size="16" font-weight="bold" fill="#1a1a2e">Stand</text>';
+            if (label && !label.querySelector('.paystand-logo') && window.paystandConfig.logoUrl) {
+                const logo = document.createElement('img');
+                logo.src = window.paystandConfig.logoUrl;
+                logo.alt = 'PayStand';
+                logo.className = 'paystand-logo';
+                logo.style.cssText = 'height: 20px;';
                 label.insertBefore(logo, label.firstChild);
             }
             

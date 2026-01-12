@@ -19,10 +19,7 @@ $logoUrl = $block->getViewFileUrl('PayStand_PayStandMagento/images/logo_paystand
                id="payment_method_<?= $escaper->escapeHtmlAttr($methodCode) ?>"
                value="<?= $escaper->escapeHtmlAttr($methodCode) ?>" />
         <label for="payment_method_<?= $escaper->escapeHtmlAttr($methodCode) ?>" class="label flex items-center ml-2 cursor-pointer">
-            <svg viewBox="0 0 100 20" style="height: 18px; width: auto; margin-right: 8px;">
-                <text x="0" y="15" font-family="Arial,sans-serif" font-size="16" font-weight="bold" fill="#00ACEE">Pay</text>
-                <text x="28" y="15" font-family="Arial,sans-serif" font-size="16" font-weight="bold" fill="#1a1a2e">Stand</text>
-            </svg>
+            <img src="<?= $escaper->escapeUrl($logoUrl) ?>" alt="PayStand" style="height: 20px;"/>
         </label>
     </div>
     <div class="payment-method-content hidden">
