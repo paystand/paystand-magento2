@@ -393,15 +393,18 @@
             const radioInput = document.querySelector('input[value="paystandmagento"]');
             if (!radioInput) return;
             
-            // Add logo to label
+            // Add logo to label and remove text
             const label = radioInput.nextElementSibling;
             if (label && !label.querySelector('.paystand-logo') && window.paystandConfig.logoUrl) {
+                // Clear existing text content (theme adds "Paystand" text)
+                label.textContent = '';
+                
                 const logo = document.createElement('img');
                 logo.src = window.paystandConfig.logoUrl;
                 logo.alt = 'PayStand';
                 logo.className = 'paystand-logo';
                 logo.style.cssText = 'height: 20px;';
-                label.insertBefore(logo, label.firstChild);
+                label.appendChild(logo);
             }
             
             // Add button to container
