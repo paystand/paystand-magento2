@@ -93,6 +93,7 @@ $config['environment'] = $envConfig['env_param'];
 $config['domain'] = $envConfig['domain'];
 $config['baseUrl'] = 'https://' . $envConfig['api_domain'] . '/v3';
 $config['sdkUrl'] = $paystandSdkUrl;
+$config['logoUrl'] = $block->getViewFileUrl('PayStand_PayStandMagento::images/logo_paystand_small.png');
 
 // Encode config as JSON for injection into JavaScript
 $configJson = json_encode($config, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP);
