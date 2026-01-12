@@ -345,14 +345,14 @@
     }
     
     /**
-     * Create "Pay with Paystand" button with loading indicator
+     * Create "Pay with Paystand" button with Tailwind classes - compact and elegant with loading state
      */
     function createPaystandButton() {
         if (paystandButton) return paystandButton;
         
         const buttonContainer = document.createElement('div');
-        buttonContainer.className = 'paystand-button-container';
-        buttonContainer.style.cssText = 'margin-top: 1rem; padding: 0 1rem 1rem 1rem;';
+        // Tailwind classes for centering - compact spacing
+        buttonContainer.className = 'paystand-button-container flex flex-col items-center w-full mt-3 mb-2';
         
         // Create ps_checkout container (like Luma)
         const psCheckoutDiv = document.createElement('div');
@@ -361,27 +361,14 @@
         
         const button = document.createElement('button');
         button.type = 'button';
-        button.className = 'paystand-pay-button';
-        button.style.cssText = `
-            background-color: rgb(0, 172, 238);
-            color: white;
-            padding: 12px 24px;
-            border-radius: 5px;
-            border: none;
-            cursor: pointer;
-            font-size: 16px;
-            font-weight: 500;
-            width: 100%;
-            max-width: 300px;
-            transition: all 0.2s ease;
-            opacity: 0.6;
-            cursor: not-allowed;
-        `;
+        // Compact button styling with PayStand brand blue (#00ACEE)
+        button.className = 'paystand-pay-button text-white text-sm py-2 px-4 rounded-sm font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-90';
+        button.style.backgroundColor = '#00ACEE';
         
-        // Progress bar (like Luma)
+        // Progress bar (like Luma) - with Tailwind
         const progressBar = document.createElement('p');
         progressBar.id = 'paystand-progressBar';
-        progressBar.style.cssText = 'font-size: 14px; color: #666; margin-top: 8px;';
+        progressBar.className = 'text-sm text-gray-600 mt-2';
         
         let timeLeft = 5;
         button.textContent = `Pay with Paystand`;
@@ -397,28 +384,13 @@
                 clearInterval(countdownInterval);
                 progressBar.style.display = 'none';
                 button.disabled = false;
-                button.style.opacity = '1';
-                button.style.cursor = 'pointer';
             }
         }, 1000);
-        
-        button.addEventListener('mouseenter', function() {
-            if (!this.disabled) {
-                this.style.backgroundColor = 'rgb(0, 150, 210)';
-            }
-        });
-        button.addEventListener('mouseleave', function() {
-            if (!this.disabled) {
-                this.style.backgroundColor = 'rgb(0, 172, 238)';
-            }
-        });
         
         button.addEventListener('click', function() {
             if (!this.disabled) {
                 // Show loading state
                 button.disabled = true;
-                button.style.opacity = '0.6';
-                button.style.cursor = 'not-allowed';
                 button.innerHTML = `
                     <span style="display: inline-flex; align-items: center; gap: 8px;">
                         <svg style="animation: spin 1s linear infinite; width: 16px; height: 16px;" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -447,8 +419,6 @@
                     // Reset button state after modal opens or fails
                     setTimeout(() => {
                         button.disabled = false;
-                        button.style.opacity = '1';
-                        button.style.cursor = 'pointer';
                         button.textContent = 'Pay with Paystand';
                     }, 1000);
                 });
@@ -466,32 +436,28 @@
      * Initialize payment method (called when method is selected)
      */
     function initialize() {
-        // Wait for Alpine.js to render the DOM
         setTimeout(() => {
-            // Try multiple selectors to find the container
-            let paymentMethodContainer = document.querySelector('[data-payment-method="paystandmagento"]');
+            const radioInput = document.querySelector('input[value="paystandmagento"]');
+            if (!radioInput) return;
             
-            if (!paymentMethodContainer) {
-                paymentMethodContainer = document.querySelector('[data-method="paystandmagento"]');
+            // Add logo to label and remove text
+            const label = radioInput.nextElementSibling;
+            if (label && !label.querySelector('.paystand-logo') && window.paystandConfig.logoUrl) {
+                // Clear existing text content (theme adds "Paystand" text)
+                label.textContent = '';
+                
+                const logo = document.createElement('img');
+                logo.src = window.paystandConfig.logoUrl;
+                logo.alt = 'PayStand';
+                logo.className = 'paystand-logo';
+                logo.style.cssText = 'height: 20px;';
+                label.appendChild(logo);
             }
             
-            if (!paymentMethodContainer) {
-                paymentMethodContainer = document.querySelector('#payment-method-option-paystandmagento');
-            }
-            
-            if (!paymentMethodContainer) {
-                // Find by the radio input and get its parent
-                const radioInput = document.querySelector('input[value="paystandmagento"]');
-                if (radioInput) {
-                    paymentMethodContainer = radioInput.closest('div[wire\\:key], div[id*="paystand"], label').parentElement;
-                }
-            }
-            
-            if (paymentMethodContainer) {
-                if (!paymentMethodContainer.querySelector('.paystand-button-container')) {
-                    const button = createPaystandButton();
-                    paymentMethodContainer.appendChild(button);
-                }
+            // Add button to container
+            const container = radioInput.closest('div[class*="border"]') || radioInput.parentElement;
+            if (container && !container.querySelector('.paystand-button-container')) {
+                container.appendChild(createPaystandButton());
             }
         }, 500);
     }
