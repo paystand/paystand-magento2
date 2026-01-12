@@ -21,15 +21,14 @@ class Directpost extends \Magento\Payment\Model\Method\AbstractMethod
     protected $_isOffline = false;
 
     /**
-     * Check whether there are CC types set in configuration
+     * Check whether payment method is available
      *
      * @param \Magento\Quote\Api\Data\CartInterface|null $quote
      * @return bool
      */
     public function isAvailable(?\Magento\Quote\Api\Data\CartInterface $quote = null): bool
     {
-        // For now, just check if the method is enabled
-        // Later we can add the publishable_key requirement back
-        return parent::isAvailable($quote);
+        return parent::isAvailable($quote)
+            && $this->getConfigData('publishable_key', $quote ? $quote->getStoreId() : null);
     }
 }
