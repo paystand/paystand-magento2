@@ -34,27 +34,56 @@
     const apiDomain = useSandbox ? 'api.paystand.biz' : 'api.paystand.com';
     
     /**
-     * Get quote data from checkout
+     * Get quote data from server endpoint (like KnockoutJS observables in Luma)
      */
-    function getQuoteData() {
-        if (window.checkoutConfig && window.checkoutConfig.totalsData) {
-            const totalsData = window.checkoutConfig.totalsData;
+    async function getQuoteData() {
+        try {
+            // Fetch quote data from server endpoint
+            const response = await fetch('/paystandmagento/checkout/getquotedata', {
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest'
+                }
+            });
             
-            return {
-                totals: totalsData,
-                quoteId: window.checkoutConfig.quoteData?.entity_id || null,
-                grandTotal: totalsData.grand_total || 0,
-                currency: totalsData.quote_currency_code || 'USD'
-            };
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            
+            const result = await response.json();
+            
+            if (result.success && result.quote) {
+                return {
+                    totals: result.quote.totals || {},
+                    quoteId: result.quote.id || null,
+                    grandTotal: result.quote.grand_total || 0,
+                    currency: result.quote.currency_code || 'USD'
+                };
+            }
+            
+        } catch (error) {
+            console.error('[Paystand] Error fetching quote data:', error);
         }
         
         return { totals: {}, quoteId: null, grandTotal: 0, currency: 'USD' };
     }
     
     /**
-     * Get billing address from checkout
+     * Get billing address from Hyvä reactive stores
      */
     function getBillingAddress() {
+        // Try to get from Alpine store first (reactive data)
+        if (typeof Alpine !== 'undefined' && Alpine.store('checkout')) {
+            const checkoutStore = Alpine.store('checkout');
+            const billing = checkoutStore.billingAddress || {};
+            
+            if (billing && Object.keys(billing).length > 0) {
+                return billing;
+            }
+        }
+        
+        // Fallback to window.checkoutConfig
         if (window.checkoutConfig && window.checkoutConfig.shippingAddressFromData) {
             return window.checkoutConfig.shippingAddressFromData;
         }
@@ -63,9 +92,31 @@
     }
     
     /**
-     * Get customer data
+     * Get customer data from Hyvä reactive stores
      */
     function getCustomerData() {
+        // Try to get from Alpine store first (reactive data)
+        if (typeof Alpine !== 'undefined' && Alpine.store('customer')) {
+            const customerStore = Alpine.store('customer');
+            const isLoggedIn = customerStore.isLoggedIn || false;
+            
+            let payerId = null;
+            if (isLoggedIn && customerStore.custom_attributes) {
+                const payerIdAttr = customerStore.custom_attributes.paystand_payer_id;
+                if (payerIdAttr && payerIdAttr.value) {
+                    payerId = payerIdAttr.value;
+                }
+            }
+            
+            return {
+                isLoggedIn: isLoggedIn,
+                email: customerStore.email || null,
+                id: customerStore.id || null,
+                payerId: payerId
+            };
+        }
+        
+        // Fallback to window.checkoutConfig
         const isLoggedIn = window.checkoutConfig?.isCustomerLoggedIn || false;
         const customerData = window.checkoutConfig?.customerData || {};
         
@@ -88,10 +139,31 @@
     /**
      * Build Paystand modal configuration
      */
-    function buildPaystandConfig() {
-        const quote = getQuoteData();
-        const billing = getBillingAddress();
-        const customer = getCustomerData();
+    async function buildPaystandConfig() {
+        // Fetch all data from server
+        const serverData = await fetch('/paystandmagento/checkout/getquotedata', {
+            method: 'GET',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+        }).then(r => r.json());
+        
+        if (!serverData.success) {
+            console.error('[Paystand] Error getting server data');
+            return null;
+        }
+        
+        // Extract data from server response
+        const quote = {
+            totals: serverData.quote.totals || {},
+            quoteId: serverData.quote.id || null,
+            grandTotal: serverData.quote.grand_total || 0,
+            currency: serverData.quote.currency_code || 'USD'
+        };
+        
+        const billing = serverData.billing || {};
+        const customer = serverData.customer || { isLoggedIn: false, email: null, id: null, payerId: null };
         
         const payerEmail = customer.isLoggedIn ? customer.email : (billing.email || '');
         const payerName = (billing.firstname || '') + ' ' + (billing.lastname || '');
@@ -167,13 +239,86 @@
     }
     
     /**
+     * Initialize Paystand checkout (following Luma's exact pattern)
+     */
+    function initCheckout(config) {
+        // If checkout is ready but container doesn't exist, create it
+        if (!window.psCheckout.container) {
+            window.psCheckout = window.psCheckout.initScript(config);
+            window.psCheckout.config = config;
+            window.psCheckout.savedConfig = config;
+            window.psCheckout.reboot(config);
+        }
+        
+        var intervalId = setInterval(function () {
+            var container = document.getElementById("ps_checkout");
+            var psReady = (typeof window.psCheckout !== 'undefined' && window.psCheckout.script);
+            
+            if (window.psCheckout && !window.psCheckout.script && container) {
+                window.psCheckout.script = container;
+                window.psCheckout.config = config;
+            }
+            
+            if (container && psReady) {
+                clearInterval(intervalId);
+                window.psCheckout.savedConfig = Object.assign({}, config, window.psCheckout.savedConfig);
+                window.psCheckout = window.psCheckout.runCheckout(config);
+                return;
+            }
+        }, 500);
+    }
+    
+    /**
+     * Register onComplete handler (following Luma's exact pattern)
+     */
+    function onCompleteCheckout() {
+        window.psCheckout.onComplete(async function(paymentData) {
+            const response = {
+                payerId: paymentData.response.data.payerId,
+                quote: paymentData.response.data.meta.quote,
+                payerDiscount: paymentData.response.data.feeSplit.payerDiscount,
+                payerTotalFees: paymentData.response.data.feeSplit.payerTotalFees,
+                initPayer: paymentData.response.data.meta.initPayer
+            };
+            
+            try {
+                const fetchResponse = await fetch('/paystandmagento/checkout/savepaymentdata', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(response)
+                });
+                
+                if (!fetchResponse.ok) {
+                    throw new Error(`HTTP error! status: ${fetchResponse.status}`);
+                }
+                
+                await fetchResponse.json();
+                
+                // Trigger order placement
+                if (typeof hyvaCheckout !== 'undefined' && hyvaCheckout.checkout) {
+                    hyvaCheckout.checkout.placeOrder();
+                }
+                
+            } catch (error) {
+                console.error('[Paystand] Error saving payment data:', error);
+            }
+        });
+    }
+    
+    /**
      * Open Paystand modal
      */
     async function openPaystandModal() {
         try {
             await waitForPaystandSDK();
             
-            const config = buildPaystandConfig();
+            const config = await buildPaystandConfig();
+            
+            if (!config) {
+                console.error('[Paystand] Failed to build configuration');
+                alert('Error opening Paystand checkout. Please try again.');
+                return;
+            }
             
             // Log configuration for debugging
             console.log('========================================');
@@ -190,62 +335,11 @@
                 document.body.appendChild(container);
             }
             
-            // Initialize Paystand checkout
-            if (!window.psCheckout.container) {
-                window.psCheckout = window.psCheckout.initScript(config);
-                window.psCheckout.config = config;
-                window.psCheckout.savedConfig = config;
-                window.psCheckout.reboot(config);
-            }
+            // Register onComplete handler FIRST (before initCheckout)
+            onCompleteCheckout();
             
-            // Wait for container and run checkout
-            const intervalId = setInterval(function() {
-                const psReady = (typeof window.psCheckout !== 'undefined' && window.psCheckout.script);
-                
-                if (window.psCheckout && !window.psCheckout.script && container) {
-                    window.psCheckout.script = container;
-                    window.psCheckout.config = config;
-                }
-                
-                if (container && psReady) {
-                    clearInterval(intervalId);
-                    window.psCheckout.savedConfig = Object.assign({}, config, window.psCheckout.savedConfig);
-                    window.psCheckout = window.psCheckout.runCheckout(config);
-                }
-            }, 500);
-            
-            // Handle payment completion
-            window.psCheckout.onComplete(async function(paymentData) {
-                const response = {
-                    payerId: paymentData.response.data.payerId,
-                    quote: paymentData.response.data.meta.quote,
-                    payerDiscount: paymentData.response.data.feeSplit.payerDiscount,
-                    payerTotalFees: paymentData.response.data.feeSplit.payerTotalFees,
-                    initPayer: paymentData.response.data.meta.initPayer
-                };
-                
-                try {
-                    const fetchResponse = await fetch('/paystandmagento/checkout/savepaymentdata', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(response)
-                    });
-                    
-                    if (!fetchResponse.ok) {
-                        throw new Error(`HTTP error! status: ${fetchResponse.status}`);
-                    }
-                    
-                    await fetchResponse.json();
-                    
-                    // Trigger order placement
-                    if (typeof hyvaCheckout !== 'undefined' && hyvaCheckout.checkout) {
-                        hyvaCheckout.checkout.placeOrder();
-                    }
-                    
-                } catch (error) {
-                    console.error('[Paystand] Error saving payment data:', error);
-                }
-            });
+            // Then initialize checkout (this will call runCheckout)
+            initCheckout(config);
             
         } catch (error) {
             console.error('[Paystand] Error initializing checkout:', error);
@@ -265,7 +359,6 @@
         
         const button = document.createElement('button');
         button.type = 'button';
-        button.textContent = 'Pay with Paystand';
         button.className = 'paystand-pay-button';
         button.style.cssText = `
             background-color: rgb(0, 172, 238);
@@ -279,16 +372,50 @@
             width: 100%;
             max-width: 300px;
             transition: background-color 0.2s ease;
+            opacity: 0.6;
+            cursor: not-allowed;
         `;
         
+        // Countdown timer element
+        const countdown = document.createElement('span');
+        countdown.className = 'paystand-countdown';
+        countdown.style.cssText = 'display: block; font-size: 12px; margin-top: 4px;';
+        
+        let timeLeft = 5;
+        button.textContent = `Pay with Paystand (${timeLeft}s)`;
+        button.disabled = true;
+        
+        // Countdown interval
+        const countdownInterval = setInterval(() => {
+            timeLeft--;
+            if (timeLeft > 0) {
+                button.textContent = `Pay with Paystand (${timeLeft}s)`;
+            } else {
+                clearInterval(countdownInterval);
+                button.textContent = 'Pay with Paystand';
+                button.disabled = false;
+                button.style.opacity = '1';
+                button.style.cursor = 'pointer';
+                console.log('[Paystand] Button enabled - SDK ready');
+            }
+        }, 1000);
+        
         button.addEventListener('mouseenter', function() {
-            this.style.backgroundColor = 'rgb(0, 150, 210)';
+            if (!this.disabled) {
+                this.style.backgroundColor = 'rgb(0, 150, 210)';
+            }
         });
         button.addEventListener('mouseleave', function() {
-            this.style.backgroundColor = 'rgb(0, 172, 238)';
+            if (!this.disabled) {
+                this.style.backgroundColor = 'rgb(0, 172, 238)';
+            }
         });
         
-        button.addEventListener('click', openPaystandModal);
+        button.addEventListener('click', function() {
+            if (!this.disabled) {
+                openPaystandModal();
+            }
+        });
         
         buttonContainer.appendChild(button);
         paystandButton = buttonContainer;
