@@ -17,7 +17,6 @@
         try {
             window.paystandConfig = JSON.parse(scriptTag.dataset.paystandConfig);
         } catch (e) {
-            console.error('[Paystand] Error parsing config:', e);
             window.paystandConfig = {};
         }
     } else {
@@ -63,7 +62,7 @@
             }
             
         } catch (error) {
-            console.error('[Paystand] Error fetching quote data:', error);
+            // Silent error handling
         }
         
         return { totals: {}, quoteId: null, grandTotal: 0, currency: 'USD' };
@@ -150,7 +149,6 @@
         }).then(r => r.json());
         
         if (!serverData.success) {
-            console.error('[Paystand] Error getting server data');
             return null;
         }
         
@@ -300,7 +298,7 @@
                 }
                 
             } catch (error) {
-                console.error('[Paystand] Error saving payment data:', error);
+                // Silent error handling
             }
         });
     }
@@ -315,7 +313,6 @@
             const config = await buildPaystandConfig();
             
             if (!config) {
-                console.error('[Paystand] Failed to build configuration');
                 alert('Error opening Paystand checkout. Please try again.');
                 return;
             }
@@ -327,7 +324,7 @@
             console.log(JSON.stringify(config, null, 2));
             console.log('========================================');
             
-            // Create container
+            // Use existing container (already created in button)
             let container = document.getElementById('ps_checkout');
             if (!container) {
                 container = document.createElement('div');
@@ -342,13 +339,13 @@
             initCheckout(config);
             
         } catch (error) {
-            console.error('[Paystand] Error initializing checkout:', error);
             alert('Error opening Paystand checkout. Please try again.');
+            throw error; // Re-throw to trigger finally block in button click handler
         }
     }
     
     /**
-     * Create "Pay with Paystand" button
+     * Create "Pay with Paystand" button with loading indicator
      */
     function createPaystandButton() {
         if (paystandButton) return paystandButton;
@@ -356,6 +353,11 @@
         const buttonContainer = document.createElement('div');
         buttonContainer.className = 'paystand-button-container';
         buttonContainer.style.cssText = 'margin-top: 1rem; padding: 0 1rem 1rem 1rem;';
+        
+        // Create ps_checkout container (like Luma)
+        const psCheckoutDiv = document.createElement('div');
+        psCheckoutDiv.id = 'ps_checkout';
+        buttonContainer.appendChild(psCheckoutDiv);
         
         const button = document.createElement('button');
         button.type = 'button';
@@ -371,32 +373,32 @@
             font-weight: 500;
             width: 100%;
             max-width: 300px;
-            transition: background-color 0.2s ease;
+            transition: all 0.2s ease;
             opacity: 0.6;
             cursor: not-allowed;
         `;
         
-        // Countdown timer element
-        const countdown = document.createElement('span');
-        countdown.className = 'paystand-countdown';
-        countdown.style.cssText = 'display: block; font-size: 12px; margin-top: 4px;';
+        // Progress bar (like Luma)
+        const progressBar = document.createElement('p');
+        progressBar.id = 'paystand-progressBar';
+        progressBar.style.cssText = 'font-size: 14px; color: #666; margin-top: 8px;';
         
         let timeLeft = 5;
-        button.textContent = `Pay with Paystand (${timeLeft}s)`;
+        button.textContent = `Pay with Paystand`;
         button.disabled = true;
+        progressBar.textContent = `Loading, please wait... ${timeLeft} seconds remaining`;
         
-        // Countdown interval
+        // Countdown interval (like Luma's buttonDisabler)
         const countdownInterval = setInterval(() => {
             timeLeft--;
             if (timeLeft > 0) {
-                button.textContent = `Pay with Paystand (${timeLeft}s)`;
+                progressBar.textContent = `Loading, please wait... ${timeLeft} seconds remaining`;
             } else {
                 clearInterval(countdownInterval);
-                button.textContent = 'Pay with Paystand';
+                progressBar.style.display = 'none';
                 button.disabled = false;
                 button.style.opacity = '1';
                 button.style.cursor = 'pointer';
-                console.log('[Paystand] Button enabled - SDK ready');
             }
         }, 1000);
         
@@ -413,11 +415,48 @@
         
         button.addEventListener('click', function() {
             if (!this.disabled) {
-                openPaystandModal();
+                // Show loading state
+                button.disabled = true;
+                button.style.opacity = '0.6';
+                button.style.cursor = 'not-allowed';
+                button.innerHTML = `
+                    <span style="display: inline-flex; align-items: center; gap: 8px;">
+                        <svg style="animation: spin 1s linear infinite; width: 16px; height: 16px;" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" opacity="0.25"/>
+                            <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="4" stroke-linecap="round"/>
+                        </svg>
+                        Opening Paystand...
+                    </span>
+                `;
+                
+                // Add CSS animation for spinner
+                if (!document.getElementById('paystand-spinner-style')) {
+                    const style = document.createElement('style');
+                    style.id = 'paystand-spinner-style';
+                    style.textContent = `
+                        @keyframes spin {
+                            from { transform: rotate(0deg); }
+                            to { transform: rotate(360deg); }
+                        }
+                    `;
+                    document.head.appendChild(style);
+                }
+                
+                // Open modal
+                openPaystandModal().finally(() => {
+                    // Reset button state after modal opens or fails
+                    setTimeout(() => {
+                        button.disabled = false;
+                        button.style.opacity = '1';
+                        button.style.cursor = 'pointer';
+                        button.textContent = 'Pay with Paystand';
+                    }, 1000);
+                });
             }
         });
         
         buttonContainer.appendChild(button);
+        buttonContainer.appendChild(progressBar);
         paystandButton = buttonContainer;
         
         return paystandButton;
@@ -496,7 +535,5 @@
                 }
             });
         });
-    } else {
-        console.error('[Paystand] Hyvä Checkout API not available');
     }
 })();
