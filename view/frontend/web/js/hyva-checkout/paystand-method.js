@@ -6,8 +6,6 @@
  * - Dynamic "Pay with Paystand" button injection
  * - Paystand modal initialization with quote and billing data
  * - Payment completion and order placement
- * 
- * @see view/frontend/templates/hyva-checkout/paystand-init.phtml - Config injection
  */
 (function() {
     'use strict';
@@ -27,17 +25,18 @@
     }
     
     let paystandButton = null;
+    let paystandContainer = null;
+    let psCheckoutInstance = null;
     
     // Determine Paystand environment
     const useSandbox = window.paystandConfig.useSandbox;
     const env = window.paystandConfig.environment || (useSandbox ? 'sandbox' : 'live');
+    const apiDomain = useSandbox ? 'api.paystand.biz' : 'api.paystand.com';
     
     /**
-     * Get quote data from Hyvä Checkout
-     * @returns {Object} Quote data with totals, ID, grand total and currency
+     * Get quote data from checkout
      */
     function getQuoteData() {
-        // Access quote from window.checkoutConfig (standard Magento object)
         if (window.checkoutConfig && window.checkoutConfig.totalsData) {
             const totalsData = window.checkoutConfig.totalsData;
             
@@ -49,16 +48,13 @@
             };
         }
         
-        // Fallback to empty data
         return { totals: {}, quoteId: null, grandTotal: 0, currency: 'USD' };
     }
     
     /**
      * Get billing address from checkout
-     * @returns {Object} Billing address with firstname, lastname, email, street, city, etc.
      */
     function getBillingAddress() {
-        // Try to get billing address from checkoutConfig
         if (window.checkoutConfig && window.checkoutConfig.shippingAddressFromData) {
             return window.checkoutConfig.shippingAddressFromData;
         }
@@ -68,13 +64,11 @@
     
     /**
      * Get customer data
-     * @returns {Object} Customer data with isLoggedIn, email, id, and payerId
      */
     function getCustomerData() {
         const isLoggedIn = window.checkoutConfig?.isCustomerLoggedIn || false;
         const customerData = window.checkoutConfig?.customerData || {};
         
-        // Get payer ID from custom attributes if available
         let payerId = null;
         if (isLoggedIn && customerData.custom_attributes) {
             const payerIdAttr = customerData.custom_attributes.paystand_payer_id;
@@ -92,19 +86,16 @@
     }
     
     /**
-     * Build Paystand modal configuration object
-     * @returns {Object} Paystand configuration for modal
+     * Build Paystand modal configuration
      */
     function buildPaystandConfig() {
         const quote = getQuoteData();
         const billing = getBillingAddress();
         const customer = getCustomerData();
         
-        // Determine payer email and name
         const payerEmail = customer.isLoggedIn ? customer.email : (billing.email || '');
         const payerName = (billing.firstname || '') + ' ' + (billing.lastname || '');
         
-        // Base configuration
         const config = {
             "publishableKey": window.paystandConfig.publishableKey,
             "presetCustom": window.paystandConfig.presetCustom,
@@ -126,7 +117,7 @@
             }
         };
         
-        // Add billing address details if available
+        // Add billing address details
         if (billing.street && billing.street.length > 0) {
             config.payerAddressStreet = billing.street[0];
         }
@@ -140,14 +131,13 @@
             config.payerAddressState = billing.region_code;
         }
         
-        // For logged-in users, use access token flow if available
+        // For logged-in users with access token
         if (customer.isLoggedIn && window.paystandConfig.accessToken) {
             config.accessToken = window.paystandConfig.accessToken;
             config.checkoutType = "checkout_magento2";
             config.customerId = window.paystandConfig.customerId;
             config.paymentMeta.extCustomerId = customer.id;
             
-            // Remove publishableKey when using access token
             delete config.publishableKey;
             delete config.presetCustom;
         }
@@ -157,7 +147,6 @@
     
     /**
      * Wait for Paystand SDK to be available
-     * @returns {Promise} Resolves when psCheckout is available
      */
     function waitForPaystandSDK() {
         return new Promise((resolve, reject) => {
@@ -178,14 +167,12 @@
     }
     
     /**
-     * Open Paystand modal with configuration
+     * Open Paystand modal
      */
     async function openPaystandModal() {
         try {
-            // Wait for Paystand SDK to be available
             await waitForPaystandSDK();
             
-            // Build configuration for modal
             const config = buildPaystandConfig();
             
             // Log configuration for debugging
@@ -195,7 +182,7 @@
             console.log(JSON.stringify(config, null, 2));
             console.log('========================================');
             
-            // Create or get container for Paystand modal
+            // Create container
             let container = document.getElementById('ps_checkout');
             if (!container) {
                 container = document.createElement('div');
@@ -229,9 +216,6 @@
             
             // Handle payment completion
             window.psCheckout.onComplete(async function(paymentData) {
-                console.log('[Paystand] Payment completed:', paymentData);
-                
-                // Prepare response data
                 const response = {
                     payerId: paymentData.response.data.payerId,
                     quote: paymentData.response.data.meta.quote,
@@ -241,7 +225,6 @@
                 };
                 
                 try {
-                    // Save payment data to Magento
                     const fetchResponse = await fetch('/paystandmagento/checkout/savepaymentdata', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -254,7 +237,7 @@
                     
                     await fetchResponse.json();
                     
-                    // Trigger order placement in Hyvä Checkout
+                    // Trigger order placement
                     if (typeof hyvaCheckout !== 'undefined' && hyvaCheckout.checkout) {
                         hyvaCheckout.checkout.placeOrder();
                     }
@@ -272,7 +255,6 @@
     
     /**
      * Create "Pay with Paystand" button
-     * @returns {HTMLElement} Button container element
      */
     function createPaystandButton() {
         if (paystandButton) return paystandButton;
@@ -299,7 +281,6 @@
             transition: background-color 0.2s ease;
         `;
         
-        // Hover effect
         button.addEventListener('mouseenter', function() {
             this.style.backgroundColor = 'rgb(0, 150, 210)';
         });
@@ -307,7 +288,6 @@
             this.style.backgroundColor = 'rgb(0, 172, 238)';
         });
         
-        // Open modal on click
         button.addEventListener('click', openPaystandModal);
         
         buttonContainer.appendChild(button);
@@ -320,45 +300,58 @@
      * Initialize payment method (called when method is selected)
      */
     function initialize() {
-        // Find payment method container
-        const paymentMethodContainer = document.querySelector('[data-payment-method="paystandmagento"]');
-        
-        if (paymentMethodContainer) {
-            // Check if button already exists
-            if (!paymentMethodContainer.querySelector('.paystand-button-container')) {
-                const button = createPaystandButton();
-                paymentMethodContainer.appendChild(button);
+        // Wait for Alpine.js to render the DOM
+        setTimeout(() => {
+            // Try multiple selectors to find the container
+            let paymentMethodContainer = document.querySelector('[data-payment-method="paystandmagento"]');
+            
+            if (!paymentMethodContainer) {
+                paymentMethodContainer = document.querySelector('[data-method="paystandmagento"]');
             }
-        }
+            
+            if (!paymentMethodContainer) {
+                paymentMethodContainer = document.querySelector('#payment-method-option-paystandmagento');
+            }
+            
+            if (!paymentMethodContainer) {
+                // Find by the radio input and get its parent
+                const radioInput = document.querySelector('input[value="paystandmagento"]');
+                if (radioInput) {
+                    paymentMethodContainer = radioInput.closest('div[wire\\:key], div[id*="paystand"], label').parentElement;
+                }
+            }
+            
+            if (paymentMethodContainer) {
+                if (!paymentMethodContainer.querySelector('.paystand-button-container')) {
+                    const button = createPaystandButton();
+                    paymentMethodContainer.appendChild(button);
+                }
+            }
+        }, 500);
     }
     
     /**
-     * Cleanup when payment method is deselected
+     * Cleanup when method is deselected
      */
     function onMethodDeselect() {
-        const paymentMethodContainer = document.querySelector('[data-payment-method="paystandmagento"]');
-        
-        if (paymentMethodContainer) {
-            const existingButton = paymentMethodContainer.querySelector('.paystand-button-container');
-            if (existingButton) {
-                existingButton.remove();
-            }
+        // Remove button from anywhere in the page
+        const existingButton = document.querySelector('.paystand-button-container');
+        if (existingButton) {
+            existingButton.remove();
         }
         
         paystandButton = null;
     }
     
     /**
-     * Validate payment method before placing order
-     * @returns {boolean} Always returns true (validation happens in Paystand modal)
+     * Validate payment method
      */
     function validate() {
         return true;
     }
     
     /**
-     * Place order (triggered after Paystand payment completion)
-     * @returns {boolean} Always returns true
+     * Place order
      */
     function placeOrder() {
         return true;
@@ -375,10 +368,6 @@
                     placeOrder: placeOrder
                 }
             });
-            
-            // Listen for method selection/deselection
-            hyvaCheckout.payment.onMethodSelect('paystandmagento', initialize);
-            hyvaCheckout.payment.onMethodDeselect('paystandmagento', onMethodDeselect);
         });
     } else {
         console.error('[Paystand] Hyvä Checkout API not available');
