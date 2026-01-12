@@ -8,24 +8,24 @@ $viewModel = $block->getData('view_model');
 $method = $block->getData('method');
 $methodCode = $method->getCode();
 $escaper = $block->getData('escaper') ?? $block;
+$logoUrl = $block->getViewFileUrl('PayStand_PayStandMagento/images/logo_paystand_small.png');
 ?>
 
-<div class="payment-method">
-    <div class="payment-method-title field choice">
+<div class="payment-method paystand-payment-method">
+    <div class="payment-method-title field choice flex items-center">
         <input type="radio"
                name="payment[method]"
                class="radio"
                id="payment_method_<?= $escaper->escapeHtmlAttr($methodCode) ?>"
                value="<?= $escaper->escapeHtmlAttr($methodCode) ?>" />
-        <label for="payment_method_<?= $escaper->escapeHtmlAttr($methodCode) ?>" class="label">
-            <span><?= $escaper->escapeHtml($method->getTitle()) ?></span>
-            <img src="<?= $escaper->escapeUrl($block->getViewFileUrl('PayStand_PayStandMagento/images/logo_paystand_small.png')) ?>"
-                 alt="PayStand Logo"
-                 class="payment-icon ml-2"
-                 style="height: 24px; width: 104px; vertical-align: middle; object-fit: contain;" />
+        <label for="payment_method_<?= $escaper->escapeHtmlAttr($methodCode) ?>" class="label flex items-center ml-2 cursor-pointer">
+            <svg viewBox="0 0 100 20" style="height: 18px; width: auto; margin-right: 8px;">
+                <text x="0" y="15" font-family="Arial,sans-serif" font-size="16" font-weight="bold" fill="#00ACEE">Pay</text>
+                <text x="28" y="15" font-family="Arial,sans-serif" font-size="16" font-weight="bold" fill="#1a1a2e">Stand</text>
+            </svg>
         </label>
     </div>
-    <div class="payment-method-content">
-        <p>PayStand payment method</p>
+    <div class="payment-method-content hidden">
+        <!-- Button will be injected by JavaScript -->
     </div>
 </div>

@@ -348,44 +348,26 @@
     }
     
     /**
-     * Create "Pay with Paystand" button
+     * Create "Pay with Paystand" button with Tailwind classes - compact and elegant
      */
     function createPaystandButton() {
         if (paystandButton) return paystandButton;
         
         const buttonContainer = document.createElement('div');
-        buttonContainer.className = 'paystand-button-container';
-        buttonContainer.style.cssText = 'margin-top: 1rem; padding: 0 1rem 1rem 1rem;';
+        // Tailwind classes for centering - compact spacing
+        buttonContainer.className = 'paystand-button-container flex justify-center w-full mt-3 mb-2';
         
         const button = document.createElement('button');
         button.type = 'button';
-        button.className = 'paystand-pay-button';
-        button.style.cssText = `
-            background-color: rgb(0, 172, 238);
-            color: white;
-            padding: 12px 24px;
-            border-radius: 5px;
-            border: none;
-            cursor: pointer;
-            font-size: 16px;
-            font-weight: 500;
-            width: 100%;
-            max-width: 300px;
-            transition: background-color 0.2s ease;
-            opacity: 0.6;
-            cursor: not-allowed;
-        `;
+        // Compact button styling with PayStand brand blue (#00ACEE)
+        button.className = 'paystand-pay-button text-white text-sm py-2 px-4 rounded-sm font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-90';
+        button.style.backgroundColor = '#00ACEE';
         
-        // Countdown timer element
-        const countdown = document.createElement('span');
-        countdown.className = 'paystand-countdown';
-        countdown.style.cssText = 'display: block; font-size: 12px; margin-top: 4px;';
-        
-        let timeLeft = 5;
+        let timeLeft = 3;
         button.textContent = `Pay with Paystand (${timeLeft}s)`;
         button.disabled = true;
         
-        // Countdown interval
+        // Countdown interval - shorter wait time
         const countdownInterval = setInterval(() => {
             timeLeft--;
             if (timeLeft > 0) {
@@ -394,22 +376,9 @@
                 clearInterval(countdownInterval);
                 button.textContent = 'Pay with Paystand';
                 button.disabled = false;
-                button.style.opacity = '1';
-                button.style.cursor = 'pointer';
                 console.log('[Paystand] Button enabled - SDK ready');
             }
         }, 1000);
-        
-        button.addEventListener('mouseenter', function() {
-            if (!this.disabled) {
-                this.style.backgroundColor = 'rgb(0, 150, 210)';
-            }
-        });
-        button.addEventListener('mouseleave', function() {
-            if (!this.disabled) {
-                this.style.backgroundColor = 'rgb(0, 172, 238)';
-            }
-        });
         
         button.addEventListener('click', function() {
             if (!this.disabled) {
@@ -423,36 +392,30 @@
         return paystandButton;
     }
     
+    
     /**
      * Initialize payment method (called when method is selected)
      */
     function initialize() {
-        // Wait for Alpine.js to render the DOM
         setTimeout(() => {
-            // Try multiple selectors to find the container
-            let paymentMethodContainer = document.querySelector('[data-payment-method="paystandmagento"]');
+            const radioInput = document.querySelector('input[value="paystandmagento"]');
+            if (!radioInput) return;
             
-            if (!paymentMethodContainer) {
-                paymentMethodContainer = document.querySelector('[data-method="paystandmagento"]');
+            // Add logo to label
+            const label = radioInput.nextElementSibling;
+            if (label && !label.querySelector('.paystand-logo')) {
+                const logo = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+                logo.setAttribute('viewBox', '0 0 100 20');
+                logo.setAttribute('class', 'paystand-logo');
+                logo.style.cssText = 'height: 18px; width: auto; margin-right: 8px;';
+                logo.innerHTML = '<text x="0" y="15" font-family="Arial,sans-serif" font-size="16" font-weight="bold" fill="#00ACEE">Pay</text><text x="28" y="15" font-family="Arial,sans-serif" font-size="16" font-weight="bold" fill="#1a1a2e">Stand</text>';
+                label.insertBefore(logo, label.firstChild);
             }
             
-            if (!paymentMethodContainer) {
-                paymentMethodContainer = document.querySelector('#payment-method-option-paystandmagento');
-            }
-            
-            if (!paymentMethodContainer) {
-                // Find by the radio input and get its parent
-                const radioInput = document.querySelector('input[value="paystandmagento"]');
-                if (radioInput) {
-                    paymentMethodContainer = radioInput.closest('div[wire\\:key], div[id*="paystand"], label').parentElement;
-                }
-            }
-            
-            if (paymentMethodContainer) {
-                if (!paymentMethodContainer.querySelector('.paystand-button-container')) {
-                    const button = createPaystandButton();
-                    paymentMethodContainer.appendChild(button);
-                }
+            // Add button to container
+            const container = radioInput.closest('div[class*="border"]') || radioInput.parentElement;
+            if (container && !container.querySelector('.paystand-button-container')) {
+                container.appendChild(createPaystandButton());
             }
         }, 500);
     }
