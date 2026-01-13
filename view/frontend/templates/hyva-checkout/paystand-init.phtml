@@ -30,7 +30,8 @@ $config = [
     'presetCustom' => $presetCustom,
     'customerId' => $customerId,
     'useSandbox' => (bool)$useSandbox,
-    'updateOrderOn' => $updateOrderOn
+    'updateOrderOn' => $updateOrderOn,
+    'logoUrl' => $block->getViewFileUrl('PayStand_PayStandMagento::images/logo_paystand_small.png')
 ];
 
 // Add OAuth credentials for logged-in users (if configured)
