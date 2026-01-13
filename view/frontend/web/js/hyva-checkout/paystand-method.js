@@ -17,6 +17,7 @@
         try {
             window.paystandConfig = JSON.parse(scriptTag.dataset.paystandConfig);
         } catch (e) {
+            console.error('[Paystand Hyva] Failed to parse configuration:', e);
             window.paystandConfig = {};
         }
     } else {
@@ -62,7 +63,7 @@
             }
             
         } catch (error) {
-            // Silent error handling
+            console.error('[Paystand Hyva] Failed to fetch quote data:', error);
         }
         
         return { totals: {}, quoteId: null, grandTotal: 0, currency: 'USD' };
@@ -149,6 +150,7 @@
         }).then(r => r.json());
         
         if (!serverData.success) {
+            console.error('[Paystand Hyva] Server returned unsuccessful response for quote data');
             return null;
         }
         
@@ -229,6 +231,7 @@
                     resolve();
                 } else if (attempts >= maxAttempts) {
                     clearInterval(checkSDK);
+                    console.error('[Paystand Hyva] SDK failed to load after maximum attempts');
                     reject(new Error('Paystand SDK not loaded'));
                 }
                 attempts++;
@@ -267,9 +270,10 @@
     }
     
     /**
-     * Register onComplete handler (following Luma's exact pattern)
+     * Register PayStand checkout event handlers
      */
-    function onCompleteCheckout() {
+    function registerPaystadCallbacks() {
+        // Handle successful payment
         window.psCheckout.onComplete(async function(paymentData) {
             const response = {
                 payerId: paymentData.response.data.payerId,
@@ -292,15 +296,41 @@
                 
                 await fetchResponse.json();
                 
-                // Trigger order placement
-                if (typeof hyvaCheckout !== 'undefined' && hyvaCheckout.checkout) {
-                    hyvaCheckout.checkout.placeOrder();
+                // Trigger order placement via Livewire component
+                const mainComponent = Livewire.components.componentsById['hyva-checkout-main'];
+                if (mainComponent) {
+                    try {
+                        await mainComponent.call('placeOrder');
+                        // Livewire handles the redirect automatically after successful order
+                    } catch (orderError) {
+                        console.error('[Paystand Hyva] Order placement failed:', orderError);
+                        alert('Order placement failed. Please try again or contact support.');
+                    }
+                } else {
+                    console.error('[Paystand Hyva] Could not find hyva-checkout-main Livewire component');
                 }
                 
             } catch (error) {
-                // Silent error handling
+                console.error('[Paystand Hyva] Error during payment completion:', error);
+                alert('An error occurred while processing your order. Please try again.');
             }
         });
+        
+        // Handle payment errors
+        if (typeof window.psCheckout.onError === 'function') {
+            window.psCheckout.onError(function(errorData) {
+                console.error('[Paystand Hyva] Payment error:', errorData);
+                alert('Payment failed. Please try again or use a different payment method.');
+            });
+        }
+        
+        // Handle user cancellation
+        if (typeof window.psCheckout.onCancel === 'function') {
+            window.psCheckout.onCancel(function() {
+                console.log('[Paystand Hyva] Payment cancelled by user');
+                // No action needed - user can retry or choose different payment method
+            });
+        }
     }
     
     /**
@@ -313,16 +343,10 @@
             const config = await buildPaystandConfig();
             
             if (!config) {
+                console.error('[Paystand Hyva] Failed to build checkout configuration');
                 alert('Error opening Paystand checkout. Please try again.');
                 return;
             }
-            
-            // Log configuration for debugging
-            console.log('========================================');
-            console.log('PAYSTAND MODAL CONFIGURATION (HYVÄ)');
-            console.log('========================================');
-            console.log(JSON.stringify(config, null, 2));
-            console.log('========================================');
             
             // Use existing container (already created in button)
             let container = document.getElementById('ps_checkout');
@@ -332,13 +356,17 @@
                 document.body.appendChild(container);
             }
             
-            // Register onComplete handler FIRST (before initCheckout)
-            onCompleteCheckout();
-            
-            // Then initialize checkout (this will call runCheckout)
+            // Initialize checkout first
             initCheckout(config);
             
+            // Register PayStand callbacks AFTER checkout is initialized
+            // Use a delay to ensure psCheckout is fully ready
+            setTimeout(() => {
+                registerPaystadCallbacks();
+            }, 1000);
+            
         } catch (error) {
+            console.error('[Paystand Hyva] Error opening checkout modal:', error);
             alert('Error opening Paystand checkout. Please try again.');
             throw error; // Re-throw to trigger finally block in button click handler
         }
