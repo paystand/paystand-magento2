@@ -20,6 +20,7 @@
     let paystandButton = null;
     let paystandContainer = null;
     let psCheckoutInstance = null;
+    let validationCheckInterval = null;
     
     const useSandbox = window.paystandConfig.useSandbox;
     const env = window.paystandConfig.environment || (useSandbox ? 'sandbox' : 'live');
@@ -115,6 +116,155 @@
             id: customerData.id || null,
             payerId: payerId
         };
+    }
+    
+    /** Check if all required checkout fields are complete */
+    function isCheckoutComplete() {
+        const checkoutContainer = document.querySelector('[wire\\:id="hyva-checkout-main"], .checkout-container, #checkout');
+        if (!checkoutContainer) {
+            console.log('[Paystand Hyva] Checkout container not found');
+            return { complete: false, missing: 'checkout container' };
+        }
+        
+        // Find all required fields in the checkout (visible ones only)
+        const requiredInputs = checkoutContainer.querySelectorAll('input[required]:not([type="hidden"]), select[required], textarea[required]');
+        const requiredByWire = checkoutContainer.querySelectorAll('[wire\\:model\\.defer][required], [wire\\:model][required]');
+        
+        // Combine both sets
+        const allRequired = new Set([...requiredInputs, ...requiredByWire]);
+        
+        for (const input of allRequired) {
+            // Skip hidden or invisible fields
+            if (input.offsetParent === null || input.type === 'hidden') continue;
+            
+            const value = input.value?.trim() || '';
+            if (!value) {
+                const fieldName = input.name || input.id || input.getAttribute('wire:model.defer') || 'unknown';
+                console.log('[Paystand Hyva] Empty required field:', fieldName);
+                return { complete: false, missing: fieldName };
+            }
+        }
+        
+        // Check email specifically for guests
+        const isLoggedIn = window.checkoutConfig?.isCustomerLoggedIn || false;
+        if (!isLoggedIn) {
+            const emailInput = checkoutContainer.querySelector('input[type="email"]');
+            if (emailInput && emailInput.offsetParent !== null) {
+                if (!emailInput.value || !emailInput.value.includes('@')) {
+                    console.log('[Paystand Hyva] Invalid email');
+                    return { complete: false, missing: 'email' };
+                }
+            }
+        }
+        
+        // Paystand requires city even if Hyva doesn't
+        const cityInput = checkoutContainer.querySelector('input[name*="city"], input[id*="city"], [wire\\:model\\.defer*="city"], [wire\\:model*="city"]');
+        if (cityInput && cityInput.offsetParent !== null) {
+            if (!cityInput.value || !cityInput.value.trim()) {
+                console.log('[Paystand Hyva] City is required for Paystand');
+                return { complete: false, missing: 'city' };
+            }
+        }
+        
+        // Check if shipping method is selected (for non-virtual carts)
+        const isVirtual = window.checkoutConfig?.isVirtual || false;
+        if (!isVirtual) {
+            const shippingMethodRadio = checkoutContainer.querySelector('input[type="radio"][name*="shipping"]:checked');
+            const shippingMethodDiv = checkoutContainer.querySelector('.shipping-method-selected, [data-shipping-method-selected]');
+            
+            // Also check Livewire component state
+            let livewireHasMethod = false;
+            const shippingComp = Livewire?.components?.componentsById?.['checkout.shipping-method'];
+            if (shippingComp && shippingComp.data?.method) {
+                livewireHasMethod = true;
+            }
+            
+            if (!shippingMethodRadio && !shippingMethodDiv && !livewireHasMethod) {
+                // Don't block if we can't detect - shipping might be handled differently
+                console.log('[Paystand Hyva] Shipping method detection skipped');
+            }
+        }
+        
+        console.log('[Paystand Hyva] Checkout validation passed');
+        return { complete: true, missing: null };
+    }
+    
+    /** Update Paystand button state based on checkout completion */
+    function updatePaystandButtonState() {
+        const button = document.querySelector('.paystand-pay-button');
+        const statusText = document.querySelector('.paystand-status-text');
+        
+        if (!button) return;
+        
+        const validation = isCheckoutComplete();
+        
+        if (validation.complete) {
+            button.disabled = false;
+            button.style.backgroundColor = '#00ACEE';
+            button.textContent = 'Pay with Paystand';
+            if (statusText) {
+                statusText.style.display = 'none';
+            }
+        } else {
+            button.disabled = true;
+            button.style.backgroundColor = '#9CA3AF';
+            button.textContent = 'Pay with Paystand';
+            if (statusText) {
+                statusText.style.display = 'block';
+                const fieldName = formatFieldName(validation.missing);
+                statusText.textContent = `Please enter ${fieldName}`;
+            }
+        }
+    }
+    
+    /** Start watching for form changes */
+    function startValidationWatch() {
+        if (validationCheckInterval) {
+            clearInterval(validationCheckInterval);
+        }
+        
+        // Check validation state periodically
+        validationCheckInterval = setInterval(updatePaystandButtonState, 500);
+        
+        // Also listen for input events on the checkout form
+        const checkoutForm = document.querySelector('form[id*="checkout"], .checkout-container, [wire\\:id="hyva-checkout-main"]');
+        if (checkoutForm) {
+            checkoutForm.addEventListener('input', debounce(updatePaystandButtonState, 300));
+            checkoutForm.addEventListener('change', debounce(updatePaystandButtonState, 300));
+        }
+        
+        // Listen for Livewire updates
+        if (typeof Livewire !== 'undefined') {
+            Livewire.hook('message.processed', updatePaystandButtonState);
+        }
+    }
+    
+    /** Stop validation watch */
+    function stopValidationWatch() {
+        if (validationCheckInterval) {
+            clearInterval(validationCheckInterval);
+            validationCheckInterval = null;
+        }
+    }
+    
+    /** Simple debounce utility */
+    function debounce(func, wait) {
+        let timeout;
+        return function(...args) {
+            clearTimeout(timeout);
+            timeout = setTimeout(() => func.apply(this, args), wait);
+        };
+    }
+    
+    /** Format field name for display */
+    function formatFieldName(fieldName) {
+        if (!fieldName) return 'required field';
+        return fieldName
+            .replace(/[^a-zA-Z\s]/g, ' ')
+            .replace(/([a-z])([A-Z])/g, '$1 $2')
+            .toLowerCase()
+            .trim()
+            .replace(/\s+/g, ' ');
     }
     
     /** Build Paystand modal configuration */
@@ -371,28 +521,14 @@
         
         const button = document.createElement('button');
         button.type = 'button';
-        button.className = 'paystand-pay-button text-white text-sm py-2 px-4 rounded-sm font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-90';
-        button.style.backgroundColor = '#00ACEE';
-        
-        const progressBar = document.createElement('p');
-        progressBar.id = 'paystand-progressBar';
-        progressBar.className = 'text-sm text-gray-600 mt-2';
-        
-        let timeLeft = 5;
-        button.textContent = `Pay with Paystand`;
+        button.className = 'paystand-pay-button text-white text-sm py-2 px-4 rounded-sm font-medium transition-all duration-200 disabled:cursor-not-allowed hover:opacity-90';
+        button.style.backgroundColor = '#9CA3AF';
+        button.textContent = 'Pay with Paystand';
         button.disabled = true;
-        progressBar.textContent = `Loading, please wait... ${timeLeft} seconds remaining`;
         
-        const countdownInterval = setInterval(() => {
-            timeLeft--;
-            if (timeLeft > 0) {
-                progressBar.textContent = `Loading, please wait... ${timeLeft} seconds remaining`;
-            } else {
-                clearInterval(countdownInterval);
-                progressBar.style.display = 'none';
-                button.disabled = false;
-            }
-        }, 1000);
+        const statusText = document.createElement('p');
+        statusText.className = 'paystand-status-text text-sm text-gray-600 mt-2';
+        statusText.textContent = 'Complete all required fields to continue';
         
         button.addEventListener('click', function() {
             if (!this.disabled) {
@@ -422,6 +558,7 @@
                 openPaystandModal().finally(() => {
                     setTimeout(() => {
                         button.disabled = false;
+                        button.style.backgroundColor = '#00ACEE';
                         button.textContent = 'Pay with Paystand';
                     }, 1000);
                 });
@@ -429,8 +566,12 @@
         });
         
         buttonContainer.appendChild(button);
-        buttonContainer.appendChild(progressBar);
+        buttonContainer.appendChild(statusText);
         paystandButton = buttonContainer;
+        
+        // Start validation watch and do initial check
+        startValidationWatch();
+        setTimeout(updatePaystandButtonState, 100);
         
         return paystandButton;
     }
@@ -485,6 +626,7 @@
     /** Cleanup when method is deselected */
     function onMethodDeselect() {
         enablePlaceOrderButton();
+        stopValidationWatch();
         
         const existingButton = document.querySelector('.paystand-button-container');
         if (existingButton) {
