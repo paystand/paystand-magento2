@@ -461,12 +461,35 @@
     }
     
     /**
+     * Hide the default Place Order button
+     */
+    function hidePlaceOrderButton() {
+        const placeOrderBtn = document.querySelector('button.btn-place-order');
+        if (placeOrderBtn) {
+            placeOrderBtn.style.display = 'none';
+        }
+    }
+    
+    /**
+     * Show the default Place Order button
+     */
+    function showPlaceOrderButton() {
+        const placeOrderBtn = document.querySelector('button.btn-place-order');
+        if (placeOrderBtn) {
+            placeOrderBtn.style.display = '';
+        }
+    }
+    
+    /**
      * Initialize payment method (called when method is selected)
      */
     function initialize() {
         setTimeout(() => {
             const radioInput = document.querySelector('input[value="paystandmagento"]');
             if (!radioInput) return;
+            
+            // Hide the default Place Order button when PayStand is selected
+            hidePlaceOrderButton();
             
             // Add logo to label and remove text
             const label = radioInput.nextElementSibling;
@@ -494,7 +517,10 @@
      * Cleanup when method is deselected
      */
     function onMethodDeselect() {
-        // Remove button from anywhere in the page
+        // Show the default Place Order button when PayStand is deselected
+        showPlaceOrderButton();
+        
+        // Remove PayStand button from anywhere in the page
         const existingButton = document.querySelector('.paystand-button-container');
         if (existingButton) {
             existingButton.remove();
@@ -517,6 +543,49 @@
         return true;
     }
     
+    /**
+     * Watch for payment method changes to show/hide Place Order button
+     */
+    function watchPaymentMethodChanges() {
+        // Use MutationObserver to watch for payment method selection changes
+        const paymentMethodsContainer = document.querySelector('[wire\\:id="checkout.payment.methods"]') 
+            || document.querySelector('.payment-methods');
+        
+        if (paymentMethodsContainer) {
+            // Listen for clicks on payment method radio buttons
+            paymentMethodsContainer.addEventListener('click', (e) => {
+                const radio = e.target.closest('input[type="radio"][name="payment_method"]') 
+                    || e.target.closest('input[type="radio"]');
+                
+                if (radio) {
+                    setTimeout(() => {
+                        const isPaystandSelected = radio.value === 'paystandmagento' 
+                            || document.querySelector('input[value="paystandmagento"]:checked');
+                        
+                        if (isPaystandSelected) {
+                            hidePlaceOrderButton();
+                        } else {
+                            showPlaceOrderButton();
+                            onMethodDeselect();
+                        }
+                    }, 100);
+                }
+            });
+        }
+        
+        // Also listen for Livewire updates
+        if (typeof Livewire !== 'undefined') {
+            Livewire.hook('message.processed', () => {
+                const isPaystandSelected = document.querySelector('input[value="paystandmagento"]:checked');
+                if (isPaystandSelected) {
+                    hidePlaceOrderButton();
+                } else {
+                    showPlaceOrderButton();
+                }
+            });
+        }
+    }
+    
     // Register payment method with Hyvä Checkout
     if (typeof hyvaCheckout !== 'undefined' && hyvaCheckout.api) {
         hyvaCheckout.api.after(() => {
@@ -528,6 +597,9 @@
                     placeOrder: placeOrder
                 }
             });
+            
+            // Start watching for payment method changes
+            setTimeout(watchPaymentMethodChanges, 1000);
         });
     }
 })();
