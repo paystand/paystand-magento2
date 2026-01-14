@@ -221,6 +221,22 @@
     
     /** Build Paystand modal configuration */
     async function buildPaystandConfig() {
+        // Refresh Livewire components to sync deferred data to server first
+        // Required for one-page checkout where wire:model.defer is used
+        const componentsToRefresh = [
+            'checkout.guest-details',
+            'checkout.shipping-details',
+            'checkout.billing-details',
+            'checkout.shipping-details.address-form'
+        ];
+        
+        for (const compId of componentsToRefresh) {
+            const comp = Livewire.components?.componentsById?.[compId];
+            if (comp) {
+                await comp.call('$refresh');
+            }
+        }
+        
         const response = await fetch('/paystandmagento/checkout/getquotedata', {
             method: 'GET',
             headers: {
@@ -418,6 +434,21 @@
                 const mainComponent = Livewire.components.componentsById['hyva-checkout-main'];
                 if (mainComponent) {
                     try {
+                        // Refresh Livewire components to sync deferred data before placing order
+                        const componentsToRefresh = [
+                            'checkout.guest-details',
+                            'checkout.shipping-details',
+                            'checkout.billing-details',
+                            'checkout.shipping-details.address-form'
+                        ];
+                        
+                        for (const compId of componentsToRefresh) {
+                            const comp = Livewire.components?.componentsById?.[compId];
+                            if (comp) {
+                                await comp.call('$refresh');
+                            }
+                        }
+                        
                         await mainComponent.call('placeOrder');
                     } catch (orderError) {
                         console.error('[Paystand Hyva] Order placement failed:', orderError);
