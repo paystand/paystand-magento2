@@ -15,6 +15,7 @@ use Magento\Customer\Model\Session as CustomerSession;
 use Magento\Customer\Api\CustomerRepositoryInterface;
 use Magento\Framework\Exception\LocalizedException;
 use Magento\Framework\Exception\NoSuchEntityException;
+use Magento\Framework\Webapi\Response;
 use Psr\Log\LoggerInterface;
 
 class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
@@ -52,9 +53,12 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
             $quote = $this->checkoutSession->getQuote();
 
             if (!$quote || !$quote->getId()) {
-                return $result->setData([
+                return $result->setHttpResponseCode(Response::HTTP_BAD_REQUEST)->setData([
                     'success' => false,
-                    'message' => 'No active quote found'
+                    'error' => [
+                        'code' => 'NO_ACTIVE_QUOTE',
+                        'message' => 'No active quote found'
+                    ]
                 ]);
             }
 
@@ -153,21 +157,30 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
 
         } catch (NoSuchEntityException $e) {
             $this->logger->error('[Paystand] Quote not found: ' . $e->getMessage());
-            return $result->setData([
+            return $result->setHttpResponseCode(Response::HTTP_NOT_FOUND)->setData([
                 'success' => false,
-                'message' => 'Quote not found'
+                'error' => [
+                    'code' => 'QUOTE_NOT_FOUND',
+                    'message' => 'Quote not found'
+                ]
             ]);
         } catch (LocalizedException $e) {
             $this->logger->error('[Paystand] Error getting quote data: ' . $e->getMessage());
-            return $result->setData([
+            return $result->setHttpResponseCode(Response::HTTP_BAD_REQUEST)->setData([
                 'success' => false,
-                'message' => $e->getMessage()
+                'error' => [
+                    'code' => 'QUOTE_DATA_ERROR',
+                    'message' => $e->getMessage()
+                ]
             ]);
         } catch (\Exception $e) {
             $this->logger->error('[Paystand] Unexpected error: ' . $e->getMessage());
-            return $result->setData([
+            return $result->setHttpResponseCode(Response::HTTP_INTERNAL_ERROR)->setData([
                 'success' => false,
-                'message' => 'An error occurred while fetching quote data'
+                'error' => [
+                    'code' => 'QUOTE_DATA_UNEXPECTED_ERROR',
+                    'message' => 'An error occurred while fetching quote data'
+                ]
             ]);
         }
     }

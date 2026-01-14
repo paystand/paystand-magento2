@@ -20,7 +20,11 @@
     let paystandButton = null;
     let paystandContainer = null;
     let psCheckoutInstance = null;
-    let validationCheckInterval = null;
+    let validationFormEl = null;
+    let validationHandler = null;
+    let validationWatchActive = false;
+    let livewireHookRegistered = false;
+    let paystandCallbacksRegistered = false;
     
     const useSandbox = window.paystandConfig.useSandbox;
     const env = window.paystandConfig.environment || (useSandbox ? 'sandbox' : 'live');
@@ -40,8 +44,7 @@
             if (!response.ok) {
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
-            
-            const result = await response.json();
+            const result = await readJsonResponse(response);
             
             if (result.success && result.quote) {
                 return {
@@ -57,6 +60,18 @@
         }
         
         return { totals: {}, quoteId: null, grandTotal: 0, currency: 'USD' };
+    }
+
+    /** JSON from a response */
+    async function readJsonResponse(response) {
+        const clone = response.clone();
+        try {
+            return await response.json();
+        } catch (error) {
+            const text = await clone.text();
+            const message = text ? `Invalid JSON response: ${text}` : 'Invalid JSON response';
+            throw new Error(message);
+        }
     }
     
     /** Check if all required checkout fields are complete */
@@ -152,29 +167,36 @@
     
     /** Start watching for form changes */
     function startValidationWatch() {
-        if (validationCheckInterval) {
-            clearInterval(validationCheckInterval);
+        if (validationWatchActive) {
+            return;
         }
-        
-        validationCheckInterval = setInterval(updatePaystandButtonState, 500);
-        
-        const checkoutForm = document.querySelector('form[id*="checkout"], .checkout-container, [wire\\:id="hyva-checkout-main"]');
-        if (checkoutForm) {
-            checkoutForm.addEventListener('input', debounce(updatePaystandButtonState, 300));
-            checkoutForm.addEventListener('change', debounce(updatePaystandButtonState, 300));
+        validationWatchActive = true;
+
+        validationHandler = debounce(updatePaystandButtonState, 300);
+        validationFormEl = document.querySelector('form[id*="checkout"], .checkout-container, [wire\\:id="hyva-checkout-main"]');
+        if (validationFormEl) {
+            validationFormEl.addEventListener('input', validationHandler);
+            validationFormEl.addEventListener('change', validationHandler);
         }
-        
-        if (typeof Livewire !== 'undefined') {
+
+        if (typeof Livewire !== 'undefined' && !livewireHookRegistered) {
             Livewire.hook('message.processed', updatePaystandButtonState);
+            livewireHookRegistered = true;
         }
     }
     
     /** Stop validation watch */
     function stopValidationWatch() {
-        if (validationCheckInterval) {
-            clearInterval(validationCheckInterval);
-            validationCheckInterval = null;
+        if (!validationWatchActive) {
+            return;
         }
+        if (validationFormEl && validationHandler) {
+            validationFormEl.removeEventListener('input', validationHandler);
+            validationFormEl.removeEventListener('change', validationHandler);
+        }
+        validationFormEl = null;
+        validationHandler = null;
+        validationWatchActive = false;
     }
     
     /** Simple debounce utility */
@@ -199,13 +221,19 @@
     
     /** Build Paystand modal configuration */
     async function buildPaystandConfig() {
-        const serverData = await fetch('/paystandmagento/checkout/getquotedata', {
+        const response = await fetch('/paystandmagento/checkout/getquotedata', {
             method: 'GET',
             headers: {
                 'Content-Type': 'application/json',
                 'X-Requested-With': 'XMLHttpRequest'
             }
-        }).then(r => r.json());
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const serverData = await readJsonResponse(response);
         
         if (!serverData.success) {
             console.error('[Paystand Hyva] Server returned unsuccessful response for quote data');
@@ -280,6 +308,20 @@
         
         return config;
     }
+
+    /** Display an inline error near the Paystand button */
+    function setPaystandError(message) {
+        const errorEl = document.querySelector('.paystand-error-text');
+        if (!errorEl) return;
+
+        if (message) {
+            errorEl.textContent = message;
+            errorEl.style.display = 'block';
+        } else {
+            errorEl.textContent = '';
+            errorEl.style.display = 'none';
+        }
+    }
     
     /** Wait for Paystand SDK to load */
     function waitForPaystandSDK() {
@@ -330,6 +372,11 @@
     
     /** Register Paystand checkout event handlers */
     function registerPaystadCallbacks() {
+        if (paystandCallbacksRegistered) {
+            return;
+        }
+        paystandCallbacksRegistered = true;
+
         window.psCheckout.onComplete(async function(paymentData) {
             console.log('[Paystand Hyva] Payment completed, full data received:', paymentData);
             
@@ -359,8 +406,14 @@
                     throw new Error(`HTTP error! status: ${fetchResponse.status}`);
                 }
                 
-                const result = await fetchResponse.json();
+                const result = await readJsonResponse(fetchResponse);
                 console.log('[Paystand Hyva] Backend response:', result);
+
+                if (result && result.success === false) {
+                    const message = result?.error?.message || 'Payment data could not be saved. Please try again.';
+                    setPaystandError(message);
+                    throw new Error(message);
+                }
                 
                 const mainComponent = Livewire.components.componentsById['hyva-checkout-main'];
                 if (mainComponent) {
@@ -368,7 +421,7 @@
                         await mainComponent.call('placeOrder');
                     } catch (orderError) {
                         console.error('[Paystand Hyva] Order placement failed:', orderError);
-                        alert('Order placement failed. Please try again or contact support.');
+                        setPaystandError('Order placement failed. Please try again or contact support.');
                     }
                 } else {
                     console.error('[Paystand Hyva] Could not find hyva-checkout-main Livewire component');
@@ -376,14 +429,14 @@
                 
             } catch (error) {
                 console.error('[Paystand Hyva] Error during payment completion:', error);
-                alert('An error occurred while processing your order. Please try again.');
+                setPaystandError('An error occurred while processing your order. Please try again.');
             }
         });
         
         if (typeof window.psCheckout.onError === 'function') {
             window.psCheckout.onError(function(errorData) {
                 console.error('[Paystand Hyva] Payment error:', errorData);
-                alert('Payment failed. Please try again or use a different payment method.');
+                setPaystandError('Payment failed. Please try again or use a different payment method.');
             });
         }
         
@@ -403,7 +456,7 @@
             
             if (!config) {
                 console.error('[Paystand Hyva] Failed to build checkout configuration');
-                alert('Error opening Paystand checkout. Please try again.');
+                setPaystandError('Error opening Paystand checkout. Please try again.');
                 return;
             }
             
@@ -422,7 +475,7 @@
             
         } catch (error) {
             console.error('[Paystand Hyva] Error opening checkout modal:', error);
-            alert('Error opening Paystand checkout. Please try again.');
+            setPaystandError('Error opening Paystand checkout. Please try again.');
             throw error;
         }
     }
@@ -448,9 +501,14 @@
         const statusText = document.createElement('p');
         statusText.className = 'paystand-status-text text-sm text-gray-600 mt-2';
         statusText.textContent = 'Complete all required fields to continue';
+
+        const errorText = document.createElement('p');
+        errorText.className = 'paystand-error-text text-sm text-red-600 mt-2';
+        errorText.style.display = 'none';
         
         button.addEventListener('click', function() {
             if (!this.disabled) {
+                setPaystandError('');
                 button.disabled = true;
                 button.innerHTML = `
                     <span style="display: inline-flex; align-items: center; gap: 8px;">
@@ -486,6 +544,7 @@
         
         buttonContainer.appendChild(button);
         buttonContainer.appendChild(statusText);
+        buttonContainer.appendChild(errorText);
         paystandButton = buttonContainer;
         
         startValidationWatch();
