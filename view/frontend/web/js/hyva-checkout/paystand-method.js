@@ -1,9 +1,16 @@
 /**
- * Hyva Checkout - Paystand Payment Method Integration
+ * Hyvä Checkout - Paystand Payment Method Integration
+ * 
+ * Registers Paystand as a payment method in Hyvä Checkout and handles:
+ * - Payment method selection/deselection
+ * - Dynamic "Pay with Paystand" button injection
+ * - Paystand modal initialization with quote and billing data
+ * - Payment completion and order placement
  */
 (function() {
     'use strict';
     
+    // Load Paystand configuration from data attribute (injected by PHP template)
     const scriptTag = document.currentScript || document.querySelector('script[data-paystand-config]');
     
     if (scriptTag && scriptTag.dataset.paystandConfig) {
@@ -20,15 +27,18 @@
     let paystandButton = null;
     let paystandContainer = null;
     let psCheckoutInstance = null;
-    let validationCheckInterval = null;
     
+    // Determine Paystand environment
     const useSandbox = window.paystandConfig.useSandbox;
     const env = window.paystandConfig.environment || (useSandbox ? 'sandbox' : 'live');
     const apiDomain = useSandbox ? 'api.paystand.biz' : 'api.paystand.com';
     
-    /** Fetch quote data from server */
+    /**
+     * Get quote data from server endpoint (like KnockoutJS observables in Luma)
+     */
     async function getQuoteData() {
         try {
+            // Fetch quote data from server endpoint
             const response = await fetch('/paystandmagento/checkout/getquotedata', {
                 method: 'GET',
                 headers: {
@@ -59,8 +69,11 @@
         return { totals: {}, quoteId: null, grandTotal: 0, currency: 'USD' };
     }
     
-    /** Get billing address from Hyva stores */
+    /**
+     * Get billing address from Hyvä reactive stores
+     */
     function getBillingAddress() {
+        // Try to get from Alpine store first (reactive data)
         if (typeof Alpine !== 'undefined' && Alpine.store('checkout')) {
             const checkoutStore = Alpine.store('checkout');
             const billing = checkoutStore.billingAddress || {};
@@ -70,6 +83,7 @@
             }
         }
         
+        // Fallback to window.checkoutConfig
         if (window.checkoutConfig && window.checkoutConfig.shippingAddressFromData) {
             return window.checkoutConfig.shippingAddressFromData;
         }
@@ -77,8 +91,11 @@
         return {};
     }
     
-    /** Get customer data from Hyva stores */
+    /**
+     * Get customer data from Hyvä reactive stores
+     */
     function getCustomerData() {
+        // Try to get from Alpine store first (reactive data)
         if (typeof Alpine !== 'undefined' && Alpine.store('customer')) {
             const customerStore = Alpine.store('customer');
             const isLoggedIn = customerStore.isLoggedIn || false;
@@ -99,6 +116,7 @@
             };
         }
         
+        // Fallback to window.checkoutConfig
         const isLoggedIn = window.checkoutConfig?.isCustomerLoggedIn || false;
         const customerData = window.checkoutConfig?.customerData || {};
         
@@ -118,172 +136,12 @@
         };
     }
     
-    /** Check if all required checkout fields are complete */
-    function isCheckoutComplete() {
-        const checkoutContainer = document.querySelector('[wire\\:id="hyva-checkout-main"], .checkout-container, #checkout');
-        if (!checkoutContainer) {
-            console.log('[Paystand Hyva] Checkout container not found');
-            return { complete: false, missing: 'checkout container' };
-        }
-        
-        // Find all required fields in the checkout (visible ones only)
-        const requiredInputs = checkoutContainer.querySelectorAll('input[required]:not([type="hidden"]), select[required], textarea[required]');
-        const requiredByWire = checkoutContainer.querySelectorAll('[wire\\:model\\.defer][required], [wire\\:model][required]');
-        
-        // Combine both sets
-        const allRequired = new Set([...requiredInputs, ...requiredByWire]);
-        
-        for (const input of allRequired) {
-            // Skip hidden or invisible fields
-            if (input.offsetParent === null || input.type === 'hidden') continue;
-            
-            const value = input.value?.trim() || '';
-            if (!value) {
-                const fieldName = input.name || input.id || input.getAttribute('wire:model.defer') || 'unknown';
-                console.log('[Paystand Hyva] Empty required field:', fieldName);
-                return { complete: false, missing: fieldName };
-            }
-        }
-        
-        // Check email specifically for guests
-        const isLoggedIn = window.checkoutConfig?.isCustomerLoggedIn || false;
-        if (!isLoggedIn) {
-            const emailInput = checkoutContainer.querySelector('input[type="email"]');
-            if (emailInput && emailInput.offsetParent !== null) {
-                if (!emailInput.value || !emailInput.value.includes('@')) {
-                    console.log('[Paystand Hyva] Invalid email');
-                    return { complete: false, missing: 'email' };
-                }
-            }
-        }
-        
-        // Paystand requires city even if Hyva doesn't
-        const cityInput = checkoutContainer.querySelector('input[name*="city"], input[id*="city"], [wire\\:model\\.defer*="city"], [wire\\:model*="city"]');
-        if (cityInput && cityInput.offsetParent !== null) {
-            if (!cityInput.value || !cityInput.value.trim()) {
-                console.log('[Paystand Hyva] City is required for Paystand');
-                return { complete: false, missing: 'city' };
-            }
-        }
-        
-        // Check if shipping method is selected (for non-virtual carts)
-        const isVirtual = window.checkoutConfig?.isVirtual || false;
-        if (!isVirtual) {
-            const shippingMethodRadio = checkoutContainer.querySelector('input[type="radio"][name*="shipping"]:checked');
-            const shippingMethodDiv = checkoutContainer.querySelector('.shipping-method-selected, [data-shipping-method-selected]');
-            
-            // Also check Livewire component state
-            let livewireHasMethod = false;
-            const shippingComp = Livewire?.components?.componentsById?.['checkout.shipping-method'];
-            if (shippingComp && shippingComp.data?.method) {
-                livewireHasMethod = true;
-            }
-            
-            if (!shippingMethodRadio && !shippingMethodDiv && !livewireHasMethod) {
-                // Don't block if we can't detect - shipping might be handled differently
-                console.log('[Paystand Hyva] Shipping method detection skipped');
-            }
-        }
-        
-        console.log('[Paystand Hyva] Checkout validation passed');
-        return { complete: true, missing: null };
-    }
-    
-    /** Update Paystand button state based on checkout completion */
-    function updatePaystandButtonState() {
-        const button = document.querySelector('.paystand-pay-button');
-        const statusText = document.querySelector('.paystand-status-text');
-        
-        if (!button) return;
-        
-        const validation = isCheckoutComplete();
-        
-        if (validation.complete) {
-            button.disabled = false;
-            button.style.backgroundColor = '#00ACEE';
-            button.textContent = 'Pay with Paystand';
-            if (statusText) {
-                statusText.style.display = 'none';
-            }
-        } else {
-            button.disabled = true;
-            button.style.backgroundColor = '#9CA3AF';
-            button.textContent = 'Pay with Paystand';
-            if (statusText) {
-                statusText.style.display = 'block';
-                const fieldName = formatFieldName(validation.missing);
-                statusText.textContent = `Please enter ${fieldName}`;
-            }
-        }
-    }
-    
-    /** Start watching for form changes */
-    function startValidationWatch() {
-        if (validationCheckInterval) {
-            clearInterval(validationCheckInterval);
-        }
-        
-        // Check validation state periodically
-        validationCheckInterval = setInterval(updatePaystandButtonState, 500);
-        
-        // Also listen for input events on the checkout form
-        const checkoutForm = document.querySelector('form[id*="checkout"], .checkout-container, [wire\\:id="hyva-checkout-main"]');
-        if (checkoutForm) {
-            checkoutForm.addEventListener('input', debounce(updatePaystandButtonState, 300));
-            checkoutForm.addEventListener('change', debounce(updatePaystandButtonState, 300));
-        }
-        
-        // Listen for Livewire updates
-        if (typeof Livewire !== 'undefined') {
-            Livewire.hook('message.processed', updatePaystandButtonState);
-        }
-    }
-    
-    /** Stop validation watch */
-    function stopValidationWatch() {
-        if (validationCheckInterval) {
-            clearInterval(validationCheckInterval);
-            validationCheckInterval = null;
-        }
-    }
-    
-    /** Simple debounce utility */
-    function debounce(func, wait) {
-        let timeout;
-        return function(...args) {
-            clearTimeout(timeout);
-            timeout = setTimeout(() => func.apply(this, args), wait);
-        };
-    }
-    
-    /** Format field name for display */
-    function formatFieldName(fieldName) {
-        if (!fieldName) return 'required field';
-        return fieldName
-            .replace(/[^a-zA-Z\s]/g, ' ')
-            .replace(/([a-z])([A-Z])/g, '$1 $2')
-            .toLowerCase()
-            .trim()
-            .replace(/\s+/g, ' ');
-    }
-    
-    /** Build Paystand modal configuration */
+    /**
+     * Build Paystand modal configuration
+     * Follows the exact pattern from Luma's getConfig() function
+     */
     async function buildPaystandConfig() {
-        // Refresh Livewire components to sync wire:model.defer data
-        const componentsToRefresh = [
-            'checkout.guest-details',
-            'checkout.shipping-details',
-            'checkout.billing-details',
-            'checkout.shipping-details.address-form'
-        ];
-        
-        for (const compId of componentsToRefresh) {
-            const comp = Livewire.components?.componentsById?.[compId];
-            if (comp) {
-                await comp.call('$refresh');
-            }
-        }
-        
+        // Fetch all data from server
         const serverData = await fetch('/paystandmagento/checkout/getquotedata', {
             method: 'GET',
             headers: {
@@ -297,6 +155,7 @@
             return null;
         }
         
+        // Extract data from server response
         const quote = {
             totals: serverData.quote.totals || {},
             quoteId: serverData.quote.id || null,
@@ -307,8 +166,16 @@
         const billing = serverData.billing || {};
         const customer = serverData.customer || { isLoggedIn: false, email: null, id: null, payerId: null };
         
+        // Determine payer email and payer id (same logic as Luma)
         const payerEmail = customer.isLoggedIn ? customer.email : (billing.email || '');
         const payerName = (billing.firstname || '') + ' ' + (billing.lastname || '');
+        
+        // IMPORTANT: payerId is set here from customer attributes if available
+        // But it will only be saved to customer after first payment when initPayer is true
+        let payerId = null;
+        if (customer.isLoggedIn && customer.payerId) {
+            payerId = customer.payerId;
+        }
         
         const config = {
             "publishableKey": window.paystandConfig.publishableKey,
@@ -321,9 +188,9 @@
             "mode": "modal",
             "env": env,
             "payerName": payerName.trim() || "Guest",
-            "payerEmail": payerEmail || "guest@example.com",
+            "payerEmail": payerEmail,
             "payerAddressCounty": null,
-            "payerId": customer.payerId,
+            "payerId": payerId,
             "paymentMeta": {
                 "source": "magento 2",
                 "quote": quote.quoteId,
@@ -331,6 +198,15 @@
             }
         };
         
+        // LOG CONFIG FOR COMPARISON (same as Luma)
+        console.log('[HYVA Paystand] Config enviado a modal:', config);
+        
+        // Add access token if available (when user is logged in)
+        if (window.paystandConfig.accessToken) {
+            config.accessToken = window.paystandConfig.accessToken;
+        }
+        
+        // Add billing address details
         if (billing.street && billing.street.length > 0) {
             config.payerAddressStreet = billing.street[0];
         }
@@ -344,20 +220,21 @@
             config.payerAddressState = billing.region_code;
         }
         
-        if (customer.isLoggedIn && window.paystandConfig.accessToken) {
-            config.accessToken = window.paystandConfig.accessToken;
-            config.checkoutType = "checkout_magento2";
+        // Apply preset flow in config if customer is logged in (same logic as Luma)
+        if (customer.isLoggedIn && config.accessToken) {
+            delete config.presetCustom;
+            delete config.publishableKey;
+            config.checkoutType = 'checkout_magento2';
             config.customerId = window.paystandConfig.customerId;
             config.paymentMeta.extCustomerId = customer.id;
-            
-            delete config.publishableKey;
-            delete config.presetCustom;
         }
         
         return config;
     }
     
-    /** Wait for Paystand SDK to load */
+    /**
+     * Wait for Paystand SDK to be available
+     */
     function waitForPaystandSDK() {
         return new Promise((resolve, reject) => {
             let attempts = 0;
@@ -377,8 +254,11 @@
         });
     }
     
-    /** Initialize Paystand checkout */
+    /**
+     * Initialize Paystand checkout (following Luma's exact pattern)
+     */
     function initCheckout(config) {
+        // If checkout is ready but container doesn't exist, create it
         if (!window.psCheckout.container) {
             window.psCheckout = window.psCheckout.initScript(config);
             window.psCheckout.config = config;
@@ -404,18 +284,34 @@
         }, 500);
     }
     
-    /** Register Paystand checkout event handlers */
+    /**
+     * Register PayStand checkout event handlers
+     * Follows the exact pattern from Luma's onCompleteCheckout() function
+     */
     function registerPaystadCallbacks() {
+        // Handle successful payment (same as Luma)
         window.psCheckout.onComplete(async function(paymentData) {
+            console.log('[Paystand Hyva] Payment completed, full data received:', paymentData);
+            
+            // Handle both response formats: paymentData.response.data or paymentData directly
+            const data = paymentData.response?.data || paymentData;
+            
+            console.log('[Paystand Hyva] Extracted data:', data);
+            
+            // Build response object exactly like Luma does
             const response = {
-                payerId: paymentData.response.data.payerId,
-                quote: paymentData.response.data.meta.quote,
-                payerDiscount: paymentData.response.data.feeSplit.payerDiscount,
-                payerTotalFees: paymentData.response.data.feeSplit.payerTotalFees,
-                initPayer: paymentData.response.data.meta.initPayer
+                payerId: data.payerId,
+                quote: data.meta.quote,
+                payerDiscount: data.feeSplit.payerDiscount,
+                payerTotalFees: data.feeSplit.payerTotalFees,
+                initPayer: data.meta.initPayer
             };
             
+            console.log('[Paystand Hyva] Sending payment data to backend:', response);
+            console.log('[Paystand Hyva] initPayer flag:', response.initPayer);
+            
             try {
+                // Save payment data to backend (same endpoint as Luma)
                 const fetchResponse = await fetch('/paystandmagento/checkout/savepaymentdata', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -426,27 +322,15 @@
                     throw new Error(`HTTP error! status: ${fetchResponse.status}`);
                 }
                 
-                await fetchResponse.json();
+                const result = await fetchResponse.json();
+                console.log('[Paystand Hyva] Backend response:', result);
                 
+                // Trigger order placement via Livewire component
                 const mainComponent = Livewire.components.componentsById['hyva-checkout-main'];
                 if (mainComponent) {
                     try {
-                        // Refresh Livewire components to sync wire:model.defer data
-                        const componentsToRefresh = [
-                            'checkout.guest-details',
-                            'checkout.shipping-details',
-                            'checkout.billing-details',
-                            'checkout.shipping-details.address-form'
-                        ];
-                        
-                        for (const compId of componentsToRefresh) {
-                            const comp = Livewire.components.componentsById[compId];
-                            if (comp) {
-                                await comp.call('$refresh');
-                            }
-                        }
-                        
                         await mainComponent.call('placeOrder');
+                        // Livewire handles the redirect automatically after successful order
                     } catch (orderError) {
                         console.error('[Paystand Hyva] Order placement failed:', orderError);
                         alert('Order placement failed. Please try again or contact support.');
@@ -461,6 +345,7 @@
             }
         });
         
+        // Handle payment errors
         if (typeof window.psCheckout.onError === 'function') {
             window.psCheckout.onError(function(errorData) {
                 console.error('[Paystand Hyva] Payment error:', errorData);
@@ -468,14 +353,18 @@
             });
         }
         
+        // Handle user cancellation
         if (typeof window.psCheckout.onCancel === 'function') {
             window.psCheckout.onCancel(function() {
                 console.log('[Paystand Hyva] Payment cancelled by user');
+                // No action needed - user can retry or choose different payment method
             });
         }
     }
     
-    /** Open Paystand modal */
+    /**
+     * Open Paystand modal
+     */
     async function openPaystandModal() {
         try {
             await waitForPaystandSDK();
@@ -488,6 +377,7 @@
                 return;
             }
             
+            // Use existing container (already created in button)
             let container = document.getElementById('ps_checkout');
             if (!container) {
                 container = document.createElement('div');
@@ -495,8 +385,11 @@
                 document.body.appendChild(container);
             }
             
+            // Initialize checkout first
             initCheckout(config);
             
+            // Register PayStand callbacks AFTER checkout is initialized
+            // Use a delay to ensure psCheckout is fully ready
             setTimeout(() => {
                 registerPaystadCallbacks();
             }, 1000);
@@ -504,34 +397,56 @@
         } catch (error) {
             console.error('[Paystand Hyva] Error opening checkout modal:', error);
             alert('Error opening Paystand checkout. Please try again.');
-            throw error;
+            throw error; // Re-throw to trigger finally block in button click handler
         }
     }
     
-    /** Create "Pay with Paystand" button */
+    /**
+     * Create "Pay with Paystand" button with Tailwind classes - compact and elegant with loading state
+     */
     function createPaystandButton() {
         if (paystandButton) return paystandButton;
         
         const buttonContainer = document.createElement('div');
+        // Tailwind classes for centering - compact spacing
         buttonContainer.className = 'paystand-button-container flex flex-col items-center w-full mt-3 mb-2';
         
+        // Create ps_checkout container (like Luma)
         const psCheckoutDiv = document.createElement('div');
         psCheckoutDiv.id = 'ps_checkout';
         buttonContainer.appendChild(psCheckoutDiv);
         
         const button = document.createElement('button');
         button.type = 'button';
-        button.className = 'paystand-pay-button text-white text-sm py-2 px-4 rounded-sm font-medium transition-all duration-200 disabled:cursor-not-allowed hover:opacity-90';
-        button.style.backgroundColor = '#9CA3AF';
-        button.textContent = 'Pay with Paystand';
-        button.disabled = true;
+        // Compact button styling with PayStand brand blue (#00ACEE)
+        button.className = 'paystand-pay-button text-white text-sm py-2 px-4 rounded-sm font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-90';
+        button.style.backgroundColor = '#00ACEE';
         
-        const statusText = document.createElement('p');
-        statusText.className = 'paystand-status-text text-sm text-gray-600 mt-2';
-        statusText.textContent = 'Complete all required fields to continue';
+        // Progress bar (like Luma) - with Tailwind
+        const progressBar = document.createElement('p');
+        progressBar.id = 'paystand-progressBar';
+        progressBar.className = 'text-sm text-gray-600 mt-2';
+        
+        let timeLeft = 5;
+        button.textContent = `Pay with Paystand`;
+        button.disabled = true;
+        progressBar.textContent = `Loading, please wait... ${timeLeft} seconds remaining`;
+        
+        // Countdown interval (like Luma's buttonDisabler)
+        const countdownInterval = setInterval(() => {
+            timeLeft--;
+            if (timeLeft > 0) {
+                progressBar.textContent = `Loading, please wait... ${timeLeft} seconds remaining`;
+            } else {
+                clearInterval(countdownInterval);
+                progressBar.style.display = 'none';
+                button.disabled = false;
+            }
+        }, 1000);
         
         button.addEventListener('click', function() {
             if (!this.disabled) {
+                // Show loading state
                 button.disabled = true;
                 button.innerHTML = `
                     <span style="display: inline-flex; align-items: center; gap: 8px;">
@@ -543,6 +458,7 @@
                     </span>
                 `;
                 
+                // Add CSS animation for spinner
                 if (!document.getElementById('paystand-spinner-style')) {
                     const style = document.createElement('style');
                     style.id = 'paystand-spinner-style';
@@ -555,10 +471,11 @@
                     document.head.appendChild(style);
                 }
                 
+                // Open modal
                 openPaystandModal().finally(() => {
+                    // Reset button state after modal opens or fails
                     setTimeout(() => {
                         button.disabled = false;
-                        button.style.backgroundColor = '#00ACEE';
                         button.textContent = 'Pay with Paystand';
                     }, 1000);
                 });
@@ -566,46 +483,24 @@
         });
         
         buttonContainer.appendChild(button);
-        buttonContainer.appendChild(statusText);
+        buttonContainer.appendChild(progressBar);
         paystandButton = buttonContainer;
-        
-        // Start validation watch and do initial check
-        startValidationWatch();
-        setTimeout(updatePaystandButtonState, 100);
         
         return paystandButton;
     }
     
-    /** Disable Place Order button */
-    function disablePlaceOrderButton() {
-        const placeOrderBtn = document.querySelector('button.btn-place-order');
-        if (placeOrderBtn) {
-            placeOrderBtn.disabled = true;
-            placeOrderBtn.style.opacity = '0.5';
-            placeOrderBtn.style.cursor = 'not-allowed';
-        }
-    }
-    
-    /** Enable Place Order button */
-    function enablePlaceOrderButton() {
-        const placeOrderBtn = document.querySelector('button.btn-place-order');
-        if (placeOrderBtn) {
-            placeOrderBtn.disabled = false;
-            placeOrderBtn.style.opacity = '';
-            placeOrderBtn.style.cursor = '';
-        }
-    }
-    
-    /** Initialize payment method */
+    /**
+     * Initialize payment method (called when method is selected)
+     */
     function initialize() {
         setTimeout(() => {
             const radioInput = document.querySelector('input[value="paystandmagento"]');
             if (!radioInput) return;
             
-            disablePlaceOrderButton();
-            
+            // Add logo to label and remove text
             const label = radioInput.nextElementSibling;
             if (label && !label.querySelector('.paystand-logo') && window.paystandConfig.logoUrl) {
+                // Clear existing text content (theme adds "Paystand" text)
                 label.textContent = '';
                 
                 const logo = document.createElement('img');
@@ -616,6 +511,7 @@
                 label.appendChild(logo);
             }
             
+            // Add button to container
             const container = radioInput.closest('div[class*="border"]') || radioInput.parentElement;
             if (container && !container.querySelector('.paystand-button-container')) {
                 container.appendChild(createPaystandButton());
@@ -623,11 +519,11 @@
         }, 500);
     }
     
-    /** Cleanup when method is deselected */
+    /**
+     * Cleanup when method is deselected
+     */
     function onMethodDeselect() {
-        enablePlaceOrderButton();
-        stopValidationWatch();
-        
+        // Remove button from anywhere in the page
         const existingButton = document.querySelector('.paystand-button-container');
         if (existingButton) {
             existingButton.remove();
@@ -636,55 +532,21 @@
         paystandButton = null;
     }
     
-    /** Validate payment method */
+    /**
+     * Validate payment method
+     */
     function validate() {
         return true;
     }
     
-    /** Place order */
+    /**
+     * Place order
+     */
     function placeOrder() {
         return true;
     }
     
-    /** Watch for payment method changes */
-    function watchPaymentMethodChanges() {
-        const paymentMethodsContainer = document.querySelector('[wire\\:id="checkout.payment.methods"]') 
-            || document.querySelector('.payment-methods');
-        
-        if (paymentMethodsContainer) {
-            paymentMethodsContainer.addEventListener('click', (e) => {
-                const radio = e.target.closest('input[type="radio"][name="payment_method"]') 
-                    || e.target.closest('input[type="radio"]');
-                
-                if (radio) {
-                    setTimeout(() => {
-                        const isPaystandSelected = radio.value === 'paystandmagento' 
-                            || document.querySelector('input[value="paystandmagento"]:checked');
-                        
-                        if (isPaystandSelected) {
-                            disablePlaceOrderButton();
-                        } else {
-                            enablePlaceOrderButton();
-                            onMethodDeselect();
-                        }
-                    }, 100);
-                }
-            });
-        }
-        
-        if (typeof Livewire !== 'undefined') {
-            Livewire.hook('message.processed', () => {
-                const isPaystandSelected = document.querySelector('input[value="paystandmagento"]:checked');
-                if (isPaystandSelected) {
-                    disablePlaceOrderButton();
-                } else {
-                    enablePlaceOrderButton();
-                }
-            });
-        }
-    }
-    
-    // Register payment method with Hyva Checkout
+    // Register payment method with Hyvä Checkout
     if (typeof hyvaCheckout !== 'undefined' && hyvaCheckout.api) {
         hyvaCheckout.api.after(() => {
             hyvaCheckout.payment.registerMethod({
@@ -695,8 +557,6 @@
                     placeOrder: placeOrder
                 }
             });
-            
-            setTimeout(watchPaymentMethodChanges, 1000);
         });
     }
 })();

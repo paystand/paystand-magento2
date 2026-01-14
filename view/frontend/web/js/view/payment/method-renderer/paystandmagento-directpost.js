@@ -226,14 +226,23 @@ define(
 
         function onCompleteCheckout() {
             psCheckout.onComplete( async function (paymentData) {
+                console.log('[LUMA Paystand] Payment completed, full data received:', paymentData);
+                
+                // Handle both response formats: paymentData.response.data or paymentData directly
+                const data = paymentData.response?.data || paymentData;
+                
+                console.log('[LUMA Paystand] Extracted data:', data);
                 
                 const response = {
-                    payerId: paymentData.response.data.payerId,
-                    quote: paymentData.response.data.meta.quote,
-                    payerDiscount: paymentData.response.data.feeSplit.payerDiscount,
-                    payerTotalFees: paymentData.response.data.feeSplit.payerTotalFees,
-                    initPayer: paymentData.response.data.meta.initPayer
+                    payerId: data.payerId,
+                    quote: data.meta.quote,
+                    payerDiscount: data.feeSplit.payerDiscount,
+                    payerTotalFees: data.feeSplit.payerTotalFees,
+                    initPayer: data.meta.initPayer
                 }
+                
+                console.log('[LUMA Paystand] Sending payment data to backend:', response);
+                console.log('[LUMA Paystand] initPayer flag:', response.initPayer);
 
                 try {
                     const fetchResponse = await fetch('/paystandmagento/checkout/savepaymentdata', {
