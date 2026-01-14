@@ -180,7 +180,11 @@
         }
 
         if (typeof Livewire !== 'undefined' && !livewireHookRegistered) {
-            Livewire.hook('message.processed', updatePaystandButtonState);
+            Livewire.hook('message.processed', () => {
+                updatePaystandButtonState();
+                // Re-inject button if it was removed by Livewire re-render
+                setTimeout(injectPaystandButton, 100);
+            });
             livewireHookRegistered = true;
         }
     }
@@ -584,29 +588,41 @@
         return paystandButton;
     }
     
-    /** Initialize payment method */
-    function initialize() {
-        setTimeout(() => {
-            const radioInput = document.querySelector('input[value="paystandmagento"]');
-            if (!radioInput) return;
+    /** Inject button into the payment method container */
+    function injectPaystandButton() {
+        const radioInput = document.querySelector('input[value="paystandmagento"]');
+        if (!radioInput) return;
+        
+        // Check if Paystand is currently selected
+        const isSelected = radioInput.checked;
+        if (!isSelected) return;
+        
+        // Add logo to label if missing
+        const label = radioInput.nextElementSibling;
+        if (label && !label.querySelector('.paystand-logo') && window.paystandConfig.logoUrl) {
+            label.textContent = '';
             
-            const label = radioInput.nextElementSibling;
-            if (label && !label.querySelector('.paystand-logo') && window.paystandConfig.logoUrl) {
-                label.textContent = '';
-                
-                const logo = document.createElement('img');
-                logo.src = window.paystandConfig.logoUrl;
-                logo.alt = 'PayStand';
-                logo.className = 'paystand-logo';
-                logo.style.cssText = 'height: 20px;';
-                label.appendChild(logo);
-            }
-            
+            const logo = document.createElement('img');
+            logo.src = window.paystandConfig.logoUrl;
+            logo.alt = 'PayStand';
+            logo.className = 'paystand-logo';
+            logo.style.cssText = 'height: 20px;';
+            label.appendChild(logo);
+        }
+        
+        // Add button if missing
+        const existingButton = document.querySelector('.paystand-button-container');
+        if (!existingButton) {
             const container = radioInput.closest('div[class*="border"]') || radioInput.parentElement;
-            if (container && !container.querySelector('.paystand-button-container')) {
+            if (container) {
                 container.appendChild(createPaystandButton());
             }
-        }, 500);
+        }
+    }
+    
+    /** Initialize payment method */
+    function initialize() {
+        setTimeout(injectPaystandButton, 500);
     }
     
     /** Cleanup when method is deselected */
