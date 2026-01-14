@@ -34,7 +34,7 @@ $config = [
     'logoUrl' => $block->getViewFileUrl('PayStand_PayStandMagento::images/logo_paystand_small.png')
 ];
 
-// Add OAuth credentials for logged-in users (if configured)
+// Add OAuth credentials and access token for logged-in users (if configured)
 if ($customerSession->isLoggedIn()) {
     $clientId = $scopeConfig->getValue('payment/paystandmagento/client_id', ScopeInterface::SCOPE_STORE);
     $clientSecret = $scopeConfig->getValue('payment/paystandmagento/client_secret', ScopeInterface::SCOPE_STORE);
@@ -42,6 +42,23 @@ if ($customerSession->isLoggedIn()) {
     if ($clientId && $clientSecret) {
         $config['clientId'] = $clientId;
         $config['clientSecret'] = $clientSecret;
+        
+        // Get access token for tokenized payments (same logic as PayStandConfigProvider)
+        $configProvider = $objectManager->get(\PayStand\PayStandMagento\Model\PayStandConfigProvider::class);
+        $paystandConfig = $configProvider->getConfig();
+        
+        if (isset($paystandConfig['payment']['paystandmagento']['access_token'])) {
+            $config['accessToken'] = $paystandConfig['payment']['paystandmagento']['access_token'];
+        }
+    }
+    
+    // Get PayStand Payer ID from customer (for tokenized payments)
+    $customer = $customerSession->getCustomer();
+    if ($customer && $customer->getId()) {
+        $payerIdAttribute = $customer->getCustomAttribute('paystand_payer_id');
+        if ($payerIdAttribute && $payerIdAttribute->getValue()) {
+            $config['payerId'] = $payerIdAttribute->getValue();
+        }
     }
 }
 
