@@ -12,6 +12,7 @@ use Magento\Framework\App\Action\HttpPostActionInterface;
 use Magento\Framework\Controller\Result\JsonFactory;
 use Magento\Checkout\Model\Session as CheckoutSession;
 use Magento\Customer\Model\Session as CustomerSession;
+use Magento\Customer\Api\CustomerRepositoryInterface;
 use Magento\Framework\Exception\LocalizedException;
 use Magento\Framework\Exception\NoSuchEntityException;
 use Psr\Log\LoggerInterface;
@@ -21,17 +22,20 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
     private JsonFactory $resultJsonFactory;
     private CheckoutSession $checkoutSession;
     private CustomerSession $customerSession;
+    private CustomerRepositoryInterface $customerRepository;
     private LoggerInterface $logger;
 
     public function __construct(
         JsonFactory $resultJsonFactory,
         CheckoutSession $checkoutSession,
         CustomerSession $customerSession,
+        CustomerRepositoryInterface $customerRepository,
         LoggerInterface $logger
     ) {
         $this->resultJsonFactory = $resultJsonFactory;
         $this->checkoutSession = $checkoutSession;
         $this->customerSession = $customerSession;
+        $this->customerRepository = $customerRepository;
         $this->logger = $logger;
     }
 
@@ -83,19 +87,49 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
             }
 
             // Get customer data
-            $customer = $this->customerSession->getCustomer();
             $isLoggedIn = $this->customerSession->isLoggedIn();
             
             $customerData = [
                 'isLoggedIn' => $isLoggedIn,
-                'email' => $isLoggedIn ? $customer->getEmail() : ($billingAddress ? $billingAddress->getEmail() : null),
-                'id' => $isLoggedIn ? $customer->getId() : null,
+                'email' => null,
+                'id' => null,
                 'payerId' => null
             ];
 
             // Get Paystand payer ID if customer is logged in
-            if ($isLoggedIn && $customer->getCustomAttribute('paystand_payer_id')) {
-                $customerData['payerId'] = $customer->getCustomAttribute('paystand_payer_id')->getValue();
+            if ($isLoggedIn) {
+                $customerId = $this->customerSession->getCustomerId();
+                if ($customerId) {
+                    try {
+                        // Use CustomerRepository to get fresh customer data with all attributes
+                        $customer = $this->customerRepository->getById($customerId);
+                        
+                        $customerData['email'] = $customer->getEmail();
+                        $customerData['id'] = $customer->getId();
+                        
+                        // Get paystand_payer_id attribute
+                        $payerIdAttribute = $customer->getCustomAttribute('paystand_payer_id');
+                        if ($payerIdAttribute && $payerIdAttribute->getValue()) {
+                            $customerData['payerId'] = $payerIdAttribute->getValue();
+                            $this->logger->info('[Paystand GetQuoteData] Found payer ID for customer', [
+                                'customer_id' => $customerId,
+                                'payer_id' => $payerIdAttribute->getValue()
+                            ]);
+                        } else {
+                            $this->logger->info('[Paystand GetQuoteData] No payer ID found for customer', [
+                                'customer_id' => $customerId
+                            ]);
+                        }
+                    } catch (\Exception $e) {
+                        $this->logger->error('[Paystand GetQuoteData] Error loading customer', [
+                            'customer_id' => $customerId,
+                            'error' => $e->getMessage()
+                        ]);
+                    }
+                }
+            } else {
+                // Guest user - get email from billing address
+                $customerData['email'] = $billingAddress ? $billingAddress->getEmail() : null;
             }
 
             // Build response
