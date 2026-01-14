@@ -17,6 +17,7 @@
         try {
             window.paystandConfig = JSON.parse(scriptTag.dataset.paystandConfig);
         } catch (e) {
+            console.error('[Paystand Hyva] Failed to parse configuration:', e);
             window.paystandConfig = {};
         }
     } else {
@@ -62,7 +63,7 @@
             }
             
         } catch (error) {
-            // Silent error handling
+            console.error('[Paystand Hyva] Failed to fetch quote data:', error);
         }
         
         return { totals: {}, quoteId: null, grandTotal: 0, currency: 'USD' };
@@ -137,6 +138,7 @@
     
     /**
      * Build Paystand modal configuration
+     * Follows the exact pattern from Luma's getConfig() function
      */
     async function buildPaystandConfig() {
         // Fetch all data from server
@@ -149,6 +151,7 @@
         }).then(r => r.json());
         
         if (!serverData.success) {
+            console.error('[Paystand Hyva] Server returned unsuccessful response for quote data');
             return null;
         }
         
@@ -163,8 +166,16 @@
         const billing = serverData.billing || {};
         const customer = serverData.customer || { isLoggedIn: false, email: null, id: null, payerId: null };
         
+        // Determine payer email and payer id (same logic as Luma)
         const payerEmail = customer.isLoggedIn ? customer.email : (billing.email || '');
         const payerName = (billing.firstname || '') + ' ' + (billing.lastname || '');
+        
+        // IMPORTANT: payerId is set here from customer attributes if available
+        // But it will only be saved to customer after first payment when initPayer is true
+        let payerId = null;
+        if (customer.isLoggedIn && customer.payerId) {
+            payerId = customer.payerId;
+        }
         
         const config = {
             "publishableKey": window.paystandConfig.publishableKey,
@@ -177,15 +188,23 @@
             "mode": "modal",
             "env": env,
             "payerName": payerName.trim() || "Guest",
-            "payerEmail": payerEmail || "guest@example.com",
+            "payerEmail": payerEmail,
             "payerAddressCounty": null,
-            "payerId": customer.payerId,
+            "payerId": payerId,
             "paymentMeta": {
                 "source": "magento 2",
                 "quote": quote.quoteId,
                 "quoteDetails": quote.totals
             }
         };
+        
+        // LOG CONFIG FOR COMPARISON (same as Luma)
+        console.log('[HYVA Paystand] Config enviado a modal:', config);
+        
+        // Add access token if available (when user is logged in)
+        if (window.paystandConfig.accessToken) {
+            config.accessToken = window.paystandConfig.accessToken;
+        }
         
         // Add billing address details
         if (billing.street && billing.street.length > 0) {
@@ -201,15 +220,13 @@
             config.payerAddressState = billing.region_code;
         }
         
-        // For logged-in users with access token
-        if (customer.isLoggedIn && window.paystandConfig.accessToken) {
-            config.accessToken = window.paystandConfig.accessToken;
-            config.checkoutType = "checkout_magento2";
+        // Apply preset flow in config if customer is logged in (same logic as Luma)
+        if (customer.isLoggedIn && config.accessToken) {
+            delete config.presetCustom;
+            delete config.publishableKey;
+            config.checkoutType = 'checkout_magento2';
             config.customerId = window.paystandConfig.customerId;
             config.paymentMeta.extCustomerId = customer.id;
-            
-            delete config.publishableKey;
-            delete config.presetCustom;
         }
         
         return config;
@@ -229,6 +246,7 @@
                     resolve();
                 } else if (attempts >= maxAttempts) {
                     clearInterval(checkSDK);
+                    console.error('[Paystand Hyva] SDK failed to load after maximum attempts');
                     reject(new Error('Paystand SDK not loaded'));
                 }
                 attempts++;
@@ -267,19 +285,33 @@
     }
     
     /**
-     * Register onComplete handler (following Luma's exact pattern)
+     * Register PayStand checkout event handlers
+     * Follows the exact pattern from Luma's onCompleteCheckout() function
      */
-    function onCompleteCheckout() {
+    function registerPaystadCallbacks() {
+        // Handle successful payment (same as Luma)
         window.psCheckout.onComplete(async function(paymentData) {
+            console.log('[Paystand Hyva] Payment completed, full data received:', paymentData);
+            
+            // Handle both response formats: paymentData.response.data or paymentData directly
+            const data = paymentData.response?.data || paymentData;
+            
+            console.log('[Paystand Hyva] Extracted data:', data);
+            
+            // Build response object exactly like Luma does
             const response = {
-                payerId: paymentData.response.data.payerId,
-                quote: paymentData.response.data.meta.quote,
-                payerDiscount: paymentData.response.data.feeSplit.payerDiscount,
-                payerTotalFees: paymentData.response.data.feeSplit.payerTotalFees,
-                initPayer: paymentData.response.data.meta.initPayer
+                payerId: data.payerId,
+                quote: data.meta.quote,
+                payerDiscount: data.feeSplit.payerDiscount,
+                payerTotalFees: data.feeSplit.payerTotalFees,
+                initPayer: data.meta.initPayer
             };
             
+            console.log('[Paystand Hyva] Sending payment data to backend:', response);
+            console.log('[Paystand Hyva] initPayer flag:', response.initPayer);
+            
             try {
+                // Save payment data to backend (same endpoint as Luma)
                 const fetchResponse = await fetch('/paystandmagento/checkout/savepaymentdata', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -290,17 +322,44 @@
                     throw new Error(`HTTP error! status: ${fetchResponse.status}`);
                 }
                 
-                await fetchResponse.json();
+                const result = await fetchResponse.json();
+                console.log('[Paystand Hyva] Backend response:', result);
                 
-                // Trigger order placement
-                if (typeof hyvaCheckout !== 'undefined' && hyvaCheckout.checkout) {
-                    hyvaCheckout.checkout.placeOrder();
+                // Trigger order placement via Livewire component
+                const mainComponent = Livewire.components.componentsById['hyva-checkout-main'];
+                if (mainComponent) {
+                    try {
+                        await mainComponent.call('placeOrder');
+                        // Livewire handles the redirect automatically after successful order
+                    } catch (orderError) {
+                        console.error('[Paystand Hyva] Order placement failed:', orderError);
+                        alert('Order placement failed. Please try again or contact support.');
+                    }
+                } else {
+                    console.error('[Paystand Hyva] Could not find hyva-checkout-main Livewire component');
                 }
                 
             } catch (error) {
-                // Silent error handling
+                console.error('[Paystand Hyva] Error during payment completion:', error);
+                alert('An error occurred while processing your order. Please try again.');
             }
         });
+        
+        // Handle payment errors
+        if (typeof window.psCheckout.onError === 'function') {
+            window.psCheckout.onError(function(errorData) {
+                console.error('[Paystand Hyva] Payment error:', errorData);
+                alert('Payment failed. Please try again or use a different payment method.');
+            });
+        }
+        
+        // Handle user cancellation
+        if (typeof window.psCheckout.onCancel === 'function') {
+            window.psCheckout.onCancel(function() {
+                console.log('[Paystand Hyva] Payment cancelled by user');
+                // No action needed - user can retry or choose different payment method
+            });
+        }
     }
     
     /**
@@ -313,16 +372,10 @@
             const config = await buildPaystandConfig();
             
             if (!config) {
+                console.error('[Paystand Hyva] Failed to build checkout configuration');
                 alert('Error opening Paystand checkout. Please try again.');
                 return;
             }
-            
-            // Log configuration for debugging
-            console.log('========================================');
-            console.log('PAYSTAND MODAL CONFIGURATION (HYVÄ)');
-            console.log('========================================');
-            console.log(JSON.stringify(config, null, 2));
-            console.log('========================================');
             
             // Use existing container (already created in button)
             let container = document.getElementById('ps_checkout');
@@ -332,13 +385,17 @@
                 document.body.appendChild(container);
             }
             
-            // Register onComplete handler FIRST (before initCheckout)
-            onCompleteCheckout();
-            
-            // Then initialize checkout (this will call runCheckout)
+            // Initialize checkout first
             initCheckout(config);
             
+            // Register PayStand callbacks AFTER checkout is initialized
+            // Use a delay to ensure psCheckout is fully ready
+            setTimeout(() => {
+                registerPaystadCallbacks();
+            }, 1000);
+            
         } catch (error) {
+            console.error('[Paystand Hyva] Error opening checkout modal:', error);
             alert('Error opening Paystand checkout. Please try again.');
             throw error; // Re-throw to trigger finally block in button click handler
         }
