@@ -294,6 +294,7 @@
             "payerId": payerId,
             "paymentMeta": {
                 "source": "magento 2",
+                "checkout": "hyva",
                 "quote": quote.quoteId,
                 "quoteDetails": quote.totals
             }
