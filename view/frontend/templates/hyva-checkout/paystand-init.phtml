@@ -116,6 +116,18 @@ $config['sdkUrl'] = $paystandSdkUrl;
 $configJson = json_encode($config, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP);
 $methodUrl = $block->getViewFileUrl('PayStand_PayStandMagento::js/hyva-checkout/paystand-method.js');
 ?>
+<!-- Hide paystand_payer_id field from checkout forms -->
+<style>
+    [name="paystand_payer_id"],
+    [id*="paystand_payer_id"],
+    [for*="paystand_payer_id"],
+    .field-paystand_payer_id,
+    [class*="paystand-payer-id"],
+    [class*="paystand_payer_id"] {
+        display: none !important;
+    }
+</style>
+
 <!-- Load Paystand Checkout SDK -->
 <script src="<?= $block->escapeUrl($paystandSdkUrl) ?>"></script>
 
