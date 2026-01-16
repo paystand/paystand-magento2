@@ -74,7 +74,7 @@ if ($customerSession->isLoggedIn()) {
  * - 'sandbox'     (.co)  - Internal testing and QA
  * - 'development' (.biz) - Active development and integration
  */
-$PAYSTAND_ENV = $useSandbox ? 'development' : 'production';
+$PAYSTAND_ENV = $useSandbox ? 'sandbox' : 'production';
 
 // Environment mapping dictionary
 $paystandEnvironments = [
