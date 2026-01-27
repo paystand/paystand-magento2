@@ -23,7 +23,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
     const CLIENT_SECRET = 'payment/paystandmagento/client_secret';
     const UPDATE_ORDER_ON = 'payment/paystandmagento/update_order_on';
     const USE_SANDBOX = 'payment/paystandmagento/use_sandbox';
-    const SANDBOX_BASE_URL = 'https://api.paystand.biz/v3';
+    const SANDBOX_BASE_URL = 'https://api.paystand.co/v3';
     const BASE_URL = 'https://api.paystand.com/v3';
     const STORE_SCOPE = \Magento\Store\Model\ScopeInterface::SCOPE_STORE;
 
@@ -150,8 +150,8 @@ class Paystand extends \Magento\Framework\App\Action\Action
         }
 
         // Verify the event is payment related
-        if (!$json->resource->object = "payment") {
-          $this->_logger->debug('>>>>> PAYSTAND-EVENT-VERIFICATION-FINISH');
+        if (!isset($json->resource->object) || $json->resource->object != "payment") {
+          $this->_logger->debug('>>>>> PAYSTAND-EVENT-VERIFICATION-FINISH: Not a payment event');
           $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
           $result->setData(
               ['success_message' => __('Event verified, not a payment, no further action')]
