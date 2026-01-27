@@ -25,6 +25,8 @@
     let validationWatchActive = false;
     let livewireHookRegistered = false;
     let paystandCallbacksRegistered = false;
+    let placeOrderButtonObserver = null;
+    let shouldDisablePlaceOrder = false;
     
     const useSandbox = window.paystandConfig.useSandbox;
     const env = window.paystandConfig.environment || (useSandbox ? 'sandbox' : 'live');
@@ -78,7 +80,6 @@
     function isCheckoutComplete() {
         const checkoutContainer = document.querySelector('[wire\\:id="hyva-checkout-main"], .checkout-container, #checkout');
         if (!checkoutContainer) {
-            console.log('[Paystand Hyva] Checkout container not found');
             return { complete: false, missing: 'checkout container' };
         }
         
@@ -93,7 +94,6 @@
             const value = input.value?.trim() || '';
             if (!value) {
                 const fieldName = input.name || input.id || input.getAttribute('wire:model.defer') || 'unknown';
-                console.log('[Paystand Hyva] Empty required field:', fieldName);
                 return { complete: false, missing: fieldName };
             }
         }
@@ -103,7 +103,6 @@
             const emailInput = checkoutContainer.querySelector('input[type="email"]');
             if (emailInput && emailInput.offsetParent !== null) {
                 if (!emailInput.value || !emailInput.value.includes('@')) {
-                    console.log('[Paystand Hyva] Invalid email');
                     return { complete: false, missing: 'email' };
                 }
             }
@@ -112,7 +111,6 @@
         const cityInput = checkoutContainer.querySelector('input[name*="city"], input[id*="city"], [wire\\:model\\.defer*="city"], [wire\\:model*="city"]');
         if (cityInput && cityInput.offsetParent !== null) {
             if (!cityInput.value || !cityInput.value.trim()) {
-                console.log('[Paystand Hyva] City is required for Paystand');
                 return { complete: false, missing: 'city' };
             }
         }
@@ -129,11 +127,10 @@
             }
             
             if (!shippingMethodRadio && !shippingMethodDiv && !livewireHasMethod) {
-                console.log('[Paystand Hyva] Shipping method detection skipped');
+                // Shipping method detection skipped
             }
         }
         
-        console.log('[Paystand Hyva] Checkout validation passed');
         return { complete: true, missing: null };
     }
     
@@ -181,9 +178,12 @@
 
         if (typeof Livewire !== 'undefined' && !livewireHookRegistered) {
             Livewire.hook('message.processed', () => {
-                updatePaystandButtonState();
-                // Re-inject button if it was removed by Livewire re-render
-                setTimeout(injectPaystandButton, 100);
+                const paystandRadio = document.querySelector('input[value="paystandmagento"]');
+                if (paystandRadio && paystandRadio.checked) {
+                    updatePaystandButtonState();
+                    // Re-inject button if it was removed by Livewire re-render
+                    setTimeout(injectPaystandButton, 100);
+                }
             });
             livewireHookRegistered = true;
         }
@@ -589,14 +589,61 @@
         return paystandButton;
     }
     
+    /** Disable/Enable the main Place Order button */
+    function togglePlaceOrderButton(disable) {
+        const placeOrderButton = document.querySelector('button.btn-place-order');
+        
+        if (placeOrderButton) {
+            shouldDisablePlaceOrder = disable;
+            
+            if (disable) {
+                placeOrderButton.disabled = true;
+                placeOrderButton.setAttribute('data-paystand-disabled', 'true');
+                startObservingPlaceOrderButton(placeOrderButton);
+            } else {
+                stopObservingPlaceOrderButton();
+                placeOrderButton.disabled = false;
+                placeOrderButton.removeAttribute('data-paystand-disabled');
+            }
+        }
+    }
+    
+    /** Start observing Place Order button to keep it disabled */
+    function startObservingPlaceOrderButton(button) {
+        stopObservingPlaceOrderButton();
+        
+        placeOrderButtonObserver = new MutationObserver((mutations) => {
+            mutations.forEach((mutation) => {
+                if (mutation.type === 'attributes' && mutation.attributeName === 'disabled') {
+                    if (shouldDisablePlaceOrder && !button.disabled) {
+                        button.disabled = true;
+                    }
+                }
+            });
+        });
+        
+        placeOrderButtonObserver.observe(button, {
+            attributes: true,
+            attributeFilter: ['disabled']
+        });
+    }
+    
+    /** Stop observing Place Order button */
+    function stopObservingPlaceOrderButton() {
+        if (placeOrderButtonObserver) {
+            placeOrderButtonObserver.disconnect();
+            placeOrderButtonObserver = null;
+        }
+    }
+    
     /** Inject button into the payment method container */
     function injectPaystandButton() {
         const radioInput = document.querySelector('input[value="paystandmagento"]');
-        if (!radioInput) return;
+        if (!radioInput || !radioInput.checked) {
+            return;
+        }
         
-        // Check if Paystand is currently selected
-        const isSelected = radioInput.checked;
-        if (!isSelected) return;
+        togglePlaceOrderButton(true);
         
         // Add logo to label if missing
         const label = radioInput.nextElementSibling;
@@ -624,11 +671,59 @@
     /** Initialize payment method */
     function initialize() {
         setTimeout(injectPaystandButton, 500);
+        setupPaymentMethodListener();
+        
+        if (typeof Livewire !== 'undefined') {
+            Livewire.hook('message.processed', () => {
+                const paystandRadio = document.querySelector('input[value="paystandmagento"]');
+                if (paystandRadio && paystandRadio.checked) {
+                    setTimeout(() => togglePlaceOrderButton(true), 100);
+                } else {
+                    setTimeout(() => togglePlaceOrderButton(false), 100);
+                }
+            });
+        }
+    }
+    
+    /** Setup listener for payment method changes */
+    function setupPaymentMethodListener() {
+        document.addEventListener('change', function(e) {
+            const target = e.target;
+            
+            if (target.type === 'radio') {
+                if (target.name.includes('payment') || target.value === 'paystandmagento' || target.closest('[class*="payment"]')) {
+                    const paystandRadio = document.querySelector('input[value="paystandmagento"]');
+                    
+                    if (target.value === 'paystandmagento' && target.checked) {
+                        setTimeout(injectPaystandButton, 100);
+                    } else if (paystandRadio && !paystandRadio.checked) {
+                        onMethodDeselect();
+                    }
+                }
+            }
+        });
+        
+        document.addEventListener('click', function(e) {
+            const target = e.target;
+            
+            if (target.type === 'radio' || target.tagName === 'LABEL' || target.closest('label')) {
+                setTimeout(() => {
+                    const paystandRadio = document.querySelector('input[value="paystandmagento"]');
+                    
+                    if (paystandRadio && paystandRadio.checked) {
+                        setTimeout(injectPaystandButton, 100);
+                    } else if (paystandRadio && !paystandRadio.checked) {
+                        onMethodDeselect();
+                    }
+                }, 50);
+            }
+        });
     }
     
     /** Cleanup when method is deselected */
     function onMethodDeselect() {
         stopValidationWatch();
+        togglePlaceOrderButton(false);
         
         const existingButton = document.querySelector('.paystand-button-container');
         if (existingButton) {
