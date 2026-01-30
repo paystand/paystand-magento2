@@ -30,7 +30,7 @@
     
     const useSandbox = window.paystandConfig.useSandbox;
     const env = window.paystandConfig.environment || (useSandbox ? 'sandbox' : 'live');
-    const apiDomain = useSandbox ? 'api.paystand.co' : 'api.paystand.com';
+    const apiDomain = useSandbox ? 'api.paystand.biz' : 'api.paystand.com';
     
     /** Fetch quote data from server */
     async function getQuoteData() {
@@ -127,7 +127,7 @@
             }
             
             if (!shippingMethodRadio && !shippingMethodDiv && !livewireHasMethod) {
-                // Shipping method detection skipped
+                return { complete: false, missing: 'shipping method' };
             }
         }
         
@@ -157,7 +157,8 @@
             if (statusText) {
                 statusText.style.display = 'block';
                 const fieldName = formatFieldName(validation.missing);
-                statusText.textContent = `Please enter ${fieldName}`;
+                const action = fieldName === 'shipping method' ? 'select' : 'enter';
+                statusText.textContent = `Please ${action} ${fieldName}`;
             }
         }
     }
