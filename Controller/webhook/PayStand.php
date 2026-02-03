@@ -187,8 +187,11 @@ class Paystand extends \Magento\Framework\App\Action\Action
         $psPaymentStatus = $json->resource->status;
         $this->_logger->debug(">>>>> PAYSTAND-PAYMENT-STATUS: '{$psPaymentStatus}'");
 
-        // Verify if the payment status is not the same as the updateOrderOn value and is not failed
-        if ($psPaymentStatus != $updateOrderOn && $psPaymentStatus != 'failed') {
+        // Define statuses that should trigger order updates
+        $processableStatuses = [$updateOrderOn, 'failed', 'processing', 'posted', 'paid'];
+        
+        // Verify if the payment status should trigger an order update
+        if (!in_array($psPaymentStatus, $processableStatuses)) {
           $this->_logger->debug(
               ">>>>> PAYSTAND-FINISH: payment {$psPaymentStatus}, no need to update order"
           );
@@ -458,7 +461,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
     private function newOrderStatus($status)
     {
         $newStatus = '';
-        if ($status == $this->updateOrderOn) {
+        if ($status == $this->updateOrderOn || $status == 'processing' || $status == 'posted' || $status == 'paid') {
             $newStatus = Order::STATE_PROCESSING;
         } else if ($status == 'canceled') {
             $newStatus = Order::STATE_CANCELED;
