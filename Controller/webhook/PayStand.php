@@ -23,7 +23,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
     const CLIENT_SECRET = 'payment/paystandmagento/client_secret';
     const UPDATE_ORDER_ON = 'payment/paystandmagento/update_order_on';
     const USE_SANDBOX = 'payment/paystandmagento/use_sandbox';
-    const SANDBOX_BASE_URL = 'https://api.paystand.biz/v3';
+    const SANDBOX_BASE_URL = 'https://api.paystand.io/v3';
     const BASE_URL = 'https://api.paystand.com/v3';
     const STORE_SCOPE = \Magento\Store\Model\ScopeInterface::SCOPE_STORE;
 
@@ -338,15 +338,71 @@ class Paystand extends \Magento\Framework\App\Action\Action
                     . '", current order state: "' . $state . '", current order status: "' . $status . '"'
             );
 
-            // Only skip processing if order is ALREADY in a final state (processing or canceled)
-            // If order is in pending, we MUST process it
-            if ($state == Order::STATE_PROCESSING || $state == Order::STATE_CANCELED) {
+            // Skip processing if order is canceled
+            if ($state == Order::STATE_CANCELED) {
                 $this->_logger->debug(
-                    '>>>>> PAYSTAND-FINISH: Order already in final state: ' . $state . ', no further action needed'
+                    '>>>>> PAYSTAND-FINISH: Order is canceled, no further action needed'
                 );
                 $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
                 $result->setData([
-                    'success_message' => __('Order already %1, no further action needed', $state)
+                    'success_message' => __('Order is canceled, no further action needed')
+                ]);
+                return $result;
+            }
+
+            // If order is in processing and payment status is paid/posted, check if we need to create invoice
+            if ($state == Order::STATE_PROCESSING && ($psPaymentStatus == $updateOrderOn || $psPaymentStatus == 'paid' || $psPaymentStatus == 'posted')) {
+                $this->_logger->debug(
+                    '>>>>> PAYSTAND-PROCESSING: Order already in processing state, checking if invoice needs to be created for payment status: ' . $psPaymentStatus
+                );
+                
+                // Check if invoice already exists
+                $invoices = $this->_invoiceCollectionFactory->create()
+                    ->addAttributeToFilter('order_id', ['eq' => $order->getId()]);
+                
+                if ((int)$invoices->count() > 0) {
+                    $this->_logger->debug(
+                        '>>>>> PAYSTAND-FINISH: Order already has invoice, no further action needed'
+                    );
+                    $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
+                    $result->setData([
+                        'success_message' => __('Order already has invoice, no further action needed')
+                    ]);
+                    return $result;
+                }
+                
+                // Invoice doesn't exist, create it
+                $this->_logger->debug('>>>>> PAYSTAND-PROCESSING: Creating transaction and invoice for paid order...');
+                
+                // Create Transaction for the Order
+                $this->createTransaction($order, json_decode($body, true)['resource']);
+                
+                // Automatically invoice order
+                $this->createInvoice($order);
+                
+                $this->_logger->debug('>>>>> PAYSTAND-PROCESSING: Transaction and invoice created successfully for order ' . $order->getIncrementId());
+                
+                // Finish and send back success response
+                $this->_logger->debug(
+                    '>>>>> PAYSTAND-FINISH: Paystand payment status: "' . $psPaymentStatus
+                        . '", order state: "' . $state
+                        . '", order status: "' . $status . '", invoice created'
+                );
+                $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
+                $result->setData([
+                    'success_message' => __('Invoice created for order')
+                ]);
+                return $result;
+            }
+            
+            // If order is already in processing state but payment is not paid/posted yet, skip
+            if ($state == Order::STATE_PROCESSING) {
+                $this->_logger->debug(
+                    '>>>>> PAYSTAND-FINISH: Order already in processing state, payment status is ' . $psPaymentStatus . ', no further action needed'
+                );
+                $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
+                $result->setData([
+                    'success_message' => __('Order already in processing, awaiting payment confirmation')
                 ]);
                 return $result;
             }

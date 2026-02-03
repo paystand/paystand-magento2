@@ -30,7 +30,7 @@
     
     const useSandbox = window.paystandConfig.useSandbox;
     const env = window.paystandConfig.environment || (useSandbox ? 'sandbox' : 'live');
-    const apiDomain = useSandbox ? 'api.paystand.biz' : 'api.paystand.com';
+    const apiDomain = useSandbox ? 'api.paystand.io' : 'api.paystand.com';
     
     /** Fetch quote data from server */
     async function getQuoteData() {
