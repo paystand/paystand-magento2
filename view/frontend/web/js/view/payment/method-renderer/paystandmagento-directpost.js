@@ -6,10 +6,10 @@ var env = 'live';
 var use_sandbox = window.checkoutConfig.payment.paystandmagento.use_sandbox;
 if (use_sandbox == '1') {
     checkoutjs_module = 'paystand-sandbox';
-    core_domain = 'paystand.io';
-    api_domain = 'api.paystand.io';
-    checkout_domain = 'checkout.paystand.io';
-    env = 'staging'
+    core_domain = 'paystand.co';
+    api_domain = 'api.paystand.co';
+    checkout_domain = 'checkout.paystand.co';
+    env = 'sandbox'
 }
 
 define(
