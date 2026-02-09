@@ -13,7 +13,7 @@ if (use_sandbox == '1') {
 }
 
 define(
-    [
+    [   
         'jquery',
         'Magento_Checkout/js/view/payment/default',
         'Magento_Checkout/js/model/quote',
@@ -63,9 +63,6 @@ define(
                     "quoteDetails": quote.totals()
                 }
             };
-
-            // LOG CONFIG FOR COMPARISON
-            console.log('[LUMA Paystand] Config enviado a modal:', config);
 
             // Add access token if available (when user is logged in)
             if (window.checkoutConfig.payment.paystandmagento.access_token) {
@@ -225,14 +222,10 @@ define(
         }
 
         function onCompleteCheckout() {
-            psCheckout.onComplete( async function (paymentData) {
-                console.log('[LUMA Paystand] Payment completed, full data received:', paymentData);
-                
+            psCheckout.onComplete( async function (paymentData) {                
                 // Handle both response formats: paymentData.response.data or paymentData directly
                 const data = paymentData.response?.data || paymentData;
-                
-                console.log('[LUMA Paystand] Extracted data:', data);
-                
+                                
                 const response = {
                     payerId: data.payerId,
                     quote: data.meta.quote,
@@ -240,9 +233,6 @@ define(
                     payerTotalFees: data.feeSplit.payerTotalFees,
                     initPayer: data.meta.initPayer
                 }
-                
-                console.log('[LUMA Paystand] Sending payment data to backend:', response);
-                console.log('[LUMA Paystand] initPayer flag:', response.initPayer);
 
                 try {
                     const fetchResponse = await fetch('/paystandmagento/checkout/savepaymentdata', {

@@ -301,8 +301,6 @@
             }
         };
         
-        console.log('[HYVA Paystand] Config enviado a modal:', config);
-        
         if (window.paystandConfig.accessToken) {
             config.accessToken = window.paystandConfig.accessToken;
         }
@@ -400,11 +398,8 @@
         paystandCallbacksRegistered = true;
 
         window.psCheckout.onComplete(async function(paymentData) {
-            console.log('[Paystand Hyva] Payment completed, full data received:', paymentData);
             
             const data = paymentData.response?.data || paymentData;
-            
-            console.log('[Paystand Hyva] Extracted data:', data);
             
             const response = {
                 payerId: data.payerId,
@@ -413,9 +408,6 @@
                 payerTotalFees: data.feeSplit.payerTotalFees,
                 initPayer: data.meta.initPayer
             };
-            
-            console.log('[Paystand Hyva] Sending payment data to backend:', response);
-            console.log('[Paystand Hyva] initPayer flag:', response.initPayer);
             
             try {
                 const fetchResponse = await fetch('/paystandmagento/checkout/savepaymentdata', {
@@ -429,7 +421,6 @@
                 }
                 
                 const result = await readJsonResponse(fetchResponse);
-                console.log('[Paystand Hyva] Backend response:', result);
 
                 if (result && result.success === false) {
                     const message = result?.error?.message || 'Payment data could not be saved. Please try again.';
@@ -479,7 +470,6 @@
         
         if (typeof window.psCheckout.onCancel === 'function') {
             window.psCheckout.onCancel(function() {
-                console.log('[Paystand Hyva] Payment cancelled by user');
             });
         }
     }
