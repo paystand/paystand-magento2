@@ -59,6 +59,7 @@ define(
                 "payerId": payerId,
                 "paymentMeta": {
                     "source": "magento 2",
+                    "checkout": "luma",
                     "quote": quote.getQuoteId(),
                     "quoteDetails": quote.totals()
                 }
