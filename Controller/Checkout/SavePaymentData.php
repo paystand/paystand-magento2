@@ -7,6 +7,7 @@ use Magento\Framework\App\Action\Context;
 use Psr\Log\LoggerInterface;
 use Magento\Framework\Controller\Result\JsonFactory;
 use PayStand\PayStandMagento\Helper\CustomerPayerId;
+use PayStand\PayStandMagento\Helper\TelemetryClient;
 use Magento\Quote\Api\CartRepositoryInterface;
 use Magento\Quote\Model\QuoteIdMaskFactory;
 use Magento\Framework\Exception\NoSuchEntityException;
@@ -55,6 +56,9 @@ class SavePaymentData extends Action
     /** @var ScopeConfigInterface */
     protected $scopeConfig;
 
+    /** @var TelemetryClient */
+    protected $telemetryClient;
+
     /**
      * PayStand configuration path
      */
@@ -68,6 +72,7 @@ class SavePaymentData extends Action
      * @param CartRepositoryInterface $cartRepository
      * @param QuoteIdMaskFactory $quoteIdMaskFactory
      * @param ScopeConfigInterface $scopeConfig
+     * @param TelemetryClient $telemetryClient
      */
     public function __construct(
         Context $context,
@@ -76,7 +81,8 @@ class SavePaymentData extends Action
         CustomerPayerId $customerPayerIdHelper,
         CartRepositoryInterface $cartRepository,
         QuoteIdMaskFactory $quoteIdMaskFactory,
-        ScopeConfigInterface $scopeConfig
+        ScopeConfigInterface $scopeConfig,
+        TelemetryClient $telemetryClient
     ) {
         $this->logger = $logger;
         $this->resultJsonFactory = $resultJsonFactory;
@@ -84,6 +90,7 @@ class SavePaymentData extends Action
         $this->cartRepository = $cartRepository;
         $this->quoteIdMaskFactory = $quoteIdMaskFactory;
         $this->scopeConfig = $scopeConfig;
+        $this->telemetryClient = $telemetryClient;
         parent::__construct($context);
     }
 
@@ -129,6 +136,15 @@ class SavePaymentData extends Action
 
         if (!$data) {
             $this->logger->error('SAVEPAYMENTDATA >>>>>> Invalid JSON received');
+            $this->logger->error('[MAGENTO-MONITORING]: Event checkout.payment_data.failed - Error: Invalid JSON');
+            
+            // Send telemetry metric
+            $this->telemetryClient->sendPluginError(
+                'checkout',
+                'Payment data save failed - Invalid JSON',
+                ['event' => 'checkout.payment_data.failed', 'error' => 'Invalid JSON']
+            );
+            
             return $result->setHttpResponseCode(Response::HTTP_BAD_REQUEST)->setData([
                 'success' => false,
                 'error' => [
@@ -146,6 +162,15 @@ class SavePaymentData extends Action
 
         if (!$payerId || !$quoteIdIncoming) {
             $this->logger->error('SAVEPAYMENTDATA >>>>>> Missing payerId or quote');
+            $this->logger->error('[MAGENTO-MONITORING]: Event checkout.payment_data.failed - Error: Missing required data');
+            
+            // Send telemetry metric
+            $this->telemetryClient->sendPluginError(
+                'checkout',
+                'Payment data save failed - Missing required data',
+                ['event' => 'checkout.payment_data.failed', 'error' => 'Missing required data']
+            );
+            
             return $result->setHttpResponseCode(Response::HTTP_BAD_REQUEST)->setData([
                 'success' => false,
                 'error' => [
@@ -198,12 +223,24 @@ class SavePaymentData extends Action
             $this->cartRepository->save($quote);
 
             if ($isAdjustmentEnabled) {
-                $this->logger->info('SAVEPAYMENTDATA >>>>>> Saved paystand_adjustment to quote', [
-                    'quote_id'            => $realQuoteId,
-                    'incoming_quote'      => $quoteIdIncoming,
-                    'paystand_adjustment' => $paystandAdjustment
-                ]);
-            }
+            $this->logger->info('SAVEPAYMENTDATA >>>>>> Saved paystand_adjustment to quote', [
+                'quote_id'            => $realQuoteId,
+                'incoming_quote'      => $quoteIdIncoming,
+                'paystand_adjustment' => $paystandAdjustment
+            ]);
+        }
+        $this->logger->info('[MAGENTO-MONITORING]: Event checkout.payment_data.saved - Quote ID: ' . $realQuoteId . ', Payer ID: ' . $payerId);
+        
+        // Send telemetry log
+        $this->telemetryClient->sendLog(
+            'Payment data saved successfully',
+            [
+                'event' => 'checkout.payment_data.saved',
+                'quote_id' => $realQuoteId,
+                'payer_id' => $payerId
+            ],
+            'info'
+        );
 
             // 6) Branch by guest vs. customer
             $isGuest = (int)$quote->getCustomerIsGuest() === 1;
@@ -269,6 +306,19 @@ class SavePaymentData extends Action
                 'SAVEPAYMENTDATA >>>>>> Quote not found / masked id invalid: ' . $e->getMessage(),
                 ['incoming_quote' => $quoteIdIncoming]
             );
+            $this->logger->error('[MAGENTO-MONITORING]: Event checkout.payment_data.failed - Error: Quote not found, Quote ID: ' . $quoteIdIncoming);
+            
+            // Send telemetry metric
+            $this->telemetryClient->sendPluginError(
+                'checkout',
+                'Payment data save failed - Quote not found',
+                [
+                    'event' => 'checkout.payment_data.failed',
+                    'quote_id' => $quoteIdIncoming,
+                    'error' => 'Quote not found'
+                ]
+            );
+            
             return $result->setHttpResponseCode(Response::HTTP_NOT_FOUND)->setData([
                 'success' => false,
                 'error' => [
@@ -281,6 +331,19 @@ class SavePaymentData extends Action
                 'SAVEPAYMENTDATA >>>>>> Error loading quote: ' . $e->getMessage(),
                 ['incoming_quote' => $quoteIdIncoming]
             );
+            $this->logger->error('[MAGENTO-MONITORING]: Event checkout.payment_data.failed - Error: ' . $e->getMessage() . ', Quote ID: ' . $quoteIdIncoming);
+            
+            // Send telemetry metric
+            $this->telemetryClient->sendPluginError(
+                'checkout',
+                'Payment data save failed - Error loading quote',
+                [
+                    'event' => 'checkout.payment_data.failed',
+                    'quote_id' => $quoteIdIncoming,
+                    'error' => $e->getMessage()
+                ]
+            );
+            
             return $result->setHttpResponseCode(Response::HTTP_INTERNAL_ERROR)->setData([
                 'success' => false,
                 'error' => [

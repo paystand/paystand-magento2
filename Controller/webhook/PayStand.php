@@ -8,6 +8,7 @@ use Magento\Quote\Api\CartRepositoryInterface;
 use \stdClass;
 use Magento\Sales\Model\Order\Payment\Transaction\BuilderInterface as BuilderInterface;
 use Magento\Sales\Model\Order;
+use PayStand\PayStandMagento\Helper\TelemetryClient;
 
 /**
  * Webhook Receiver Controller for Paystand
@@ -81,6 +82,9 @@ class Paystand extends \Magento\Framework\App\Action\Action
     /** @var CartRepositoryInterface */
     private $cartRepository;
 
+    /** @var TelemetryClient */
+    protected $telemetryClient;
+
     /**
      * @param \Magento\Framework\App\Action\Context $context ,
      * @param \Psr\Log\LoggerInterface $logger
@@ -99,7 +103,8 @@ class Paystand extends \Magento\Framework\App\Action\Action
         \Magento\Framework\DB\TransactionFactory $transactionFactory,
         \Magento\Sales\Api\InvoiceRepositoryInterface $invoiceRepository,
         \Magento\Sales\Api\OrderRepositoryInterface $orderRepository,
-        CartRepositoryInterface $cartRepository
+        CartRepositoryInterface $cartRepository,
+        TelemetryClient $telemetryClient
     ) {
         $this->_logger = $logger;
         $this->_request = $request;
@@ -114,6 +119,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
         $this->_invoiceRepository = $invoiceRepository;
         $this->_orderRepository = $orderRepository;
         $this->cartRepository = $cartRepository;
+        $this->telemetryClient = $telemetryClient;
         $this->updateOrderOn = $this->scopeConfig->getValue(self::UPDATE_ORDER_ON, self::STORE_SCOPE);
         parent::__construct($context);
     }
@@ -126,12 +132,29 @@ class Paystand extends \Magento\Framework\App\Action\Action
         // Start and Initialize http response
         $result = $this->_jsonResultFactory->create();
         $this->_logger->debug('>>>>> PAYSTAND-START: paystandmagento/webhook/paystand endpoint was hit');
+        $this->_logger->info('[MAGENTO-MONITORING]: Event webhook.received');
+        
+        // Send telemetry log
+        $this->telemetryClient->sendLog(
+            'Webhook endpoint was hit',
+            ['event' => 'webhook.received'],
+            'info'
+        );
 
         // Get body content from request
         $body = (!empty($this->_request->getContent()))
             ? $this->_request->getContent() : $this->getRequest()->getContent();
         if ($body == null) {
             $this->_logger->error('>>>>> PAYSTAND-ERROR: error retrieving the body from webhook');
+            $this->_logger->error('[MAGENTO-MONITORING]: Event webhook.processing.failed - Error: Cannot retrieve body from webhook');
+            
+            // Send telemetry metric
+            $this->telemetryClient->sendPluginError(
+                'webhook',
+                'Webhook processing failed - Cannot retrieve body from webhook',
+                ['event' => 'webhook.processing.failed', 'error' => 'Cannot retrieve body from webhook']
+            );
+            
             $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_INTERNAL_ERROR);
             $result->setData(['error_message' => __('error retrieving the body from webhook')]);
             return $result;
@@ -165,6 +188,15 @@ class Paystand extends \Magento\Framework\App\Action\Action
             $this->_logger->error(
                 '>>>>> PAYSTAND-ERROR: access_token could not be retrieved, check your Paystand configuration'
             );
+            $this->_logger->error('[MAGENTO-MONITORING]: Event webhook.processing.failed - Error: Cannot retrieve access token');
+            
+            // Send telemetry metric
+            $this->telemetryClient->sendPluginError(
+                'webhook',
+                'Webhook processing failed - Cannot retrieve access token',
+                ['event' => 'webhook.processing.failed', 'error' => 'Cannot retrieve access token']
+            );
+            
             $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_BAD_REQUEST);
             $result->setData(
                 [
@@ -177,6 +209,21 @@ class Paystand extends \Magento\Framework\App\Action\Action
         // Verify received Event is valid with Paystand
         if (!$this->verifyPaystandEvent($access_token, $json)) {
           $this->_logger->error('>>>>> PAYSTAND-ERROR: Event verification failed');
+          $this->_logger->error('[MAGENTO-MONITORING]: Event webhook.verification.failed');
+          $this->_logger->error('[MAGENTO-MONITORING]: Event webhook.processing.failed - Error: Event verification failed');
+          
+          // Send telemetry metrics
+          $this->telemetryClient->sendPluginError(
+              'webhook',
+              'Webhook verification failed',
+              ['event' => 'webhook.verification.failed', 'error' => 'Event verification failed']
+          );
+          $this->telemetryClient->sendPluginError(
+              'webhook',
+              'Webhook processing failed - Event verification failed',
+              ['event' => 'webhook.processing.failed', 'error' => 'Event verification failed']
+          );
+          
           $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_BAD_REQUEST);
           $result->setData(['error_message' => __('Event verification failed')]);
           return $result;
@@ -214,11 +261,35 @@ class Paystand extends \Magento\Framework\App\Action\Action
             $quote = $this->cartRepository->get((int)$id);
         } catch (\Magento\Framework\Exception\NoSuchEntityException $e) {
             $this->_logger->error('>>>>> PAYSTAND-ERROR: Quote not found for ID: ' . $id);
+            $this->_logger->error('[MAGENTO-MONITORING]: Event webhook.quote_not_found - Quote ID: ' . $id);
+            $this->_logger->error('[MAGENTO-MONITORING]: Event webhook.processing.failed - Error: Quote not found, Quote ID: ' . $id);
+            
+            // Send telemetry metrics
+            $this->telemetryClient->sendPluginError(
+                'webhook',
+                'Quote not found',
+                ['event' => 'webhook.quote_not_found', 'quote_id' => $id, 'error' => 'Quote not found for ID: ' . $id]
+            );
+            $this->telemetryClient->sendPluginError(
+                'webhook',
+                'Webhook processing failed - Quote not found',
+                ['event' => 'webhook.processing.failed', 'quote_id' => $id, 'error' => 'Quote not found']
+            );
+            
             $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_BAD_REQUEST);
             $result->setData(['error_message' => __('Quote not found')]);
             return $result;
         } catch (\Magento\Framework\Exception\StateException $e) {
             $this->_logger->error('>>>>> PAYSTAND-ERROR: Quote in invalid state for ID: ' . $id . ' - ' . $e->getMessage());
+            $this->_logger->error('[MAGENTO-MONITORING]: Event webhook.processing.failed - Error: Quote in invalid state, Quote ID: ' . $id);
+            
+            // Send telemetry metric
+            $this->telemetryClient->sendPluginError(
+                'webhook',
+                'Webhook processing failed - Quote in invalid state',
+                ['event' => 'webhook.processing.failed', 'quote_id' => $id, 'error' => 'Quote in invalid state']
+            );
+            
             $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_BAD_REQUEST);
             $result->setData(['error_message' => __('Quote cannot be loaded')]);
             return $result;
@@ -322,6 +393,15 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 }
             } catch (\Exception $e) {
                 $this->_logger->error('>>>>> PAYSTAND-ERROR: Exception while updating quote: ' . $e->getMessage());
+                $this->_logger->error('[MAGENTO-MONITORING]: Event webhook.processing.failed - Error: Exception updating quote, Quote ID: ' . $quote->getId() . ', Error: ' . $e->getMessage());
+                
+                // Send telemetry metric
+                $this->telemetryClient->sendPluginError(
+                    'webhook',
+                    'Webhook processing failed - Exception updating quote',
+                    ['event' => 'webhook.processing.failed', 'quote_id' => $quote->getId(), 'error' => $e->getMessage()]
+                );
+                
                 // Continue to standard error response
             }
         }
@@ -451,6 +531,19 @@ class Paystand extends \Magento\Framework\App\Action\Action
                     . '", new order state: "' . $state
                     . '", new order status: "' . $status . '"'
             );
+            $this->_logger->info('[MAGENTO-MONITORING]: Event webhook.processing.completed - Order: ' . $order->getIncrementId() . ', Status: ' . $psPaymentStatus);
+            
+            // Send telemetry log
+            $this->telemetryClient->sendLog(
+                'Webhook processed successfully',
+                [
+                    'event' => 'webhook.processing.completed',
+                    'order_id' => $order->getIncrementId(),
+                    'payment_status' => $psPaymentStatus
+                ],
+                'info'
+            );
+            
             $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
             $result->setData(
                 [
@@ -464,6 +557,21 @@ class Paystand extends \Magento\Framework\App\Action\Action
             return $result;
         } else {
             $this->_logger->error('>>>>> PAYSTAND-ERROR: Order not found after retries for quote: ' . $id);
+            $this->_logger->error('[MAGENTO-MONITORING]: Event webhook.order_not_found - Quote ID: ' . $id);
+            $this->_logger->error('[MAGENTO-MONITORING]: Event webhook.processing.failed - Error: Order not found after retries, Quote ID: ' . $id);
+            
+            // Send telemetry metrics
+            $this->telemetryClient->sendPluginError(
+                'webhook',
+                'Order not found after retries',
+                ['event' => 'webhook.order_not_found', 'quote_id' => $id, 'error' => 'Order not found after retries']
+            );
+            $this->telemetryClient->sendPluginError(
+                'webhook',
+                'Webhook processing failed - Order not found after retries',
+                ['event' => 'webhook.processing.failed', 'quote_id' => $id, 'error' => 'Order not found after retries']
+            );
+            
             $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_NOT_FOUND);
             $result->setData(['error_message' => __('Order not found')]);
             return $result;
@@ -541,9 +649,27 @@ class Paystand extends \Magento\Framework\App\Action\Action
         );
         $authResponse = $this->runCurl($authCurl, $oauthUrl);
         if ($authResponse == null) {
+            $this->_logger->error('[MAGENTO-MONITORING]: Event api.oauth.failed');
+            
+            // Send telemetry metric
+            $this->telemetryClient->sendOAuthAttempt(
+                'failed',
+                'OAuth token retrieval failed',
+                ['event' => 'api.oauth.failed']
+            );
+            
             return null;
         }
         $this->_logger->debug('>>>>> PAYSTAND-FETCH-ACCESS-TOKEN-SUCCESS');
+        $this->_logger->info('[MAGENTO-MONITORING]: Event api.oauth.success');
+        
+        // Send telemetry metric
+        $this->telemetryClient->sendOAuthAttempt(
+            'success',
+            'OAuth token retrieved successfully',
+            ['event' => 'api.oauth.success']
+        );
+        
         return $authResponse->access_token;
     }
 
@@ -635,9 +761,34 @@ class Paystand extends \Magento\Framework\App\Action\Action
 
             $transactionId = $transaction->save()->getTransactionId();
             $this->_logger->debug('>>>>> PAYSTAND-CREATE-TRANSACTION-FINISH: transactionId: ' . $transactionId);
+            $this->_logger->info('[MAGENTO-MONITORING]: Event transaction.created - Transaction ID: ' . $transactionId . ', Order: ' . $order->getIncrementId());
+            
+            // Send telemetry log
+            $this->telemetryClient->sendLog(
+                'Transaction created successfully',
+                [
+                    'event' => 'transaction.created',
+                    'transaction_id' => $transactionId,
+                    'order_id' => $order->getIncrementId()
+                ],
+                'info'
+            );
+            
             return  $transactionId;
         } catch (\Magento\Framework\Exception\AlreadyExistsException $e) {
             $this->_logger->debug('>>>>> PAYSTAND-EXCEPTION: ' . $e);
+            $this->_logger->error('[MAGENTO-MONITORING]: Event transaction.creation.failed - Order: ' . $order->getIncrementId() . ', Error: ' . $e->getMessage());
+            
+            // Send telemetry metric
+            $this->telemetryClient->sendPluginError(
+                'order',
+                'Transaction creation failed',
+                [
+                    'event' => 'transaction.creation.failed',
+                    'order_id' => $order->getIncrementId(),
+                    'error' => $e->getMessage()
+                ]
+            );
         }
     }
 
@@ -692,9 +843,35 @@ class Paystand extends \Magento\Framework\App\Action\Action
                     ->addObject($invoice->getOrder());
                 $transactionSave->save();
                 $this->_logger->debug('>>>>> PAYSTAND-CREATE-INVOICE-FINISH: invoiceId: ' . $invoice->getEntityId());
+                $this->_logger->info('[MAGENTO-MONITORING]: Event invoice.created - Invoice ID: ' . $invoice->getEntityId() . ', Order: ' . $order->getIncrementId());
+                
+                // Send telemetry log
+                $this->telemetryClient->sendLog(
+                    'Invoice created successfully',
+                    [
+                        'event' => 'invoice.created',
+                        'invoice_id' => $invoice->getEntityId(),
+                        'order_id' => $order->getIncrementId()
+                    ],
+                    'info'
+                );
+                
                 return $invoice;
             }
         } catch (\Exception $e) {
+            $this->_logger->error('[MAGENTO-MONITORING]: Event invoice.creation.failed - Order: ' . ($order ? $order->getIncrementId() : 'unknown') . ', Error: ' . $e->getMessage());
+            
+            // Send telemetry metric
+            $this->telemetryClient->sendPluginError(
+                'invoice',
+                'Invoice creation failed',
+                [
+                    'event' => 'invoice.creation.failed',
+                    'order_id' => ($order ? $order->getIncrementId() : 'unknown'),
+                    'error' => $e->getMessage()
+                ]
+            );
+            
             throw new \Magento\Framework\Exception\LocalizedException(
                 __($e->getMessage())
             );

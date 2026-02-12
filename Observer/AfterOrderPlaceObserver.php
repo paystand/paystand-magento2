@@ -6,6 +6,7 @@ namespace PayStand\PayStandMagento\Observer;
 
 use Magento\Framework\Event\ObserverInterface;
 use PayStand\PayStandMagento\Model\Directpost;
+use PayStand\PayStandMagento\Helper\TelemetryClient;
 use Magento\Sales\Model\Order;
 use Psr\Log\LoggerInterface;
 use Magento\Framework\App\Config\ScopeConfigInterface;
@@ -71,6 +72,11 @@ class AfterOrderPlaceObserver implements ObserverInterface
     protected $_orderRepository;
 
     /**
+     * @var TelemetryClient
+     */
+    protected $telemetryClient;
+
+    /**
      * PayStand configuration paths
      */
     const UPDATE_ORDER_ON = 'payment/paystandmagento/update_order_on';
@@ -88,6 +94,7 @@ class AfterOrderPlaceObserver implements ObserverInterface
      * @param QuoteFactory $quoteFactory
      * @param CartRepositoryInterface $cartRepository
      * @param OrderRepositoryInterface $orderRepository
+     * @param TelemetryClient $telemetryClient
      */
     public function __construct(
         LoggerInterface $logger,
@@ -99,7 +106,8 @@ class AfterOrderPlaceObserver implements ObserverInterface
         CollectionFactory $invoiceCollectionFactory,
         QuoteFactory $quoteFactory,
         CartRepositoryInterface $cartRepository,
-        OrderRepositoryInterface $orderRepository
+        OrderRepositoryInterface $orderRepository,
+        TelemetryClient $telemetryClient
     ) {
         $this->_logger = $logger;
         $this->scopeConfig = $scopeConfig;
@@ -111,6 +119,7 @@ class AfterOrderPlaceObserver implements ObserverInterface
         $this->_quoteFactory = $quoteFactory;
         $this->_cartRepository = $cartRepository;
         $this->_orderRepository = $orderRepository;
+        $this->telemetryClient = $telemetryClient;
     }
 
     /**
@@ -220,6 +229,17 @@ class AfterOrderPlaceObserver implements ObserverInterface
         }
         $observerStartTime = microtime(true);
         $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER-START: Observer triggered for order " . $order->getIncrementId() . " at " . date('Y-m-d H:i:s.u'));
+        $this->_logger->info('[MAGENTO-MONITORING]: Event order.placed - Order: ' . $order->getIncrementId());
+        
+        // Send telemetry log
+        $this->telemetryClient->sendLog(
+            'Order placed successfully',
+            [
+                'event' => 'order.placed',
+                'order_id' => $order->getIncrementId()
+            ],
+            'info'
+        );
         
         // Log initial order state for race condition diagnosis
         $initialState = $order->getState();
@@ -322,6 +342,20 @@ class AfterOrderPlaceObserver implements ObserverInterface
                                 // Apply payment information to the order if status exactly matches configuration
                                 if ($paymentStatus == $updateOrderOn) {
                                     $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER: Setting order " . $order->getIncrementId() . " to processing");
+                                    $this->_logger->info('[MAGENTO-MONITORING]: Event order.updated - Order: ' . $order->getIncrementId() . ', New Status: processing, Payment Status: ' . $paymentStatus);
+                                    
+                                    // Send telemetry log
+                                    $this->telemetryClient->sendLog(
+                                        'Order status updated',
+                                        [
+                                            'event' => 'order.updated',
+                                            'order_id' => $order->getIncrementId(),
+                                            'new_status' => 'processing',
+                                            'payment_status' => $paymentStatus
+                                        ],
+                                        'info'
+                                    );
+                                    
                                     $order->setState(Order::STATE_PROCESSING);
                                     $order->setStatus(Order::STATE_PROCESSING);
 
@@ -538,9 +572,35 @@ class AfterOrderPlaceObserver implements ObserverInterface
             $order->save();
 
             $this->_logger->debug('>>>>> PAYSTAND-CREATE-TRANSACTION-FINISH: transactionId: ' . $transactionId);
+            $this->_logger->info('[MAGENTO-MONITORING]: Event transaction.created - Transaction ID: ' . $transactionId . ', Order: ' . $order->getIncrementId());
+            
+            // Send telemetry log
+            $this->telemetryClient->sendLog(
+                'Transaction created successfully',
+                [
+                    'event' => 'transaction.created',
+                    'transaction_id' => $transactionId,
+                    'order_id' => $order->getIncrementId()
+                ],
+                'info'
+            );
+            
             return $transactionId;
         } catch (\Exception $e) {
             $this->_logger->error('>>>>> PAYSTAND-EXCEPTION: ' . $e->getMessage());
+            $this->_logger->error('[MAGENTO-MONITORING]: Event transaction.creation.failed - Order: ' . $order->getIncrementId() . ', Error: ' . $e->getMessage());
+            
+            // Send telemetry metric
+            $this->telemetryClient->sendPluginError(
+                'order',
+                'Transaction creation failed',
+                [
+                    'event' => 'transaction.creation.failed',
+                    'order_id' => $order->getIncrementId(),
+                    'error' => $e->getMessage()
+                ]
+            );
+            
             return null;
         }
     }
@@ -652,10 +712,36 @@ class AfterOrderPlaceObserver implements ObserverInterface
                 $transactionSave->save();
 
                 $this->_logger->debug('>>>>> PAYSTAND-CREATE-INVOICE-FINISH: invoiceId: ' . $invoice->getEntityId());
+                $this->_logger->info('[MAGENTO-MONITORING]: Event invoice.created - Invoice ID: ' . $invoice->getEntityId() . ', Order: ' . $order->getIncrementId());
+                
+                // Send telemetry log
+                $this->telemetryClient->sendLog(
+                    'Invoice created successfully',
+                    [
+                        'event' => 'invoice.created',
+                        'invoice_id' => $invoice->getEntityId(),
+                        'order_id' => $order->getIncrementId()
+                    ],
+                    'info'
+                );
+                
                 return $invoice;
             }
         } catch (\Exception $e) {
             $this->_logger->error('>>>>> PAYSTAND-EXCEPTION: ' . $e->getMessage());
+            $this->_logger->error('[MAGENTO-MONITORING]: Event invoice.creation.failed - Order: ' . ($order ? $order->getIncrementId() : 'unknown') . ', Error: ' . $e->getMessage());
+            
+            // Send telemetry metric
+            $this->telemetryClient->sendPluginError(
+                'invoice',
+                'Invoice creation failed',
+                [
+                    'event' => 'invoice.creation.failed',
+                    'order_id' => ($order ? $order->getIncrementId() : 'unknown'),
+                    'error' => $e->getMessage()
+                ]
+            );
+            
             return null;
         }
         return null;

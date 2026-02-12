@@ -45,6 +45,10 @@
                     <comment>Enable or disable the Paystand adjustment feature (discounts and fees)</comment>
                     <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
                 </field>
+                <field id="telemetry_api_key" translate="label" type="text" sortOrder="10" showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Telemetry API Key</label>
+                    <comment>API key for sending monitoring events to the telemetry system</comment>
+                </field>
             </group>
         </section>
     </system>
