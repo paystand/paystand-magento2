@@ -15,7 +15,7 @@ use Magento\Framework\HTTP\Client\Curl;
 class TelemetryClient
 {
     // Telemetry API Base URL - centralized configuration
-    const TELEMETRY_API_URL = 'https://f023-2806-261-4ab-ec-f5fe-ffc7-7a5e-1c9a.ngrok-free.app';
+    const TELEMETRY_API_URL = 'https://ohamm8mcv8.execute-api.us-east-1.amazonaws.com/live';
     
     // Configuration paths
     const TELEMETRY_API_KEY = 'payment/paystandmagento/telemetry_api_key';
@@ -242,19 +242,10 @@ class TelemetryClient
      */
     protected function getApiKey(): string
     {
-        $apiKey = (string)$this->scopeConfig->getValue(
+        return (string)$this->scopeConfig->getValue(
             self::TELEMETRY_API_KEY,
             ScopeInterface::SCOPE_STORE
         );
-        
-        // Temporary debug log to verify API key value
-        $this->logger->debug('TELEMETRY-API-KEY: Retrieved from config', [
-            'key_length' => strlen($apiKey),
-            'key_preview' => substr($apiKey, 0, 6) . '...' . substr($apiKey, -2),
-            'is_empty' => empty($apiKey)
-        ]);
-        
-        return $apiKey;
     }
     
     /**
