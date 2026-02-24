@@ -1,0 +1,31 @@
+<?php
+/**
+ * @var \Magento\Framework\View\Element\Template $block
+ * @var \Hyva\Theme\ViewModel\Checkout\PaymentMethod $viewModel
+ */
+
+$viewModel = $block->getData('view_model');
+$method = $block->getData('method');
+$methodCode = $method->getCode();
+$escaper = $block->getData('escaper') ?? $block;
+?>
+
+<div class="payment-method">
+    <div class="payment-method-title field choice">
+        <input type="radio"
+               name="payment[method]"
+               class="radio"
+               id="payment_method_<?= $escaper->escapeHtmlAttr($methodCode) ?>"
+               value="<?= $escaper->escapeHtmlAttr($methodCode) ?>" />
+        <label for="payment_method_<?= $escaper->escapeHtmlAttr($methodCode) ?>" class="label">
+            <span><?= $escaper->escapeHtml($method->getTitle()) ?></span>
+            <img src="<?= $escaper->escapeUrl($block->getViewFileUrl('PayStand_PayStandMagento/images/logo_paystand_small.png')) ?>"
+                 alt="PayStand Logo"
+                 class="payment-icon ml-2"
+                 style="height: 24px; width: 104px; vertical-align: middle; object-fit: contain;" />
+        </label>
+    </div>
+    <div class="payment-method-content">
+        <p>PayStand payment method</p>
+    </div>
+</div>
