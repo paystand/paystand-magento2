@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<!--
+/**
+ * Hyvä Checkout Layout - Paystand Payment Method
+ * 
+ * Registers the Paystand initialization template in the Hyvä Checkout payment methods container.
+ * This ensures the Paystand SDK and configuration are loaded on the checkout page.
+ */
+-->
+<page xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:noNamespaceSchemaLocation="urn:magento:framework:View/Layout/etc/page_configuration.xsd">
+    <body>
+        <!-- Inject Paystand initialization template into Hyvä Checkout -->
+        <referenceContainer name="hyva.checkout.api-v1.payment-methods">
+            <block name="hyva.checkout.payment.paystandmagento"
+                   template="PayStand_PayStandMagento::hyva-checkout/paystand-init.phtml"/>
+        </referenceContainer>
+    </body>
+</page>

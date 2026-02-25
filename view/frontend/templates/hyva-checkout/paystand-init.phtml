@@ -1,0 +1,136 @@
+<?php
+/**
+ * Hyvä Checkout - Paystand Initialization Template
+ * 
+ * This template:
+ * 1. Reads Paystand configuration from system settings
+ * 2. Determines the correct Paystand environment (production, staging, sandbox, development)
+ * 3. Loads the Paystand SDK script
+ * 4. Injects configuration into the payment method JavaScript
+ * 
+ * @var \Magento\Framework\View\Element\Template $block
+ */
+
+use Magento\Store\Model\ScopeInterface;
+
+$objectManager = \Magento\Framework\App\ObjectManager::getInstance();
+$scopeConfig = $objectManager->get(\Magento\Framework\App\Config\ScopeConfigInterface::class);
+$customerSession = $objectManager->get(\Magento\Customer\Model\Session::class);
+
+// Read Paystand configuration from system settings
+$publishableKey = $scopeConfig->getValue('payment/paystandmagento/publishable_key', ScopeInterface::SCOPE_STORE);
+$presetCustom = $scopeConfig->getValue('payment/paystandmagento/checkout_preset_key', ScopeInterface::SCOPE_STORE);
+$customerId = $scopeConfig->getValue('payment/paystandmagento/customer_id', ScopeInterface::SCOPE_STORE);
+$useSandbox = $scopeConfig->getValue('payment/paystandmagento/use_sandbox', ScopeInterface::SCOPE_STORE);
+$updateOrderOn = $scopeConfig->getValue('payment/paystandmagento/update_order_on', ScopeInterface::SCOPE_STORE);
+
+// Build base configuration object
+$config = [
+    'publishableKey' => $publishableKey,
+    'presetCustom' => $presetCustom,
+    'customerId' => $customerId,
+    'useSandbox' => (bool)$useSandbox,
+    'updateOrderOn' => $updateOrderOn,
+    'logoUrl' => $block->getViewFileUrl('PayStand_PayStandMagento::images/logo_paystand_small.png')
+];
+
+// Add OAuth credentials and access token for logged-in users (if configured)
+if ($customerSession->isLoggedIn()) {
+    $clientId = $scopeConfig->getValue('payment/paystandmagento/client_id', ScopeInterface::SCOPE_STORE);
+    $clientSecret = $scopeConfig->getValue('payment/paystandmagento/client_secret', ScopeInterface::SCOPE_STORE);
+    
+    if ($clientId && $clientSecret) {
+        $config['clientId'] = $clientId;
+        $config['clientSecret'] = $clientSecret;
+        
+        // Get access token for tokenized payments (same logic as PayStandConfigProvider)
+        $configProvider = $objectManager->get(\PayStand\PayStandMagento\Model\PayStandConfigProvider::class);
+        $paystandConfig = $configProvider->getConfig();
+        
+        if (isset($paystandConfig['payment']['paystandmagento']['access_token'])) {
+            $config['accessToken'] = $paystandConfig['payment']['paystandmagento']['access_token'];
+        }
+    }
+    
+    // Get PayStand Payer ID from customer (for tokenized payments)
+    $customer = $customerSession->getCustomer();
+    if ($customer && $customer->getId()) {
+        $payerIdAttribute = $customer->getCustomAttribute('paystand_payer_id');
+        if ($payerIdAttribute && $payerIdAttribute->getValue()) {
+            $config['payerId'] = $payerIdAttribute->getValue();
+        }
+    }
+}
+
+/**
+ * Paystand Environment Configuration
+ * 
+ * Change only $PAYSTAND_ENV to switch between environments.
+ * The dictionary below maps each environment to its corresponding domains and parameters.
+ * 
+ * Available environments:
+ * - 'production'  (.com) - Live environment for real transactions
+ * - 'staging'     (.io)  - Pre-production testing and UAT
+ * - 'sandbox'     (.co)  - Internal testing and QA
+ * - 'development' (.biz) - Active development and integration
+ */
+$PAYSTAND_ENV = $useSandbox ? 'sandbox' : 'production';
+
+// Environment mapping dictionary
+$paystandEnvironments = [
+    'production' => [
+        'domain' => 'checkout.paystand.com',
+        'env_param' => 'live',
+        'api_domain' => 'api.paystand.com'
+    ],
+    'staging' => [
+        'domain' => 'checkout.paystand.io',
+        'env_param' => 'staging',
+        'api_domain' => 'api.paystand.io'
+    ],
+    'sandbox' => [
+        'domain' => 'checkout.paystand.co',
+        'env_param' => 'sandbox',
+        'api_domain' => 'api.paystand.co'
+    ],
+    'development' => [
+        'domain' => 'checkout.paystand.biz',
+        'env_param' => 'development',
+        'api_domain' => 'api.paystand.biz'
+    ]
+];
+
+// Get environment configuration (fallback to production if invalid)
+$envConfig = $paystandEnvironments[$PAYSTAND_ENV] ?? $paystandEnvironments['production'];
+
+// Build SDK URL with environment parameter
+$paystandSdkUrl = 'https://' . $envConfig['domain'] . '/v4/js/paystand.checkout.js?env=' . $envConfig['env_param'];
+
+// Add environment details to config
+$config['environment'] = $envConfig['env_param'];
+$config['domain'] = $envConfig['domain'];
+$config['baseUrl'] = 'https://' . $envConfig['api_domain'] . '/v3';
+$config['sdkUrl'] = $paystandSdkUrl;
+
+// Encode config as JSON for injection into JavaScript
+$configJson = json_encode($config, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP);
+$methodUrl = $block->getViewFileUrl('PayStand_PayStandMagento::js/hyva-checkout/paystand-method.js');
+?>
+<!-- Hide paystand_payer_id field from checkout forms -->
+<style>
+    [name="paystand_payer_id"],
+    [id*="paystand_payer_id"],
+    [for*="paystand_payer_id"],
+    .field-paystand_payer_id,
+    [class*="paystand-payer-id"],
+    [class*="paystand_payer_id"] {
+        display: none !important;
+    }
+</style>
+
+<!-- Load Paystand Checkout SDK -->
+<script src="<?= $block->escapeUrl($paystandSdkUrl) ?>"></script>
+
+<!-- Load Paystand payment method with injected configuration -->
+<script src="<?= $block->escapeUrl($methodUrl) ?>" 
+        data-paystand-config='<?= /* @noEscape */ $configJson ?>'></script>

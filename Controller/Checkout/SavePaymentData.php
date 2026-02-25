@@ -12,6 +12,7 @@ use Magento\Quote\Model\QuoteIdMaskFactory;
 use Magento\Framework\Exception\NoSuchEntityException;
 use Magento\Framework\App\Config\ScopeConfigInterface;
 use Magento\Store\Model\ScopeInterface;
+use Magento\Framework\Webapi\Response;
 
 /**
  * SavePaymentData Controller
@@ -128,7 +129,13 @@ class SavePaymentData extends Action
 
         if (!$data) {
             $this->logger->error('SAVEPAYMENTDATA >>>>>> Invalid JSON received');
-            return $result->setData(['success' => true, 'error' => 'Invalid JSON']);
+            return $result->setHttpResponseCode(Response::HTTP_BAD_REQUEST)->setData([
+                'success' => false,
+                'error' => [
+                    'code' => 'INVALID_JSON',
+                    'message' => 'Invalid JSON'
+                ]
+            ]);
         }
 
         $payerId         = $data['payerId'] ?? null;
@@ -139,7 +146,13 @@ class SavePaymentData extends Action
 
         if (!$payerId || !$quoteIdIncoming) {
             $this->logger->error('SAVEPAYMENTDATA >>>>>> Missing payerId or quote');
-            return $result->setData(['success' => true, 'error' => 'Missing required data']);
+            return $result->setHttpResponseCode(Response::HTTP_BAD_REQUEST)->setData([
+                'success' => false,
+                'error' => [
+                    'code' => 'MISSING_REQUIRED_DATA',
+                    'message' => 'Missing required data'
+                ]
+            ]);
         }
 
         try {
@@ -161,20 +174,20 @@ class SavePaymentData extends Action
             $paystandAdjustment = 0.0;
 
             if ($isAdjustmentEnabled) {
-            if ($payerDiscount != 0.0) {
-                $paystandAdjustment = -abs($payerDiscount);
-                $this->logger->info('SAVEPAYMENTDATA >>>>>> Using payerDiscount as adjustment (negative)', [
-                    'payerDiscount'  => $payerDiscount,
-                    'payerTotalFees' => $payerTotalFees,
-                    'stored_value'   => $paystandAdjustment
-                ]);
-            } elseif ($payerTotalFees != 0.0) {
-                $paystandAdjustment = abs($payerTotalFees);
-                $this->logger->info('SAVEPAYMENTDATA >>>>>> Using payerTotalFees as adjustment (positive)', [
-                    'payerDiscount'  => $payerDiscount,
-                    'payerTotalFees' => $payerTotalFees,
-                    'stored_value'   => $paystandAdjustment
-                ]);
+                if ($payerDiscount != 0.0) {
+                    $paystandAdjustment = -abs($payerDiscount);
+                    $this->logger->info('SAVEPAYMENTDATA >>>>>> Using payerDiscount as adjustment (negative)', [
+                        'payerDiscount'  => $payerDiscount,
+                        'payerTotalFees' => $payerTotalFees,
+                        'stored_value'   => $paystandAdjustment
+                    ]);
+                } elseif ($payerTotalFees != 0.0) {
+                    $paystandAdjustment = abs($payerTotalFees);
+                    $this->logger->info('SAVEPAYMENTDATA >>>>>> Using payerTotalFees as adjustment (positive)', [
+                        'payerDiscount'  => $payerDiscount,
+                        'payerTotalFees' => $payerTotalFees,
+                        'stored_value'   => $paystandAdjustment
+                    ]);
                 }
             } else {
                 $this->logger->info('SAVEPAYMENTDATA >>>>>> Paystand adjustment is disabled, not storing adjustment');
@@ -185,11 +198,11 @@ class SavePaymentData extends Action
             $this->cartRepository->save($quote);
 
             if ($isAdjustmentEnabled) {
-            $this->logger->info('SAVEPAYMENTDATA >>>>>> Saved paystand_adjustment to quote', [
-                'quote_id'            => $realQuoteId,
-                'incoming_quote'      => $quoteIdIncoming,
-                'paystand_adjustment' => $paystandAdjustment
-            ]);
+                $this->logger->info('SAVEPAYMENTDATA >>>>>> Saved paystand_adjustment to quote', [
+                    'quote_id'            => $realQuoteId,
+                    'incoming_quote'      => $quoteIdIncoming,
+                    'paystand_adjustment' => $paystandAdjustment
+                ]);
             }
 
             // 6) Branch by guest vs. customer
@@ -243,20 +256,38 @@ class SavePaymentData extends Action
                 $this->logger->info('SAVEPAYMENTDATA >>>>>> Not saving new payer ID');
             }
 
+            return $result->setData([
+                'success' => true,
+                'type' => 'customer',
+                'customer_id' => $customerId,
+                'message' => 'Payer ID not updated'
+            ]);
+
         } catch (NoSuchEntityException $e) {
             // Masked id could not be resolved or quote not found
             $this->logger->error(
                 'SAVEPAYMENTDATA >>>>>> Quote not found / masked id invalid: ' . $e->getMessage(),
                 ['incoming_quote' => $quoteIdIncoming]
             );
-            // Return success=true to avoid blocking checkout flow, but include error
-            return $result->setData(['success' => true, 'error' => 'Could not load quote']);
+            return $result->setHttpResponseCode(Response::HTTP_NOT_FOUND)->setData([
+                'success' => false,
+                'error' => [
+                    'code' => 'QUOTE_NOT_FOUND',
+                    'message' => 'Could not load quote'
+                ]
+            ]);
         } catch (\Exception $e) {
             $this->logger->error(
                 'SAVEPAYMENTDATA >>>>>> Error loading quote: ' . $e->getMessage(),
                 ['incoming_quote' => $quoteIdIncoming]
             );
-            return $result->setData(['success' => true, 'error' => 'Could not load quote']);
+            return $result->setHttpResponseCode(Response::HTTP_INTERNAL_ERROR)->setData([
+                'success' => false,
+                'error' => [
+                    'code' => 'QUOTE_SAVE_ERROR',
+                    'message' => 'Could not load quote'
+                ]
+            ]);
         }
     }
 }

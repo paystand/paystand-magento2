@@ -13,7 +13,7 @@ if (use_sandbox == '1') {
 }
 
 define(
-    [
+    [   
         'jquery',
         'Magento_Checkout/js/view/payment/default',
         'Magento_Checkout/js/model/quote',
@@ -59,6 +59,7 @@ define(
                 "payerId": payerId,
                 "paymentMeta": {
                     "source": "magento 2",
+                    "checkout": "luma",
                     "quote": quote.getQuoteId(),
                     "quoteDetails": quote.totals()
                 }
@@ -222,14 +223,16 @@ define(
         }
 
         function onCompleteCheckout() {
-            psCheckout.onComplete( async function (paymentData) {
-                
+            psCheckout.onComplete( async function (paymentData) {                
+                // Handle both response formats: paymentData.response.data or paymentData directly
+                const data = paymentData.response?.data || paymentData;
+                                
                 const response = {
-                    payerId: paymentData.response.data.payerId,
-                    quote: paymentData.response.data.meta.quote,
-                    payerDiscount: paymentData.response.data.feeSplit.payerDiscount,
-                    payerTotalFees: paymentData.response.data.feeSplit.payerTotalFees,
-                    initPayer: paymentData.response.data.meta.initPayer
+                    payerId: data.payerId,
+                    quote: data.meta.quote,
+                    payerDiscount: data.feeSplit.payerDiscount,
+                    payerTotalFees: data.feeSplit.payerTotalFees,
+                    initPayer: data.meta.initPayer
                 }
 
                 try {
