@@ -82,7 +82,8 @@ class AfterOrderPlaceObserverTest extends TestCase
             ->getMock();
         $observerMock->method('getEvent')->willReturn($eventMock);
 
+        $this->loggerMock->expects($this->atLeastOnce())->method('debug');
+
         $this->observer->execute($observerMock);
-        $this->addToAssertionCount(1);
     }
 }
