@@ -1,16 +1,13 @@
 <?php
-
-$magentoRoot = '/var/www/html/magento/src';
-$moduleRoot  = '/var/www/html/module';
+$magentoRoot = '/var/www/html';
+$moduleRoot  = '/var/www/html/app/code/PayStand/PayStandMagento';
 
 require_once $magentoRoot . '/vendor/autoload.php';
 
-// Register the module's own PSR-4 namespace
 $loader = new \Composer\Autoload\ClassLoader();
 $loader->addPsr4('PayStand\\PayStandMagento\\', $moduleRoot . '/');
 $loader->register(true);
 
-// Backward-compatibility aliases for tests written against PHPUnit 4/5 naming
 if (!class_exists('PHPUnit_Framework_TestCase')) {
     class_alias(\PHPUnit\Framework\TestCase::class, 'PHPUnit_Framework_TestCase');
 }

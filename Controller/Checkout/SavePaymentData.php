@@ -7,6 +7,7 @@ use Magento\Framework\App\Action\Context;
 use Psr\Log\LoggerInterface;
 use Magento\Framework\Controller\Result\JsonFactory;
 use PayStand\PayStandMagento\Helper\CustomerPayerId;
+use PayStand\PayStandMagento\Helper\CloudLogger;
 use Magento\Quote\Api\CartRepositoryInterface;
 use Magento\Quote\Model\QuoteIdMaskFactory;
 use Magento\Framework\Exception\NoSuchEntityException;
@@ -210,6 +211,14 @@ class SavePaymentData extends Action
 
             if ($isGuest) {
                 // Guest flow: do not attempt to store payerId on a customer
+                try {
+                    CloudLogger::ship(CloudLogger::EVENT_SAVEPAYMENTDATA_SUCCESS, [
+                        'quote_id'      => (string)$realQuoteId,
+                        'error_message' => 'guest checkout, adjustment=' . $paystandAdjustment,
+                    ]);
+                } catch (\Exception $e) {
+                    // CloudLogger failure — silently ignored to protect payment flow
+                }
                 return $result->setData([
                     'success' => true,
                     'type'    => 'guest',
@@ -269,6 +278,14 @@ class SavePaymentData extends Action
                 'SAVEPAYMENTDATA >>>>>> Quote not found / masked id invalid: ' . $e->getMessage(),
                 ['incoming_quote' => $quoteIdIncoming]
             );
+            try {
+                CloudLogger::ship(CloudLogger::EVENT_SAVEPAYMENTDATA_ERROR, [
+                    'quote_id'      => $quoteIdIncoming ?? '',
+                    'error_message' => 'Quote not found: ' . $e->getMessage(),
+                ]);
+            } catch (\Exception $e) {
+                // CloudLogger failure — silently ignored to protect payment flow
+            }
             return $result->setHttpResponseCode(Response::HTTP_NOT_FOUND)->setData([
                 'success' => false,
                 'error' => [
@@ -281,6 +298,14 @@ class SavePaymentData extends Action
                 'SAVEPAYMENTDATA >>>>>> Error loading quote: ' . $e->getMessage(),
                 ['incoming_quote' => $quoteIdIncoming]
             );
+            try {
+                CloudLogger::ship(CloudLogger::EVENT_SAVEPAYMENTDATA_ERROR, [
+                    'quote_id'      => $quoteIdIncoming ?? '',
+                    'error_message' => $e->getMessage(),
+                ]);
+            } catch (\Exception $e) {
+                // CloudLogger failure — silently ignored to protect payment flow
+            }
             return $result->setHttpResponseCode(Response::HTTP_INTERNAL_ERROR)->setData([
                 'success' => false,
                 'error' => [

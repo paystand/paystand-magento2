@@ -97,6 +97,8 @@ class PayStandConfigProvider implements ConfigProviderInterface
               // 'client_secret' => $this->scopeConfig->getValue(self::CLIENT_SECRET, $storeScope),
               'update_order_on' => $this->scopeConfig->getValue(self::UPDATE_ORDER_ON, $storeScope),
               'use_sandbox' => $this->scopeConfig->getValue(self::USE_SANDBOX, $storeScope),
+              'support_email' => $this->scopeConfig->getValue('trans_email/ident_support/email', $storeScope),
+              'store_name' => $this->scopeConfig->getValue('general/store_information/name', $storeScope),
             ]
           ]
         ];

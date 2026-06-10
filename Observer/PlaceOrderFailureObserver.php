@@ -5,6 +5,7 @@ namespace PayStand\PayStandMagento\Observer;
 use Magento\Framework\Event\ObserverInterface;
 use Magento\Framework\Event\Observer;
 use Psr\Log\LoggerInterface;
+use PayStand\PayStandMagento\Helper\CloudLogger;
 
 class PlaceOrderFailureObserver implements ObserverInterface
 {
@@ -41,6 +42,18 @@ class PlaceOrderFailureObserver implements ObserverInterface
 
         if ($trace) {
             $this->logger->error(">>>>> PAYSTAND-PLACE-ORDER-FAILED trace:\n{$trace}");
+        }
+
+        try {
+            CloudLogger::ship(CloudLogger::EVENT_PLACEORDER_EXCEPTION, [
+                'quote_id'      => (string)$quoteId,
+                'error_message' => 'PlaceOrderFailureObserver: ' . $message
+                    . ' | order=' . $incrementId
+                    . ' | customer=' . $customerId
+                    . ' | total=' . $grandTotal,
+            ]);
+        } catch (\Exception $e) {
+            // CloudLogger failure — silently ignored to protect payment flow
         }
     }
 }
