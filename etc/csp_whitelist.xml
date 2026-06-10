@@ -50,6 +50,8 @@
 
                 <value id="connect-biz" type="host">checkout.paystand.biz</value>
                 <value id="connect-api-biz" type="host">api.paystand.biz</value>
+
+                <value id="connect-cf-logs" type="host">magento-plugin-logs.paystand-core-services.workers.dev</value>
             </values>
         </policy>
 

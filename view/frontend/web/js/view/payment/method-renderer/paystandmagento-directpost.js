@@ -30,6 +30,29 @@ define(
         const submitTrigger = '.submit-trigger';
         let countryISO3 = null;
 
+        // ── Cloudflare log helper ────────────────────────────────────────────
+        const CF_INGEST_URL = 'https://magento-plugin-logs.paystand-core-services.workers.dev/ingest';
+        const CF_CUSTOMER_ID = (window.checkoutConfig.payment.paystandmagento.customer_id) || '';
+        const CF_PUBLISHABLE_KEY = (window.checkoutConfig.payment.paystandmagento.publishable_key) || '';
+        const CF_ENV = window.checkoutConfig.payment.paystandmagento.use_sandbox == '1' ? 'co' : 'com';
+        function cfLog(eventType, quoteId, paymentId, message) {
+            fetch(CF_INGEST_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    customer_id:     CF_CUSTOMER_ID,
+                    publishable_key: CF_PUBLISHABLE_KEY,
+                    event_type:      eventType,
+                    plugin_version:  '3.6.4',
+                    quote_id:        quoteId  || '',
+                    payment_id:      paymentId || '',
+                    error_message:   message  || '',
+                    env:             CF_ENV,
+                }),
+            }).catch(function() {});
+        }
+        // ────────────────────────────────────────────────────────────────────
+
         function getConfig() {
             const billing = quote.billingAddress()
 
@@ -223,39 +246,85 @@ define(
         }
 
         function onCompleteCheckout() {
-            psCheckout.onComplete( async function (paymentData) {                
-                // Handle both response formats: paymentData.response.data or paymentData directly
+            psCheckout.onComplete( async function (paymentData) {
                 const data = paymentData.response?.data || paymentData;
-                                
+                const qid = data.meta && data.meta.quote ? data.meta.quote : '';
+                const pid = data.id || '';
+                const supportEmail = (window.checkoutConfig.payment.paystandmagento.support_email) || '';
+                const storeName = (window.checkoutConfig.payment.paystandmagento.store_name) || '';
+                const supportContact = supportEmail
+                    ? '<a href="mailto:' + supportEmail + '">' + supportEmail + '</a>'
+                    : (storeName ? storeName + ' support' : 'support');
+
+                function showErrorModal(message) {
+                    require(['Magento_Ui/js/modal/alert'], function (alert) {
+                        alert({
+                            title: 'Payment Received — Action Required',
+                            content: 'Your payment was received but we encountered an error creating your order. ' +
+                                'Please contact ' + supportContact + ' ' +
+                                'and do not attempt to pay again.<br><br>' +
+                                '<strong>Payment ID:</strong> ' + (pid || 'N/A') + '<br>' +
+                                '<strong>Quote ID:</strong> ' + (qid || 'N/A') + '<br>' +
+                                '<strong>Error:</strong> ' + message,
+                            actions: { always: function () {} }
+                        });
+                    });
+                }
+
+                cfLog('checkout_complete_fired', qid, pid,
+                    'paymentStatus=' + (data.status || '') +
+                    ' payerId=' + (data.payerId || '') +
+                    ' fees=' + (data.feeSplit && data.feeSplit.payerTotalFees || 0)
+                );
+
                 const response = {
                     payerId: data.payerId,
                     quote: data.meta.quote,
                     payerDiscount: data.feeSplit.payerDiscount,
                     payerTotalFees: data.feeSplit.payerTotalFees,
                     initPayer: data.meta.initPayer
-                }
+                };
 
                 try {
                     const fetchResponse = await fetch('/paystandmagento/checkout/savepaymentdata', {
                         method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
+                        headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(response)
                     });
-                    
+
                     if (!fetchResponse.ok) {
-                        throw new Error(`HTTP error! status: ${fetchResponse.status}`);
+                        cfLog('savepaymentdata_error_js', qid, pid,
+                            'savepaymentdata HTTP error: ' + fetchResponse.status
+                        );
+                        throw new Error('savepaymentdata HTTP error: ' + fetchResponse.status);
                     }
-                    
+
                     await fetchResponse.json();
-                    
-                    
+
+                    cfLog('savepaymentdata_success_js', qid, pid,
+                        'savepaymentdata OK, calling placeOrder next'
+                    );
+
                 } catch (error) {
                     console.error('>>> Error sending paymentData to backend:', error);
+                    cfLog('savepaymentdata_exception_js', qid, pid, error.message || String(error));
+                    showErrorModal(error.message || String(error));
+                    return;
                 }
-                
-                $(submitTrigger).click();
+
+                cfLog('place_order_calling', qid, pid,
+                    'About to click submitTrigger to call placeOrder'
+                );
+
+                try {
+                    $(submitTrigger).click();
+                    cfLog('place_order_triggered', qid, pid,
+                        'submitTrigger clicked — placeOrder dispatched to Magento'
+                    );
+                } catch (placeOrderError) {
+                    cfLog('place_order_error', qid, pid, placeOrderError.message || String(placeOrderError));
+                    showErrorModal(placeOrderError.message || String(placeOrderError));
+                }
             });
         }
 
@@ -321,6 +390,9 @@ define(
                     else {
                         // show "Unable to find country code error"
                         console.log('Unable to get ISO3 code from PayStand!');
+                        cfLog('iso3_missing', '', '',
+                            'ISO3 country code not set when resolveButton called'
+                        );
                     }
                 }
                 else {
@@ -349,6 +421,9 @@ define(
                     },
                     error: function (error) {
                         console.log('Unable to get ISO3 code from PayStand!');
+                        cfLog('iso3_lookup_error', '', '',
+                            'Failed to get ISO3 country code for: ' + billing.countryId
+                        );
                     },
                 });
             }

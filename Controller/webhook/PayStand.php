@@ -8,6 +8,7 @@ use Magento\Quote\Api\CartRepositoryInterface;
 use \stdClass;
 use Magento\Sales\Model\Order\Payment\Transaction\BuilderInterface as BuilderInterface;
 use Magento\Sales\Model\Order;
+use PayStand\PayStandMagento\Helper\CloudLogger;
 
 /**
  * Webhook Receiver Controller for Paystand
@@ -126,6 +127,15 @@ class Paystand extends \Magento\Framework\App\Action\Action
         // Start and Initialize http response
         $result = $this->_jsonResultFactory->create();
         $this->_logger->debug('>>>>> PAYSTAND-START: paystandmagento/webhook/paystand endpoint was hit');
+        try {
+            CloudLogger::ship(CloudLogger::EVENT_WEBHOOK_START, [
+            'quote_id'      => (string)$quoteId,
+            'payment_id'    => $json->resource->id ?? '',
+            'error_message' => 'Webhook started',
+            ]);
+        } catch (\Exception $e) {
+            // CloudLogger failure — silently ignored to protect payment flow
+        }
 
         // Get body content from request
         $body = (!empty($this->_request->getContent()))
@@ -268,62 +278,21 @@ class Paystand extends \Magento\Framework\App\Action\Action
             );
         }
 
-        // Order does not exist, handle it differently
+        // Order does not exist — ship to CloudLogger and return 404 so Paystand retries
         if (!$order || !$order->getId()) {
-            // This is a valid webhook with a quote but no associated order yet
-            // Let's handle it differently instead of returning an error
-
-            $this->_logger->debug('>>>>> PAYSTAND-WEBHOOK: Handling payment for quote without complete order after ' . 
-                $maxRetries . ' retry attempts, quoteId = ' . $quote->getId());
-
-            // Get payment status from the webhook
-            $psPaymentStatus = $json->resource->status;
-            $this->_logger->debug(">>>>> PAYSTAND-PAYMENT-STATUS: '{$psPaymentStatus}' for quote ID " . $quote->getId());
-
-            // Get configured updateOrderOn value
-            $updateOrderOn = $this->updateOrderOn;
-            $this->_logger->debug(">>>>> PAYSTAND-UPDATE-ORDER-ON: '{$updateOrderOn}'");
-
-            // Update the quote with payment information
+            $this->_logger->error('>>>>> PAYSTAND-ERROR: Order not found after retries for quote: ' . $quote->getId());
             try {
-                // First, make sure the quote is valid
-                if ($quote && $quote->getId()) {
-                    // Make sure quote is active
-                    if (!$quote->getIsActive()) {
-                        $quote->setIsActive(true);
-                    }
-
-                    // Instead of setting attributes directly on the quote (which doesn't persist),
-                    // store the payment information in the payment object
-                    $payment = $quote->getPayment();
-                    if ($payment) {
-                        $payment->setAdditionalInformation('paystand_payment_status', $psPaymentStatus);
-                        $payment->setAdditionalInformation('paystand_payment_id', $json->resource->id);
-                        $payment->setAdditionalInformation('paystand_payment_data', json_encode($json->resource));
-                        $payment->save();
-
-                        $this->_logger->debug('>>>>> PAYSTAND-WEBHOOK: Successfully updated quote payment with payment information');
-                    } else {
-                        $this->_logger->debug('>>>>> PAYSTAND-WEBHOOK: Could not find payment object for quote');
-                    }
-
-                    // Save quote
-                    $quote->save();
-
-                    // Acknowledge the webhook
-                    $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
-                    $result->setData([
-                        'success_message' => __('Payment information recorded for quote, awaiting order completion'),
-                        'quote_id' => $quote->getId(),
-                        'payment_status' => $psPaymentStatus
-                    ]);
-
-                    return $result;
-                }
+                CloudLogger::ship(CloudLogger::EVENT_WEBHOOK_NO_ORDER, [
+                'quote_id'      => (string)$quote->getId(),
+                'payment_id'    => $json->resource->id ?? '',
+                'error_message' => 'Order not found after retries. Returning 404 for Paystand retry. Payment status: ' . $psPaymentStatus,
+                ]);
             } catch (\Exception $e) {
-                $this->_logger->error('>>>>> PAYSTAND-ERROR: Exception while updating quote: ' . $e->getMessage());
-                // Continue to standard error response
+                // CloudLogger failure — silently ignored to protect payment flow
             }
+            $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_NOT_FOUND);
+            $result->setData(['error_message' => __('Order not found')]);
+            return $result;
         }
 
         if ($order) {
@@ -461,11 +430,29 @@ class Paystand extends \Magento\Framework\App\Action\Action
                     ]
                 ]
             );
+            try {
+                CloudLogger::ship(CloudLogger::EVENT_WEBHOOK_ORDER_CREATED, [
+                'quote_id'      => (string)($order->getQuoteId() ?? ''),
+                'payment_id'    => $json->resource->id ?? '',
+                'error_message' => 'order=' . $order->getIncrementId() . ' state=' . $state . ' status=' . $status,
+                ]);
+            } catch (\Exception $e) {
+                // CloudLogger failure — silently ignored to protect payment flow
+            }
             return $result;
         } else {
             $this->_logger->error('>>>>> PAYSTAND-ERROR: Order not found after retries for quote: ' . $id);
             $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_NOT_FOUND);
             $result->setData(['error_message' => __('Order not found')]);
+            try {
+                CloudLogger::ship(CloudLogger::EVENT_WEBHOOK_NO_ORDER, [
+                'quote_id'      => (string)$id,
+                'payment_id'    => $json->resource->id ?? '',
+                'error_message' => 'Order not found in final else branch. Payment status: ' . $psPaymentStatus,
+                ]);
+            } catch (\Exception $e) {
+                // CloudLogger failure — silently ignored to protect payment flow
+            }
             return $result;
         }
     }
