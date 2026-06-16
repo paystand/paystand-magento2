@@ -84,7 +84,20 @@ define(
                     "source": "magento 2",
                     "checkout": "luma",
                     "quote": quote.getQuoteId(),
-                    "quoteDetails": quote.totals()
+                    "quoteDetails": (function(t) {
+                        if (!t) return {};
+                        // Strip large arrays not needed by the webhook controller
+                        // to keep the event payload under Paystand's 100KB verify limit
+                        var stripped = {};
+                        var keys = ['grand_total','base_grand_total','subtotal','base_subtotal',
+                            'discount_amount','subtotal_with_discount','shipping_amount',
+                            'tax_amount','subtotal_incl_tax','shipping_incl_tax',
+                            'base_currency_code','quote_currency_code','items_qty'];
+                        for (var i = 0; i < keys.length; i++) {
+                            if (t[keys[i]] !== undefined) stripped[keys[i]] = t[keys[i]];
+                        }
+                        return stripped;
+                    })(quote.totals())
                 }
             };
 
