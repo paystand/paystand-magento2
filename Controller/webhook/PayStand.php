@@ -129,11 +129,11 @@ class Paystand extends \Magento\Framework\App\Action\Action
         $this->_logger->debug('>>>>> PAYSTAND-START: paystandmagento/webhook/paystand endpoint was hit');
         try {
             CloudLogger::ship(CloudLogger::EVENT_WEBHOOK_START, [
-            'quote_id'      => (string)$quoteId,
-            'payment_id'    => $json->resource->id ?? '',
-            'error_message' => 'Webhook started',
+                'quote_id'      => '',
+                'payment_id'    => '',
+                'error_message' => 'Webhook started',
             ]);
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             // CloudLogger failure — silently ignored to protect payment flow
         }
 
@@ -287,7 +287,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 'payment_id'    => $json->resource->id ?? '',
                 'error_message' => 'Order not found after retries. Returning 404 for Paystand retry. Payment status: ' . $psPaymentStatus,
                 ]);
-            } catch (\Exception $e) {
+            } catch (\Throwable $e) {
                 // CloudLogger failure — silently ignored to protect payment flow
             }
             $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_NOT_FOUND);
@@ -436,7 +436,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 'payment_id'    => $json->resource->id ?? '',
                 'error_message' => 'order=' . $order->getIncrementId() . ' state=' . $state . ' status=' . $status,
                 ]);
-            } catch (\Exception $e) {
+            } catch (\Throwable $e) {
                 // CloudLogger failure — silently ignored to protect payment flow
             }
             return $result;
@@ -450,7 +450,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 'payment_id'    => $json->resource->id ?? '',
                 'error_message' => 'Order not found in final else branch. Payment status: ' . $psPaymentStatus,
                 ]);
-            } catch (\Exception $e) {
+            } catch (\Throwable $e) {
                 // CloudLogger failure — silently ignored to protect payment flow
             }
             return $result;
