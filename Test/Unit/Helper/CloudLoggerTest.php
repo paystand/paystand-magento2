@@ -121,7 +121,7 @@ class CloudLoggerTest extends TestCase
         // Intercept the cURL call by temporarily overriding INGEST_URL to a local
         // server we control — not feasible in pure unit test without reflection.
         // Instead, verify the constant is set so the payload builder has a version.
-        $this->assertSame(CloudLogger::PLUGIN_VERSION, '3.6.4');
+        $this->assertSame(CloudLogger::PLUGIN_VERSION, '3.6.6');
     }
 
     public function testErrorMessageIsTruncatedTo512Chars(): void
