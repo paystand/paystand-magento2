@@ -512,7 +512,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
         return $newStatus;
     }
 
-    private function getPaystandAccessToken()
+    protected function getPaystandAccessToken()
     {
         $oauthUrl = $this->getBaseUrl() . '/oauth/token';
         $oauth_credentials = [
@@ -534,7 +534,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
         return $authResponse->access_token;
     }
 
-    private function verifyPaystandEvent($access_token, $event)
+    protected function verifyPaystandEvent($access_token, $event)
     {
         $auth_header =
             [
@@ -695,7 +695,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
      * @param \Magento\Quote\Model\Quote $quote
      * @return \Magento\Sales\Model\Order|null
      */
-    private function findOrder($quote)
+    protected function findOrder($quote)
     {
         $quoteId = $quote->getId();
         $reservedOrderId = $quote->getReservedOrderId();
