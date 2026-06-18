@@ -8,6 +8,7 @@
         <testsuite name="PayStand_Unit_Tests">
             <file>Test/Unit/Observer/AfterOrderPlaceObserverTest.php</file>
             <file>Test/Unit/Helper/CloudLoggerTest.php</file>
+            <file>Test/Unit/Controller/Webhook/PaystandTest.php</file>
         </testsuite>
     </testsuites>
 </phpunit>
