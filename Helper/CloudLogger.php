@@ -16,7 +16,7 @@ use Magento\Store\Model\ScopeInterface;
 class CloudLogger
 {
     const INGEST_URL     = 'https://magento-plugin-logs.paystand-core-services.workers.dev/ingest';
-    const PLUGIN_VERSION = '3.6.4';
+    const PLUGIN_VERSION = '3.6.6';
 
     // Config paths
     const CONFIG_PUBLISHABLE_KEY = 'payment/paystandmagento/publishable_key';
