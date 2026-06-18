@@ -127,16 +127,6 @@ class Paystand extends \Magento\Framework\App\Action\Action
         // Start and Initialize http response
         $result = $this->_jsonResultFactory->create();
         $this->_logger->debug('>>>>> PAYSTAND-START: paystandmagento/webhook/paystand endpoint was hit');
-        try {
-            CloudLogger::ship(CloudLogger::EVENT_WEBHOOK_START, [
-                'quote_id'      => '',
-                'payment_id'    => '',
-                'error_message' => 'Webhook started',
-            ]);
-        } catch (\Throwable $e) {
-            // CloudLogger failure — silently ignored to protect payment flow
-        }
-
         // Get body content from request
         $body = (!empty($this->_request->getContent()))
             ? $this->_request->getContent() : $this->getRequest()->getContent();
@@ -148,6 +138,17 @@ class Paystand extends \Magento\Framework\App\Action\Action
         }
         $json = json_decode($body);
         $this->_logger->debug(">>>>> PAYSTAND-REQUEST-RECEIVED: " . json_encode($json));
+
+        // Log webhook start now that we have the parsed payload
+        try {
+            CloudLogger::ship(CloudLogger::EVENT_WEBHOOK_START, [
+                'quote_id'      => $json->resource->meta->quote ?? '',
+                'payment_id'    => $json->resource->id ?? '',
+                'error_message' => 'Webhook started',
+            ]);
+        } catch (\Throwable $e) {
+            // CloudLogger failure — silently ignored to protect payment flow
+        }
 
         // Verify the received event is a Paystand-Magento request
         if (!isset($json->resource->meta->source) || ($json->resource->meta->source != "magento 2")) {
@@ -512,6 +513,14 @@ class Paystand extends \Magento\Framework\App\Action\Action
         return $newStatus;
     }
 
+    /**
+     * Returns a Paystand OAuth access token.
+     * Declared protected (not private) to allow PHPUnit partial mocking in unit tests.
+     * In PHP, private methods cannot be stubbed by subclasses — there is no reflection
+     * workaround that replaces a method implementation at runtime.
+     * NOTE: do not override this in production Magento extensions — it is an internal
+     * auth mechanism and is not part of the public API contract of this class.
+     */
     protected function getPaystandAccessToken()
     {
         $oauthUrl = $this->getBaseUrl() . '/oauth/token';
@@ -534,6 +543,12 @@ class Paystand extends \Magento\Framework\App\Action\Action
         return $authResponse->access_token;
     }
 
+    /**
+     * Verifies an incoming webhook event against the Paystand API.
+     * Declared protected (not private) to allow PHPUnit partial mocking in unit tests.
+     * See note on getPaystandAccessToken() for rationale.
+     * NOTE: do not override this in production Magento extensions.
+     */
     protected function verifyPaystandEvent($access_token, $event)
     {
         $auth_header =
