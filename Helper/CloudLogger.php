@@ -31,6 +31,8 @@ class CloudLogger
     const EVENT_WEBHOOK_ORDER_CREATED   = 'webhook_order_created';
     const EVENT_PLACEORDER_EXCEPTION    = 'placeorder_exception';
     const EVENT_SERIALIZATION_ERROR     = 'serialization_error';
+    const EVENT_PLACEORDER_ENTERED      = 'placeorder_entered';
+    const EVENT_PLACEORDER_COMPLETED    = 'placeorder_completed';
 
     /**
      * Resolve the merchant's customer ID from store config.
