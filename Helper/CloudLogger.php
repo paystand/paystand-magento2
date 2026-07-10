@@ -33,6 +33,7 @@ class CloudLogger
     const EVENT_SERIALIZATION_ERROR     = 'serialization_error';
     const EVENT_PLACEORDER_ENTERED      = 'placeorder_entered';
     const EVENT_PLACEORDER_COMPLETED    = 'placeorder_completed';
+    const EVENT_PLACEORDER_NULL_RESULT  = 'placeorder_null_result';
 
     /**
      * Resolve the merchant's customer ID from store config.
