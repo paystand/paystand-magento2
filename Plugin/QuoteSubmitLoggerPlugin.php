@@ -32,9 +32,20 @@ class QuoteSubmitLoggerPlugin
      */
     protected $logger;
 
-    public function __construct(LoggerInterface $logger)
+    /**
+     * Callable(string $eventType, array $context): void — defaults to
+     * [CloudLogger::class, 'ship']. Injectable seam so tests can exercise
+     * shipCloudLog()'s own try/catch with a real throwing shipper instead of
+     * mocking shipCloudLog() itself (which would leave that try/catch untested).
+     *
+     * @var callable
+     */
+    protected $cloudShipper;
+
+    public function __construct(LoggerInterface $logger, callable $cloudShipper = null)
     {
         $this->logger = $logger;
+        $this->cloudShipper = $cloudShipper ?? [CloudLogger::class, 'ship'];
     }
 
     /**
@@ -68,8 +79,7 @@ class QuoteSubmitLoggerPlugin
             // Swallow — diagnostic metadata is best-effort only.
         }
 
-        $this->safeLog(
-            'info',
+        $this->safeInfo(
             ">>>>> PAYSTAND-PLACEORDER-ENTERED: request_id={$requestId} quote_id={$quoteId}"
             . " customer_id={$customerId}"
             . " grand_total={$grandTotal}"
@@ -83,14 +93,12 @@ class QuoteSubmitLoggerPlugin
         try {
             $order = $proceed($quote, $orderData);
         } catch (\Throwable $throwable) {
-            $this->safeLog(
-                'error',
+            $this->safeError(
                 ">>>>> PAYSTAND-PLACEORDER-SUBMIT-EXCEPTION: request_id={$requestId} quote_id={$quoteId}"
                 . " customer_id={$customerId}"
                 . " error=\"{$throwable->getMessage()}\""
             );
-            $this->safeLog(
-                'error',
+            $this->safeError(
                 ">>>>> PAYSTAND-PLACEORDER-SUBMIT-EXCEPTION trace:\n{$throwable->getTraceAsString()}"
             );
             $this->shipCloudLog(
@@ -107,8 +115,7 @@ class QuoteSubmitLoggerPlugin
         // caller treats this null as a failure; logging it as COMPLETED would be
         // exactly the false-success signal this feature exists to eliminate.
         if (!$order) {
-            $this->safeLog(
-                'info',
+            $this->safeInfo(
                 ">>>>> PAYSTAND-PLACEORDER-NULL-RESULT: request_id={$requestId} quote_id={$quoteId}"
                 . " (submit() returned null/falsy — not an order)"
             );
@@ -123,8 +130,7 @@ class QuoteSubmitLoggerPlugin
 
         $orderId = method_exists($order, 'getIncrementId') ? $order->getIncrementId() : 'unknown';
 
-        $this->safeLog(
-            'info',
+        $this->safeInfo(
             ">>>>> PAYSTAND-PLACEORDER-COMPLETED: request_id={$requestId} quote_id={$quoteId}"
             . " order_id={$orderId}"
         );
@@ -138,13 +144,28 @@ class QuoteSubmitLoggerPlugin
     }
 
     /**
-     * Log to the local Magento logger, swallowing any failure so a broken logger
+     * Log an info-level message, swallowing any failure so a broken logger
      * backend can never block placeOrder or discard an already-created order.
      */
-    private function safeLog(string $level, string $message): void
+    private function safeInfo(string $message): void
     {
         try {
-            $this->logger->{$level}($message);
+            $this->logger->info($message);
+        } catch (\Throwable $e) {
+            // Swallow — logging must never affect the payment flow.
+        }
+    }
+
+    /**
+     * Log an error-level message, swallowing any failure. Kept as an explicit
+     * sibling to safeInfo() rather than a single string-dispatched safeLog($level, ...)
+     * — a typo'd $level string would silently vanish into the catch block below,
+     * masking a real bug instead of surfacing it.
+     */
+    private function safeError(string $message): void
+    {
+        try {
+            $this->logger->error($message);
         } catch (\Throwable $e) {
             // Swallow — logging must never affect the payment flow.
         }
@@ -160,7 +181,7 @@ class QuoteSubmitLoggerPlugin
     protected function shipCloudLog(string $eventType, string $quoteId, string $message): void
     {
         try {
-            CloudLogger::ship($eventType, ['quote_id' => $quoteId, 'error_message' => $message]);
+            ($this->cloudShipper)($eventType, ['quote_id' => $quoteId, 'error_message' => $message]);
         } catch (\Throwable $e) {
             // CloudLogger failure — never block the payment flow.
         }

@@ -34,6 +34,12 @@ class QuoteSubmitLoggerPluginTest extends TestCase
      * HTTPS calls to the CloudLogger ingest Worker. Records every shipped call
      * in $shipped for assertions.
      *
+     * Use this for tests asserting WHAT gets shipped (event/quote_id/message).
+     * For tests asserting shipCloudLog()'s own safety guarantee (that a
+     * throwing shipper is swallowed), use makePluginWithShipper() instead —
+     * mocking shipCloudLog() itself would bypass its try/catch entirely and
+     * leave that guarantee unexercised.
+     *
      * @param array $shipped Reference — populated with ['event' => ..., 'quote_id' => ..., 'message' => ...]
      * @return QuoteSubmitLoggerPlugin|MockObject
      */
@@ -50,6 +56,20 @@ class QuoteSubmitLoggerPluginTest extends TestCase
             });
 
         return $plugin;
+    }
+
+    /**
+     * Build a real (non-mocked) plugin with an injected cloudShipper callable —
+     * no real HTTPS call is made (the callable itself is test-controlled), but
+     * shipCloudLog()'s own try/catch runs for real. Use this to prove that
+     * guarantee actually holds, rather than assuming it because the code reads
+     * that way.
+     *
+     * @return QuoteSubmitLoggerPlugin
+     */
+    private function makePluginWithShipper(callable $cloudShipper): QuoteSubmitLoggerPlugin
+    {
+        return new QuoteSubmitLoggerPlugin($this->loggerMock, $cloudShipper);
     }
 
     /**
@@ -180,6 +200,7 @@ class QuoteSubmitLoggerPluginTest extends TestCase
             $this->assertStringContainsString('trace:', $errorMessages[1]);
 
             $this->assertCount(2, $shipped);
+            $this->assertSame(\PayStand\PayStandMagento\Helper\CloudLogger::EVENT_PLACEORDER_ENTERED, $shipped[0]['event']);
             $this->assertSame(\PayStand\PayStandMagento\Helper\CloudLogger::EVENT_PLACEORDER_EXCEPTION, $shipped[1]['event']);
         }
     }
@@ -394,5 +415,57 @@ class QuoteSubmitLoggerPluginTest extends TestCase
 
         $this->assertTrue($proceedCalled);
         $this->assertSame($orderMock, $result);
+    }
+
+    /**
+     * shipCloudLog()'s own try/catch is the actual mechanism protecting checkout
+     * from a CloudLogger failure — every other test in this file mocks
+     * shipCloudLog() out entirely (correctly, to avoid real HTTP calls), which
+     * means that try/catch itself was never exercised. This test injects a
+     * cloudShipper callable that genuinely throws, going through the real
+     * shipCloudLog() body, to prove the guarantee actually holds rather than
+     * just reading that way in the source.
+     */
+    public function testShipCloudLogSwallowsShipperFailureAndNeverBlocksProceed(): void
+    {
+        $shipperCalls = [];
+        $throwingShipper = function ($eventType, $context) use (&$shipperCalls) {
+            $shipperCalls[] = ['event' => $eventType, 'context' => $context];
+            throw new \Error('CloudLogger ingest Worker unreachable');
+        };
+
+        $plugin = $this->makePluginWithShipper($throwingShipper);
+        $quote = $this->makeQuote('paystandmagento');
+
+        $orderMock = $this->getMockBuilder(Order::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['getIncrementId'])
+            ->getMock();
+        $orderMock->method('getIncrementId')->willReturn('000000321');
+
+        $proceedCalled = false;
+        $proceed = function ($q, $orderData) use (&$proceedCalled, $orderMock) {
+            $proceedCalled = true;
+            return $orderMock;
+        };
+
+        // No exception should escape aroundSubmit() despite the shipper throwing
+        // on every call (ENTERED and COMPLETED both attempt to ship).
+        $result = $plugin->aroundSubmit($this->subjectMock, $proceed, $quote, []);
+
+        $this->assertTrue($proceedCalled);
+        $this->assertSame($orderMock, $result);
+
+        // The throwing shipper really was invoked (not skipped) — proves the
+        // try/catch is what's swallowing the failure, not test setup avoiding it.
+        $this->assertCount(2, $shipperCalls);
+        $this->assertSame(
+            \PayStand\PayStandMagento\Helper\CloudLogger::EVENT_PLACEORDER_ENTERED,
+            $shipperCalls[0]['event']
+        );
+        $this->assertSame(
+            \PayStand\PayStandMagento\Helper\CloudLogger::EVENT_PLACEORDER_COMPLETED,
+            $shipperCalls[1]['event']
+        );
     }
 }
