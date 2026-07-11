@@ -16,7 +16,7 @@ use Magento\Store\Model\ScopeInterface;
 class CloudLogger
 {
     const INGEST_URL     = 'https://magento-plugin-logs.paystand-core-services.workers.dev/ingest';
-    const PLUGIN_VERSION = '3.6.6';
+    const PLUGIN_VERSION = '3.6.7';
 
     // Config paths
     const CONFIG_PUBLISHABLE_KEY = 'payment/paystandmagento/publishable_key';
@@ -31,6 +31,9 @@ class CloudLogger
     const EVENT_WEBHOOK_ORDER_CREATED   = 'webhook_order_created';
     const EVENT_PLACEORDER_EXCEPTION    = 'placeorder_exception';
     const EVENT_SERIALIZATION_ERROR     = 'serialization_error';
+    const EVENT_PLACEORDER_ENTERED      = 'placeorder_entered';
+    const EVENT_PLACEORDER_COMPLETED    = 'placeorder_completed';
+    const EVENT_PLACEORDER_NULL_RESULT  = 'placeorder_null_result';
 
     /**
      * Resolve the merchant's customer ID from store config.
