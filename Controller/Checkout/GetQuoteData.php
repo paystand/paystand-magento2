@@ -15,6 +15,7 @@ use Magento\Customer\Model\Session as CustomerSession;
 use Magento\Customer\Api\CustomerRepositoryInterface;
 use Magento\Framework\Exception\NoSuchEntityException;
 use Magento\Framework\Exception\LocalizedException;
+use Magento\Framework\Webapi\Exception as WebapiException;
 use Psr\Log\LoggerInterface;
 
 class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
@@ -52,7 +53,7 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
             $quote = $this->checkoutSession->getQuote();
 
             if (!$quote || !$quote->getId()) {
-                return $result->setHttpResponseCode(400)->setData([
+                return $result->setHttpResponseCode(WebapiException::HTTP_BAD_REQUEST)->setData([
                     'success' => false,
                     'error' => [
                         'code' => 'NO_ACTIVE_QUOTE',
@@ -60,6 +61,13 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
                     ]
                 ]);
             }
+
+            // Force a fresh totals recalculation rather than trusting whatever was
+            // last collected on the quote (e.g. before an address/shipping change
+            // settled). This is the same freshness guarantee the caller relies on
+            // when using this endpoint as the authoritative source for the amount
+            // that will actually be charged.
+            $quote->collectTotals();
 
             // Get quote totals
             $totals = $quote->getTotals();
@@ -156,7 +164,7 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
 
         } catch (NoSuchEntityException $e) {
             $this->logger->error('[Paystand] Quote not found: ' . $e->getMessage());
-            return $result->setHttpResponseCode(404)->setData([
+            return $result->setHttpResponseCode(WebapiException::HTTP_NOT_FOUND)->setData([
                 'success' => false,
                 'error' => [
                     'code' => 'QUOTE_NOT_FOUND',
@@ -165,7 +173,7 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
             ]);
         } catch (LocalizedException $e) {
             $this->logger->error('[Paystand] Error getting quote data: ' . $e->getMessage());
-            return $result->setHttpResponseCode(400)->setData([
+            return $result->setHttpResponseCode(WebapiException::HTTP_BAD_REQUEST)->setData([
                 'success' => false,
                 'error' => [
                     'code' => 'QUOTE_DATA_ERROR',
@@ -174,7 +182,7 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
             ]);
         } catch (\Exception $e) {
             $this->logger->error('[Paystand] Unexpected error: ' . $e->getMessage());
-            return $result->setHttpResponseCode(500)->setData([
+            return $result->setHttpResponseCode(WebapiException::HTTP_INTERNAL_ERROR)->setData([
                 'success' => false,
                 'error' => [
                     'code' => 'QUOTE_DATA_UNEXPECTED_ERROR',

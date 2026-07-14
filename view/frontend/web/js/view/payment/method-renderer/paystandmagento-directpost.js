@@ -57,13 +57,25 @@ define(
         // Magento's tax recalculation has settled, producing a stale/pre-tax total.
         // Fetch a fresh, authoritative quote snapshot from the server instead, so the
         // amount shown in the widget matches what will actually be charged.
-        function fetchServerQuoteTotals() {
+        //
+        // A short timeout via AbortController prevents a hung backend request from
+        // leaving checkout stuck indefinitely — on timeout or any other failure we
+        // fall back to the client snapshot (see loadCheckout()'s .catch()).
+        const GET_QUOTE_DATA_TIMEOUT_MS = 8000;
+
+        function fetchServerQuoteData() {
+            const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+            const timeoutId = controller
+                ? setTimeout(function () { controller.abort(); }, GET_QUOTE_DATA_TIMEOUT_MS)
+                : null;
+
             return fetch('/paystandmagento/checkout/getquotedata', {
                 method: 'GET',
                 headers: {
                     'Content-Type': 'application/json',
                     'X-Requested-With': 'XMLHttpRequest'
-                }
+                },
+                signal: controller ? controller.signal : undefined
             })
                 .then(function (response) {
                     if (!response.ok) {
@@ -76,18 +88,73 @@ define(
                         throw new Error('getquotedata returned an unsuccessful response');
                     }
                     return result.quote;
+                })
+                .finally(function () {
+                    if (timeoutId) {
+                        clearTimeout(timeoutId);
+                    }
                 });
         }
 
+        // Merge a server-side field (preferred, when present and non-null) with a
+        // client-side fallback field. Shared by both the top-level total resolution
+        // and the quoteDetails payload builder below, so the "prefer server, else
+        // client" precedence rule only lives in one place.
+        function preferValue(serverValue, clientValue) {
+            return (serverValue !== undefined && serverValue !== null) ? serverValue : clientValue;
+        }
+
+        function buildQuoteDetails(serverQuote, clientTotals, resolvedBaseGrandTotal) {
+            // Strip large arrays not needed by the webhook controller, to keep the
+            // event payload under Paystand's 100KB verify limit.
+            const keys = ['grand_total', 'base_grand_total', 'subtotal', 'base_subtotal',
+                'discount_amount', 'subtotal_with_discount', 'shipping_amount',
+                'tax_amount', 'subtotal_incl_tax', 'shipping_incl_tax',
+                'base_currency_code', 'quote_currency_code', 'items_qty'];
+
+            // Server totals arrive keyed by total code with a {value: ...} wrapper
+            // (e.g. {grand_total: {value: 37.09}}); flatten to plain values so it can
+            // be merged against the client knockout totals object shape below.
+            const serverTotals = (serverQuote && serverQuote.totals)
+                ? Object.keys(serverQuote.totals).reduce(function (acc, code) {
+                    const entry = serverQuote.totals[code];
+                    acc[code] = (entry && entry.value !== undefined) ? entry.value : undefined;
+                    return acc;
+                }, {})
+                : null;
+
+            const details = {};
+            keys.forEach(function (key) {
+                const value = preferValue(serverTotals && serverTotals[key], clientTotals && clientTotals[key]);
+                if (value !== undefined) {
+                    details[key] = value;
+                }
+            });
+
+            // Ensure grand_total/base_grand_total always reflect the same
+            // authoritative value used for paymentAmount, regardless of what the
+            // per-key merge above picked (the server's totals map may omit codes
+            // that top-level serverQuote.grand_total/base_grand_total still has).
+            const grandTotal = preferValue(serverQuote && serverQuote.grand_total, clientTotals && clientTotals.grand_total);
+            if (grandTotal !== undefined) {
+                details.grand_total = grandTotal;
+            }
+            if (resolvedBaseGrandTotal !== undefined && resolvedBaseGrandTotal !== null) {
+                details.base_grand_total = resolvedBaseGrandTotal;
+            }
+
+            return details;
+        }
+
         function buildConfigFromTotals(serverQuote) {
-            const billing = quote.billingAddress()
+            const billing = quote.billingAddress();
             const clientTotals = quote.totals() || {};
 
             // Determinate payer email and payer id
             let payerEmail = customer.isLoggedIn() ? customer.customerData.email : quote.guestEmail;
             let payerId = null;
             if (customer.isLoggedIn() && customer.customerData && customer.customerData.custom_attributes) {
-                var payerIdAttr = customer.customerData.custom_attributes.paystand_payer_id;
+                const payerIdAttr = customer.customerData.custom_attributes.paystand_payer_id;
                 if (payerIdAttr && payerIdAttr.value) {
                     payerId = payerIdAttr.value;
                 }
@@ -97,12 +164,23 @@ define(
             // the client-side knockout snapshot, which may be stale/pre-tax at button-click
             // time. Fall back to the client snapshot only if the server call failed, so a
             // transient network error doesn't block checkout entirely.
-            const baseGrandTotal = (serverQuote && serverQuote.base_grand_total !== undefined && serverQuote.base_grand_total !== null)
-                ? serverQuote.base_grand_total
-                : clientTotals.base_grand_total;
-            const currencyCode = (serverQuote && serverQuote.currency_code)
-                ? serverQuote.currency_code
-                : clientTotals.quote_currency_code;
+            const baseGrandTotal = preferValue(
+                serverQuote && serverQuote.base_grand_total,
+                clientTotals.base_grand_total
+            );
+            const currencyCode = preferValue(
+                serverQuote && serverQuote.currency_code,
+                clientTotals.quote_currency_code
+            );
+
+            // Neither source had a usable grand total (e.g. server call failed AND
+            // the client snapshot was never populated) — surface a clear error
+            // instead of throwing an unhandled TypeError on .toString() below.
+            if (baseGrandTotal === undefined || baseGrandTotal === null) {
+                const message = 'Unable to resolve a payment amount from either server or client quote totals';
+                cfLog('quote_totals_unavailable', quote.getQuoteId() || '', '', message);
+                throw new Error('[Paystand] ' + message);
+            }
 
             const config = {
                 "publishableKey": window.checkoutConfig.payment.paystandmagento.publishable_key,
@@ -122,41 +200,7 @@ define(
                     "source": "magento 2",
                     "checkout": "luma",
                     "quote": quote.getQuoteId(),
-                    "quoteDetails": (function(serverTotals, fallbackTotals) {
-                        // Prefer the server-side totals map (keyed by total code, e.g.
-                        // {grand_total: {value: ...}}); fall back to the client knockout
-                        // totals object shape ({grand_total: <number>, ...}) if unavailable.
-                        var keys = ['grand_total','base_grand_total','subtotal','base_subtotal',
-                            'discount_amount','subtotal_with_discount','shipping_amount',
-                            'tax_amount','subtotal_incl_tax','shipping_incl_tax',
-                            'base_currency_code','quote_currency_code','items_qty'];
-                        var stripped = {};
-                        for (var i = 0; i < keys.length; i++) {
-                            var key = keys[i];
-                            if (serverTotals && serverTotals[key] !== undefined && serverTotals[key] !== null) {
-                                stripped[key] = serverTotals[key];
-                            } else if (fallbackTotals && fallbackTotals[key] !== undefined) {
-                                stripped[key] = fallbackTotals[key];
-                            }
-                        }
-                        // Ensure grand_total/base_grand_total always reflect the
-                        // authoritative server value used for paymentAmount above.
-                        if (serverQuote && serverQuote.grand_total !== undefined && serverQuote.grand_total !== null) {
-                            stripped.grand_total = serverQuote.grand_total;
-                        }
-                        if (baseGrandTotal !== undefined && baseGrandTotal !== null) {
-                            stripped.base_grand_total = baseGrandTotal;
-                        }
-                        return stripped;
-                    })(
-                        serverQuote && serverQuote.totals ? Object.keys(serverQuote.totals).reduce(function (acc, code) {
-                            acc[code] = serverQuote.totals[code] && serverQuote.totals[code].value !== undefined
-                                ? serverQuote.totals[code].value
-                                : undefined;
-                            return acc;
-                        }, {}) : null,
-                        clientTotals
-                    )
+                    "quoteDetails": buildQuoteDetails(serverQuote, clientTotals, baseGrandTotal)
                 }
             };
 
@@ -313,17 +357,42 @@ define(
             }, 500);
         }
         
+        // Guards against a second click firing a redundant getquotedata + initCheckout
+        // cycle while the first one is still in flight (e.g. slow network + impatient
+        // double-click). The Paystand button is disabled for the duration and restored
+        // afterwards regardless of outcome.
+        let loadCheckoutInFlight = false;
+
         function loadCheckout() {
+            if (loadCheckoutInFlight) {
+                return;
+            }
+            loadCheckoutInFlight = true;
+            disableButton();
+
             // Resolve a fresh, tax-inclusive server-side total before building the
-            // widget config — see fetchServerQuoteTotals() comment above.
-            fetchServerQuoteTotals()
+            // widget config — see fetchServerQuoteData() comment above.
+            fetchServerQuoteData()
                 .then(function (serverQuote) {
                     initCheckout(buildConfigFromTotals(serverQuote));
                 })
                 .catch(function (error) {
                     console.error('[Paystand] Failed to fetch fresh quote totals, falling back to client snapshot:', error);
                     cfLog('getquotedata_fallback', quote.getQuoteId() || '', '', error.message || String(error));
-                    initCheckout(buildConfigFromTotals(null));
+                    try {
+                        initCheckout(buildConfigFromTotals(null));
+                    } catch (fallbackError) {
+                        // Both the server fetch AND the client snapshot were unusable —
+                        // buildConfigFromTotals() already logged this via cfLog(). Nothing
+                        // further to do here; checkout simply cannot proceed.
+                        console.error('[Paystand] Client snapshot fallback also failed:', fallbackError);
+                    }
+                })
+                .finally(function () {
+                    loadCheckoutInFlight = false;
+                    if (areAllTermsSelected() && hasCountryCode()) {
+                        enableButton();
+                    }
                 });
         }
 
