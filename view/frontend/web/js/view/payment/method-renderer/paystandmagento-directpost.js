@@ -53,8 +53,35 @@ define(
         }
         // ────────────────────────────────────────────────────────────────────
 
-        function getConfig() {
+        // quote.totals() is a client-side knockout snapshot that can be read before
+        // Magento's tax recalculation has settled, producing a stale/pre-tax total.
+        // Fetch a fresh, authoritative quote snapshot from the server instead, so the
+        // amount shown in the widget matches what will actually be charged.
+        function fetchServerQuoteTotals() {
+            return fetch('/paystandmagento/checkout/getquotedata', {
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest'
+                }
+            })
+                .then(function (response) {
+                    if (!response.ok) {
+                        throw new Error('getquotedata HTTP error: ' + response.status);
+                    }
+                    return response.json();
+                })
+                .then(function (result) {
+                    if (!result || !result.success || !result.quote) {
+                        throw new Error('getquotedata returned an unsuccessful response');
+                    }
+                    return result.quote;
+                });
+        }
+
+        function buildConfigFromTotals(serverQuote) {
             const billing = quote.billingAddress()
+            const clientTotals = quote.totals() || {};
 
             // Determinate payer email and payer id
             let payerEmail = customer.isLoggedIn() ? customer.customerData.email : quote.guestEmail;
@@ -66,14 +93,25 @@ define(
                 }
             }
 
+            // Prefer the fresh server-side grand total (authoritative, tax-inclusive) over
+            // the client-side knockout snapshot, which may be stale/pre-tax at button-click
+            // time. Fall back to the client snapshot only if the server call failed, so a
+            // transient network error doesn't block checkout entirely.
+            const baseGrandTotal = (serverQuote && serverQuote.base_grand_total !== undefined && serverQuote.base_grand_total !== null)
+                ? serverQuote.base_grand_total
+                : clientTotals.base_grand_total;
+            const currencyCode = (serverQuote && serverQuote.currency_code)
+                ? serverQuote.currency_code
+                : clientTotals.quote_currency_code;
+
             const config = {
                 "publishableKey": window.checkoutConfig.payment.paystandmagento.publishable_key,
                 "presetCustom": window.checkoutConfig.payment.paystandmagento.presetCustom,
-                "paymentAmount": quote.totals().base_grand_total.toString(),
+                "paymentAmount": baseGrandTotal.toString(),
                 "fixedAmount": true,
                 "viewReceipt": "close",
                 "viewCheckout": "mobile",
-                "paymentCurrency": quote.totals().quote_currency_code,
+                "paymentCurrency": currencyCode,
                 "mode": "modal",
                 "env": env,
                 "payerName": billing.firstname + ' ' + billing.lastname,
@@ -84,20 +122,41 @@ define(
                     "source": "magento 2",
                     "checkout": "luma",
                     "quote": quote.getQuoteId(),
-                    "quoteDetails": (function(t) {
-                        if (!t) return {};
-                        // Strip large arrays not needed by the webhook controller
-                        // to keep the event payload under Paystand's 100KB verify limit
-                        var stripped = {};
+                    "quoteDetails": (function(serverTotals, fallbackTotals) {
+                        // Prefer the server-side totals map (keyed by total code, e.g.
+                        // {grand_total: {value: ...}}); fall back to the client knockout
+                        // totals object shape ({grand_total: <number>, ...}) if unavailable.
                         var keys = ['grand_total','base_grand_total','subtotal','base_subtotal',
                             'discount_amount','subtotal_with_discount','shipping_amount',
                             'tax_amount','subtotal_incl_tax','shipping_incl_tax',
                             'base_currency_code','quote_currency_code','items_qty'];
+                        var stripped = {};
                         for (var i = 0; i < keys.length; i++) {
-                            if (t[keys[i]] !== undefined) stripped[keys[i]] = t[keys[i]];
+                            var key = keys[i];
+                            if (serverTotals && serverTotals[key] !== undefined && serverTotals[key] !== null) {
+                                stripped[key] = serverTotals[key];
+                            } else if (fallbackTotals && fallbackTotals[key] !== undefined) {
+                                stripped[key] = fallbackTotals[key];
+                            }
+                        }
+                        // Ensure grand_total/base_grand_total always reflect the
+                        // authoritative server value used for paymentAmount above.
+                        if (serverQuote && serverQuote.grand_total !== undefined && serverQuote.grand_total !== null) {
+                            stripped.grand_total = serverQuote.grand_total;
+                        }
+                        if (baseGrandTotal !== undefined && baseGrandTotal !== null) {
+                            stripped.base_grand_total = baseGrandTotal;
                         }
                         return stripped;
-                    })(quote.totals())
+                    })(
+                        serverQuote && serverQuote.totals ? Object.keys(serverQuote.totals).reduce(function (acc, code) {
+                            acc[code] = serverQuote.totals[code] && serverQuote.totals[code].value !== undefined
+                                ? serverQuote.totals[code].value
+                                : undefined;
+                            return acc;
+                        }, {}) : null,
+                        clientTotals
+                    )
                 }
             };
 
@@ -255,7 +314,17 @@ define(
         }
         
         function loadCheckout() {
-            initCheckout(getConfig()); 
+            // Resolve a fresh, tax-inclusive server-side total before building the
+            // widget config — see fetchServerQuoteTotals() comment above.
+            fetchServerQuoteTotals()
+                .then(function (serverQuote) {
+                    initCheckout(buildConfigFromTotals(serverQuote));
+                })
+                .catch(function (error) {
+                    console.error('[Paystand] Failed to fetch fresh quote totals, falling back to client snapshot:', error);
+                    cfLog('getquotedata_fallback', quote.getQuoteId() || '', '', error.message || String(error));
+                    initCheckout(buildConfigFromTotals(null));
+                });
         }
 
         function onCompleteCheckout() {
