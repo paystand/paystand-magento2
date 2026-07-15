@@ -64,10 +64,11 @@ define(
         const GET_QUOTE_DATA_TIMEOUT_MS = 8000;
 
         function fetchServerQuoteData() {
-            const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
-            const timeoutId = controller
-                ? setTimeout(function () { controller.abort(); }, GET_QUOTE_DATA_TIMEOUT_MS)
-                : null;
+            // AbortController is used unconditionally here, consistent with the
+            // rest of this file's reliance on modern browser APIs (fetch, Promise,
+            // async/await) elsewhere — no feature-detection fallback needed.
+            const controller = new AbortController();
+            const timeoutId = setTimeout(function () { controller.abort(); }, GET_QUOTE_DATA_TIMEOUT_MS);
 
             return fetch('/paystandmagento/checkout/getquotedata', {
                 method: 'GET',
@@ -75,7 +76,7 @@ define(
                     'Content-Type': 'application/json',
                     'X-Requested-With': 'XMLHttpRequest'
                 },
-                signal: controller ? controller.signal : undefined
+                signal: controller.signal
             })
                 .then(function (response) {
                     if (!response.ok) {
@@ -90,9 +91,7 @@ define(
                     return result.quote;
                 })
                 .finally(function () {
-                    if (timeoutId) {
-                        clearTimeout(timeoutId);
-                    }
+                    clearTimeout(timeoutId);
                 });
         }
 
@@ -146,7 +145,12 @@ define(
             return details;
         }
 
-        function buildConfigFromTotals(serverQuote) {
+        // Builds the full Paystand widget config (payment amount, currency, payer
+        // details, address, paymentMeta) given an optional fresh server-side quote
+        // snapshot. Named for what it produces (the widget config), not just the
+        // totals sub-piece — serverQuote may be null, in which case every field
+        // falls back to the client-side quote.totals()/billingAddress() snapshot.
+        function buildPaystandCheckoutConfig(serverQuote) {
             const billing = quote.billingAddress();
             const clientTotals = quote.totals() || {};
 
@@ -370,29 +374,55 @@ define(
             loadCheckoutInFlight = true;
             disableButton();
 
+            // Falls back to the client snapshot as the terminal path no matter how
+            // buildPaystandCheckoutConfig() failed, so checkout is never left without
+            // a config. isServerFetchFailure distinguishes a genuine network/endpoint
+            // failure (expected, logged as 'getquotedata_fallback') from a bug in
+            // building the config from an otherwise-successful server response
+            // (unexpected, logged separately as 'build_config_error') — the latter
+            // would otherwise be silently misreported as if the server call itself
+            // had failed.
+            function fallbackToClientSnapshot(error, isServerFetchFailure) {
+                console.error('[Paystand] Falling back to client snapshot:', error);
+                cfLog(
+                    isServerFetchFailure ? 'getquotedata_fallback' : 'build_config_error',
+                    quote.getQuoteId() || '',
+                    '',
+                    error && (error.message || String(error))
+                );
+                try {
+                    initCheckout(buildPaystandCheckoutConfig(null));
+                } catch (fallbackError) {
+                    // Both the server-derived config AND the client snapshot were
+                    // unusable — already logged above. Nothing further to do;
+                    // checkout simply cannot proceed.
+                    console.error('[Paystand] Client snapshot fallback also failed:', fallbackError);
+                }
+            }
+
             // Resolve a fresh, tax-inclusive server-side total before building the
             // widget config — see fetchServerQuoteData() comment above.
             fetchServerQuoteData()
                 .then(function (serverQuote) {
-                    initCheckout(buildConfigFromTotals(serverQuote));
+                    // A failure here (e.g. a bug in buildPaystandCheckoutConfig/initCheckout)
+                    // is NOT a fetch failure — the fresh server data was already
+                    // obtained successfully. Handle it locally so it isn't conflated
+                    // with the network-failure path below.
+                    try {
+                        initCheckout(buildPaystandCheckoutConfig(serverQuote));
+                    } catch (buildError) {
+                        fallbackToClientSnapshot(buildError, false);
+                    }
                 })
                 .catch(function (error) {
-                    console.error('[Paystand] Failed to fetch fresh quote totals, falling back to client snapshot:', error);
-                    cfLog('getquotedata_fallback', quote.getQuoteId() || '', '', error.message || String(error));
-                    try {
-                        initCheckout(buildConfigFromTotals(null));
-                    } catch (fallbackError) {
-                        // Both the server fetch AND the client snapshot were unusable —
-                        // buildConfigFromTotals() already logged this via cfLog(). Nothing
-                        // further to do here; checkout simply cannot proceed.
-                        console.error('[Paystand] Client snapshot fallback also failed:', fallbackError);
-                    }
+                    fallbackToClientSnapshot(error, true);
                 })
                 .finally(function () {
                     loadCheckoutInFlight = false;
-                    if (areAllTermsSelected() && hasCountryCode()) {
-                        enableButton();
-                    }
+                    // Defer to the single source of truth for "should the button be
+                    // enabled" (terms + agreement + country code) rather than
+                    // duplicating a subset of that logic here.
+                    resolveButton();
                 });
         }
 
@@ -504,7 +534,10 @@ define(
                 if (hideCheckout) {
                     document.getElementById("ps_checkout").style.display = "none";
                 }
-                if (areAllTermsSelected()) {
+                // Don't re-enable the button out from under an in-flight
+                // getquotedata fetch — loadCheckout()'s own .finally() is
+                // responsible for re-enabling once that resolves.
+                if (areAllTermsSelected() && !loadCheckoutInFlight) {
                     $(psButtonSel).prop("disabled", false)
                 }
             }, timeout);
