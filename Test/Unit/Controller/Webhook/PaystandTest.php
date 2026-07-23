@@ -113,7 +113,7 @@ class PaystandTest extends TestCase
         // Partial mock: stub out HTTP calls and findOrder (DB)
         $this->controller = $this->getMockBuilder(Paystand::class)
             ->disableOriginalConstructor()
-            ->onlyMethods(['getPaystandAccessToken', 'verifyPaystandEvent', 'findOrder'])
+            ->onlyMethods(['getPaystandAccessToken', 'verifyPaystandEvent', 'findOrder', 'createOrderFromQuote'])
             ->getMock();
 
         // Wire all properties the constructor would have set
@@ -326,10 +326,40 @@ class PaystandTest extends TestCase
         $this->setupQuoteMock();
 
         $this->controller->method('findOrder')->willReturn(null);
+        // No server-side fallback either — the true "cannot produce an order" case.
+        $this->controller->method('createOrderFromQuote')->willReturn(null);
 
         $this->jsonResultMock->expects($this->once())
             ->method('setHttpResponseCode')
             ->with(404)
+            ->willReturnSelf();
+
+        $this->controller->execute();
+    }
+
+    /**
+     * When the order search finds nothing, the webhook must fall back to creating
+     * the order server-side (source of truth) instead of returning 404 — a
+     * captured payment must always yield an order.
+     */
+    public function testExecuteCreatesOrderServerSideWhenSearchFindsNone(): void
+    {
+        $this->requestMock->method('getContent')->willReturn($this->makeBody());
+        $this->controller->method('getPaystandAccessToken')->willReturn('fake-token');
+        $this->controller->method('verifyPaystandEvent')->willReturn(true);
+        $this->setupQuoteIdMask();
+        $this->setupQuoteMock();
+
+        // Search exhausts all strategies, but server-side creation yields the order.
+        $this->controller->method('findOrder')->willReturn(null);
+        $createdOrder = $this->buildOrderMock(Order::STATE_CANCELED);
+        $this->controller->method('createOrderFromQuote')->willReturn($createdOrder);
+        $this->orderRepositoryMock->method('get')->willReturn($createdOrder);
+
+        // Must reach the order-processing path (200), not the 404 retry path.
+        $this->jsonResultMock->expects($this->once())
+            ->method('setHttpResponseCode')
+            ->with(200)
             ->willReturnSelf();
 
         $this->controller->execute();

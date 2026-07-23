@@ -144,6 +144,10 @@ class SavePaymentData extends Action
         $payerDiscount   = isset($data['payerDiscount']) ? (float)$data['payerDiscount'] : 0.0;
         $payerTotalFees  = isset($data['payerTotalFees']) ? (float)$data['payerTotalFees'] : 0.0;
         $initPayer       = $data['initPayer'] ?? false;
+        // Paystand payment id of the just-posted charge. Recorded on the quote so
+        // checkout can refuse to re-open the widget for an already-paid cart, even
+        // if placeOrder later failed to convert it into an order.
+        $paymentId       = $data['paymentId'] ?? null;
 
         if (!$payerId || !$quoteIdIncoming) {
             $this->logger->error('SAVEPAYMENTDATA >>>>>> Missing payerId or quote');
@@ -194,8 +198,14 @@ class SavePaymentData extends Action
                 $this->logger->info('SAVEPAYMENTDATA >>>>>> Paystand adjustment is disabled, not storing adjustment');
             }
 
-            // 5) Persist only the adjustment on the quote; totals will be updated in the PayStand observer
+            // 5) Persist the adjustment on the quote; totals will be updated in the PayStand observer.
+            //    Also record the posted charge's payment id so the re-charge guard can
+            //    detect an already-paid cart. Only overwrite with a non-empty id, so a
+            //    later call for the same quote can never clear a previously recorded charge.
             $quote->setData('paystand_adjustment', $paystandAdjustment);
+            if (!empty($paymentId)) {
+                $quote->setData('paystand_payment_id', $paymentId);
+            }
             $this->cartRepository->save($quote);
 
             if ($isAdjustmentEnabled) {

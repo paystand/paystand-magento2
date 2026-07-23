@@ -43,7 +43,7 @@ define(
                     customer_id:     CF_CUSTOMER_ID,
                     publishable_key: CF_PUBLISHABLE_KEY,
                     event_type:      eventType,
-                    plugin_version:  '3.6.8',
+                    plugin_version:  '3.6.9',
                     quote_id:        quoteId  || '',
                     payment_id:      paymentId || '',
                     error_message:   message  || '',
@@ -361,27 +361,80 @@ define(
             }, 500);
         }
         
-        // Guards against a second click firing a redundant getquotedata + initCheckout
-        // cycle while the first one is still in flight (e.g. slow network + impatient
-        // double-click). The Paystand button is disabled for the duration and restored
-        // afterwards regardless of outcome.
+        // ── Re-charge guard ─────────────────────────────────────────────────
+        // The Paystand widget captures payment BEFORE the Magento order exists.
+        // If a prior attempt already posted a charge for this cart (e.g. placeOrder
+        // failed to convert the paid quote into an order), opening the widget again
+        // would charge the shopper twice. Before opening it we ask the backend
+        // whether this quote has already been paid; if so we block and tell the
+        // shopper to contact support instead of charging again.
+        //
+        // Fail-open: any error checking the status lets checkout proceed, so a
+        // transient backend problem can never block a legitimate first payment.
+        function showAlreadyPaidModal(status) {
+            const supportEmail = (window.checkoutConfig.payment.paystandmagento.support_email) || '';
+            const storeName = (window.checkoutConfig.payment.paystandmagento.store_name) || '';
+            const supportContact = supportEmail
+                ? '<a href="mailto:' + supportEmail + '">' + supportEmail + '</a>'
+                : (storeName ? storeName + ' support' : 'support');
+            require(['Magento_Ui/js/modal/alert'], function (alert) {
+                alert({
+                    title: 'Payment Already Received',
+                    content: 'This cart has already been paid, so we did not charge you again. ' +
+                        'If you have not received an order confirmation, please contact ' + supportContact + '.' +
+                        (status && status.paymentId ? '<br><br><strong>Payment ID:</strong> ' + status.paymentId : '') +
+                        (status && status.incrementId ? '<br><strong>Order:</strong> ' + status.incrementId : ''),
+                    actions: { always: function () {} }
+                });
+            });
+        }
+
+        // Guards against a second click opening a second widget while the first
+        // open is still in flight — now covering both the async re-charge guard
+        // check and the getquotedata round-trip. The button is disabled for the
+        // duration and restored via resolveButton() by the terminal path.
         let loadCheckoutInFlight = false;
 
-        function loadCheckout() {
+        async function loadCheckout() {
             if (loadCheckoutInFlight) {
                 return;
             }
             loadCheckoutInFlight = true;
             disableButton();
 
-            // Falls back to the client snapshot as the terminal path no matter how
-            // buildPaystandCheckoutConfig() failed, so checkout is never left without
-            // a config. isServerFetchFailure distinguishes a genuine network/endpoint
-            // failure (expected, logged as 'getquotedata_fallback') from a bug in
-            // building the config from an otherwise-successful server response
-            // (unexpected, logged separately as 'build_config_error') — the latter
-            // would otherwise be silently misreported as if the server call itself
-            // had failed.
+            // Re-charge guard: refuse to open the widget for a cart already paid.
+            const qid = quote.getQuoteId();
+            try {
+                const resp = await fetch(
+                    '/paystandmagento/checkout/quotepaymentstatus?quote=' + encodeURIComponent(qid),
+                    {
+                        method: 'GET',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-Requested-With': 'XMLHttpRequest'
+                        }
+                    }
+                );
+                if (resp.ok) {
+                    const status = await resp.json();
+                    if (status && status.alreadyPaid) {
+                        cfLog('recharge_blocked', qid, (status.paymentId || ''),
+                            'Quote already has a posted Paystand payment; blocking re-charge'
+                        );
+                        showAlreadyPaidModal(status);
+                        loadCheckoutInFlight = false;
+                        // Leave the button disabled — the cart has already been paid.
+                        return;
+                    }
+                }
+            } catch (error) {
+                // Fail open — allow checkout if the guard check itself fails.
+                cfLog('recharge_guard_error', qid, '', error && (error.message || String(error)));
+            }
+
+            // Not already paid — resolve a fresh, tax-inclusive server-side total
+            // before building the widget config, falling back to the client snapshot
+            // on any failure so checkout is never left without a config.
             function fallbackToClientSnapshot(error, isServerFetchFailure) {
                 console.error('[Paystand] Falling back to client snapshot:', error);
                 cfLog(
@@ -393,21 +446,12 @@ define(
                 try {
                     initCheckout(buildPaystandCheckoutConfig(null));
                 } catch (fallbackError) {
-                    // Both the server-derived config AND the client snapshot were
-                    // unusable — already logged above. Nothing further to do;
-                    // checkout simply cannot proceed.
                     console.error('[Paystand] Client snapshot fallback also failed:', fallbackError);
                 }
             }
 
-            // Resolve a fresh, tax-inclusive server-side total before building the
-            // widget config — see fetchServerQuoteData() comment above.
             fetchServerQuoteData()
                 .then(function (serverQuote) {
-                    // A failure here (e.g. a bug in buildPaystandCheckoutConfig/initCheckout)
-                    // is NOT a fetch failure — the fresh server data was already
-                    // obtained successfully. Handle it locally so it isn't conflated
-                    // with the network-failure path below.
                     try {
                         initCheckout(buildPaystandCheckoutConfig(serverQuote));
                     } catch (buildError) {
@@ -419,12 +463,80 @@ define(
                 })
                 .finally(function () {
                     loadCheckoutInFlight = false;
-                    // Defer to the single source of truth for "should the button be
-                    // enabled" (terms + agreement + country code) rather than
-                    // duplicating a subset of that logic here.
+                    // Single source of truth for "should the button be enabled".
                     resolveButton();
                 });
         }
+
+        // ── Order-placement confirmation ────────────────────────────────────
+        // The payment is captured at Paystand BEFORE the Magento order exists, and
+        // the order is placed via a fire-and-forget $(submitTrigger).click() below.
+        // The click returning does NOT mean an order was created — if placeOrder
+        // silently fails (validation/session/quote state), the shopper is left
+        // charged with no order and may re-pay, causing a duplicate charge.
+        //
+        // After clicking, we poll a lightweight backend endpoint to confirm an
+        // order actually exists for the paid quote. On a normal success Magento
+        // redirects to the success page and this loop is aborted by navigation
+        // (no modal).
+        //
+        // The window is deliberately longer than the server-side webhook fallback
+        // (which recreates the order from the paid quote, but only after its own
+        // initial delay + retries). That way, when the client-side placeOrder
+        // fails, this poll usually still sees the order the webhook creates and
+        // shows nothing. Only if no order appears within the window do we inform
+        // the shopper — with a reassuring "order is being finalized" message, not
+        // an error, since the payment succeeded and the webhook is the source of
+        // truth for producing the order.
+        const ORDER_CONFIRM_MAX_ATTEMPTS = 15;
+        const ORDER_CONFIRM_INTERVAL_MS = 2000;
+
+        async function confirmOrderPlaced(quoteId, paymentId, onFailure) {
+            for (let attempt = 1; attempt <= ORDER_CONFIRM_MAX_ATTEMPTS; attempt++) {
+                await new Promise(function (resolve) {
+                    setTimeout(resolve, ORDER_CONFIRM_INTERVAL_MS);
+                });
+
+                let orderExists = false;
+                try {
+                    const resp = await fetch(
+                        '/paystandmagento/checkout/orderstatus?quote=' + encodeURIComponent(quoteId),
+                        {
+                            method: 'GET',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'X-Requested-With': 'XMLHttpRequest'
+                            }
+                        }
+                    );
+                    if (resp.ok) {
+                        const result = await resp.json();
+                        orderExists = !!(result && result.orderExists);
+                    }
+                } catch (error) {
+                    // Transient network error — treat as "not confirmed yet" and
+                    // keep polling until we either find the order or time out.
+                }
+
+                if (orderExists) {
+                    cfLog('order_confirmed', quoteId, paymentId,
+                        'Order confirmed present after placeOrder (attempt ' + attempt + ')'
+                    );
+                    return;
+                }
+            }
+
+            // Exhausted every attempt with no order yet visible. The payment
+            // succeeded; the order is either being finalized by the webhook or
+            // needs support follow-up. Reassure the shopper (and tell them not to
+            // pay again) rather than reporting an error.
+            cfLog('order_confirm_timeout', quoteId, paymentId,
+                'No order found for quote after ' + ORDER_CONFIRM_MAX_ATTEMPTS +
+                ' attempts; payment captured, order pending server-side creation'
+            );
+            onFailure();
+        }
+        // ────────────────────────────────────────────────────────────────────
 
         function onCompleteCheckout() {
             psCheckout.onComplete( async function (paymentData) {
@@ -452,6 +564,24 @@ define(
                     });
                 }
 
+                // Shown when the order has not appeared within the confirmation
+                // window. The payment succeeded and the webhook recreates the order
+                // from the paid quote as the source of truth, so this is reassuring
+                // (not an error) and, above all, tells the shopper not to pay again.
+                function showFinalizingModal() {
+                    require(['Magento_Ui/js/modal/alert'], function (alert) {
+                        alert({
+                            title: 'Payment Received — Finalizing Your Order',
+                            content: 'Your payment was received and your order is being finalized. ' +
+                                'You will receive a confirmation shortly. Please do not pay again. ' +
+                                'If you have not received confirmation within a few minutes, contact ' + supportContact + '.<br><br>' +
+                                '<strong>Payment ID:</strong> ' + (pid || 'N/A') + '<br>' +
+                                '<strong>Quote ID:</strong> ' + (qid || 'N/A'),
+                            actions: { always: function () {} }
+                        });
+                    });
+                }
+
                 cfLog('checkout_complete_fired', qid, pid,
                     'paymentStatus=' + (data.status || '') +
                     ' payerId=' + (data.payerId || '') +
@@ -463,7 +593,10 @@ define(
                     quote: data.meta.quote,
                     payerDiscount: data.feeSplit.payerDiscount,
                     payerTotalFees: data.feeSplit.payerTotalFees,
-                    initPayer: data.meta.initPayer
+                    initPayer: data.meta.initPayer,
+                    // Recorded on the quote so the re-charge guard can detect an
+                    // already-paid cart even if placeOrder fails to create the order.
+                    paymentId: pid
                 };
 
                 try {
@@ -505,7 +638,15 @@ define(
                 } catch (placeOrderError) {
                     cfLog('place_order_error', qid, pid, placeOrderError.message || String(placeOrderError));
                     showErrorModal(placeOrderError.message || String(placeOrderError));
+                    return;
                 }
+
+                // The click above is fire-and-forget: it does not guarantee Magento
+                // actually placed an order. Confirm the order exists for the paid
+                // quote and, if it never appears within the window, reassure the
+                // shopper their order is being finalized (and not to pay again).
+                // On success Magento redirects and this is aborted.
+                confirmOrderPlaced(qid, pid, showFinalizingModal);
             });
         }
 
