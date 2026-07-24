@@ -6,27 +6,31 @@ use Magento\Framework\App\Action\Action;
 use Magento\Framework\App\Action\Context;
 use Psr\Log\LoggerInterface;
 use Magento\Framework\Controller\Result\JsonFactory;
-use Magento\Quote\Api\CartRepositoryInterface;
-use Magento\Quote\Model\QuoteIdMaskFactory;
-use Magento\Sales\Model\ResourceModel\Order\CollectionFactory as OrderCollectionFactory;
-use Magento\Framework\Exception\NoSuchEntityException;
+use PayStand\PayStandMagento\Helper\QuoteAccess;
 
 /**
  * QuotePaymentStatus Controller
  *
  * Read-only endpoint the frontend calls BEFORE opening the Paystand widget, to
- * refuse re-charging a cart that has already been paid.
+ * refuse initiating a second payment for a cart that has already been paid.
  *
  * The Paystand widget captures the payment before the Magento order exists. If
  * placeOrder then fails to convert the paid quote into an order, the shopper is
- * left with an active, already-charged quote and can pay a second time. This
- * endpoint reports whether a posted charge (or a resulting order) already exists
- * for the quote, so checkout can short-circuit instead of charging again.
+ * left with an active, already-paid quote and may pay a second time. This
+ * endpoint reports whether a posted payment (or a resulting order) already
+ * exists for the quote, so checkout can short-circuit instead of collecting a
+ * second payment.
+ *
+ * Authorization: the quote id is resolved and authorized against the current
+ * session via QuoteAccess. Unauthorized or unknown quotes receive the same
+ * generic "not paid" response, so sequential ids cannot be probed for other
+ * customers' payment ids or order numbers. (For the legitimate shopper this is
+ * also the fail-open behavior: the guard never blocks a first payment.)
  *
  * Response shape:
  *   {
  *     "success": true,
- *     "alreadyPaid": bool,          // a posted charge OR an order exists
+ *     "alreadyPaid": bool,          // a posted payment OR an order exists
  *     "paymentId": string|null,     // recorded Paystand payment id, if any
  *     "orderExists": bool,
  *     "incrementId": string|null
@@ -40,61 +44,25 @@ class QuotePaymentStatus extends Action
     /** @var JsonFactory */
     protected $resultJsonFactory;
 
-    /** @var CartRepositoryInterface */
-    protected $cartRepository;
-
-    /** @var QuoteIdMaskFactory */
-    protected $quoteIdMaskFactory;
-
-    /** @var OrderCollectionFactory */
-    protected $orderCollectionFactory;
+    /** @var QuoteAccess */
+    protected $quoteAccess;
 
     /**
      * @param Context $context
      * @param LoggerInterface $logger
      * @param JsonFactory $resultJsonFactory
-     * @param CartRepositoryInterface $cartRepository
-     * @param QuoteIdMaskFactory $quoteIdMaskFactory
-     * @param OrderCollectionFactory $orderCollectionFactory
+     * @param QuoteAccess $quoteAccess
      */
     public function __construct(
         Context $context,
         LoggerInterface $logger,
         JsonFactory $resultJsonFactory,
-        CartRepositoryInterface $cartRepository,
-        QuoteIdMaskFactory $quoteIdMaskFactory,
-        OrderCollectionFactory $orderCollectionFactory
+        QuoteAccess $quoteAccess
     ) {
         $this->logger = $logger;
         $this->resultJsonFactory = $resultJsonFactory;
-        $this->cartRepository = $cartRepository;
-        $this->quoteIdMaskFactory = $quoteIdMaskFactory;
-        $this->orderCollectionFactory = $orderCollectionFactory;
+        $this->quoteAccess = $quoteAccess;
         parent::__construct($context);
-    }
-
-    /**
-     * Resolve a real numeric quote_id from an incoming id.
-     * Numeric ids are returned as-is; masked (guest) ids are translated.
-     *
-     * @param string|int $incomingId
-     * @return int
-     * @throws NoSuchEntityException when the masked id cannot be resolved
-     */
-    private function resolveRealQuoteId($incomingId): int
-    {
-        if (is_numeric($incomingId)) {
-            return (int)$incomingId;
-        }
-
-        $mask = $this->quoteIdMaskFactory->create()->load($incomingId, 'masked_id');
-        $realId = (int)$mask->getQuoteId();
-
-        if ($realId <= 0) {
-            throw new NoSuchEntityException(__('Could not resolve masked quote id.'));
-        }
-
-        return $realId;
     }
 
     /**
@@ -113,35 +81,17 @@ class QuotePaymentStatus extends Action
             $quoteIdIncoming = is_array($data) ? ($data['quote'] ?? null) : null;
         }
 
-        // Fail open: without a quote id we cannot assert a prior payment, so we
-        // report "not paid" and let checkout proceed rather than blocking it.
-        if (!$quoteIdIncoming) {
+        // Resolve + authorize against the current session. Missing, unknown, and
+        // unauthorized quotes all get the identical generic response: fail closed
+        // for information disclosure, fail open for the legitimate first payment.
+        $quote = $quoteIdIncoming ? $this->quoteAccess->getAuthorizedQuote($quoteIdIncoming) : null;
+        if (!$quote) {
             return $result->setData($this->notPaid());
         }
 
-        try {
-            $realQuoteId = $this->resolveRealQuoteId($quoteIdIncoming);
-        } catch (NoSuchEntityException $e) {
-            $this->logger->info(
-                'QUOTEPAYMENTSTATUS >>>>>> Could not resolve quote id: ' . $e->getMessage(),
-                ['incoming_quote' => $quoteIdIncoming]
-            );
-            return $result->setData($this->notPaid());
-        }
+        $paymentId = $quote->getData('paystand_payment_id');
 
-        $paymentId = null;
-        try {
-            $quote = $this->cartRepository->get($realQuoteId);
-            $paymentId = $quote->getData('paystand_payment_id');
-        } catch (\Exception $e) {
-            // Quote not loadable — treat as "not paid" and let checkout proceed.
-            $this->logger->info(
-                'QUOTEPAYMENTSTATUS >>>>>> Could not load quote: ' . $e->getMessage(),
-                ['quote_id' => $realQuoteId]
-            );
-        }
-
-        $order = $this->findOrderByQuoteId($realQuoteId);
+        $order = $this->quoteAccess->findOrderByQuoteId((int)$quote->getId());
         $orderExists = (bool)($order && $order->getId());
         $incrementId = $orderExists ? (string)$order->getIncrementId() : null;
 
@@ -170,32 +120,5 @@ class QuotePaymentStatus extends Action
             'orderExists' => false,
             'incrementId' => null
         ];
-    }
-
-    /**
-     * Find the most recent sales order for a quote id, if any.
-     *
-     * @param int $quoteId
-     * @return \Magento\Sales\Model\Order|null
-     */
-    private function findOrderByQuoteId(int $quoteId)
-    {
-        try {
-            $collection = $this->orderCollectionFactory->create()
-                ->addFieldToFilter('quote_id', $quoteId)
-                ->setOrder('entity_id', 'DESC')
-                ->setPageSize(1);
-
-            if ($collection->getSize() > 0) {
-                return $collection->getFirstItem();
-            }
-        } catch (\Exception $e) {
-            $this->logger->error(
-                'QUOTEPAYMENTSTATUS >>>>>> Error looking up order by quote id: ' . $e->getMessage(),
-                ['quote_id' => $quoteId]
-            );
-        }
-
-        return null;
     }
 }

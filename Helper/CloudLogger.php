@@ -34,6 +34,12 @@ class CloudLogger
     const EVENT_PLACEORDER_ENTERED      = 'placeorder_entered';
     const EVENT_PLACEORDER_COMPLETED    = 'placeorder_completed';
     const EVENT_PLACEORDER_NULL_RESULT  = 'placeorder_null_result';
+    // A second, distinct Paystand payment id was reported for a quote that
+    // already has one recorded — the duplicate-payment signal itself.
+    const EVENT_DUPLICATE_PAYMENT_RECORDED = 'duplicate_payment_recorded';
+    // The webhook could not acquire the per-quote place-order lock and fell
+    // back to search-only behaviour.
+    const EVENT_PLACEORDER_LOCK_FALLBACK = 'placeorder_lock_fallback';
 
     /**
      * Resolve the merchant's customer ID from store config.

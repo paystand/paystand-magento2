@@ -6,10 +6,7 @@ use Magento\Framework\App\Action\Action;
 use Magento\Framework\App\Action\Context;
 use Psr\Log\LoggerInterface;
 use Magento\Framework\Controller\Result\JsonFactory;
-use Magento\Quote\Api\CartRepositoryInterface;
-use Magento\Quote\Model\QuoteIdMaskFactory;
-use Magento\Sales\Model\ResourceModel\Order\CollectionFactory as OrderCollectionFactory;
-use Magento\Framework\Exception\NoSuchEntityException;
+use PayStand\PayStandMagento\Helper\QuoteAccess;
 
 /**
  * OrderStatus Controller
@@ -21,15 +18,14 @@ use Magento\Framework\Exception\NoSuchEntityException;
  * Background: the Paystand widget captures the payment BEFORE the
  * Magento order exists, and the client then fires a fire-and-forget
  * $(submitTrigger).click() to place the order. If that click fails to create an
- * order (validation/session/quote state), the shopper is left charged with no
- * order and no reliable signal, and may re-pay — producing a duplicate charge.
- * The frontend uses this endpoint to detect "charged but no order" and surface
- * the existing "Payment received — do not pay again" modal.
+ * order (validation/session/quote state), the shopper is left having paid with
+ * no order and no reliable signal, and may pay again. The frontend uses this
+ * endpoint to detect "paid but no order" and inform the shopper.
  *
- * Responsibilities:
- * - Accept a quote id (numeric real id, or masked guest id) via `quote` query/body param.
- * - Resolve masked guest ids to the real numeric quote id.
- * - Report whether a sales order now exists for that quote.
+ * Authorization: the quote id is resolved and authorized against the current
+ * session via QuoteAccess. Unauthorized or unknown quotes receive the same
+ * generic "no order" response, so sequential ids cannot be probed for other
+ * customers' order numbers.
  *
  * Response shape:
  *   { "success": true, "orderExists": bool, "incrementId": string|null }
@@ -42,61 +38,25 @@ class OrderStatus extends Action
     /** @var JsonFactory */
     protected $resultJsonFactory;
 
-    /** @var CartRepositoryInterface */
-    protected $cartRepository;
-
-    /** @var QuoteIdMaskFactory */
-    protected $quoteIdMaskFactory;
-
-    /** @var OrderCollectionFactory */
-    protected $orderCollectionFactory;
+    /** @var QuoteAccess */
+    protected $quoteAccess;
 
     /**
      * @param Context $context
      * @param LoggerInterface $logger
      * @param JsonFactory $resultJsonFactory
-     * @param CartRepositoryInterface $cartRepository
-     * @param QuoteIdMaskFactory $quoteIdMaskFactory
-     * @param OrderCollectionFactory $orderCollectionFactory
+     * @param QuoteAccess $quoteAccess
      */
     public function __construct(
         Context $context,
         LoggerInterface $logger,
         JsonFactory $resultJsonFactory,
-        CartRepositoryInterface $cartRepository,
-        QuoteIdMaskFactory $quoteIdMaskFactory,
-        OrderCollectionFactory $orderCollectionFactory
+        QuoteAccess $quoteAccess
     ) {
         $this->logger = $logger;
         $this->resultJsonFactory = $resultJsonFactory;
-        $this->cartRepository = $cartRepository;
-        $this->quoteIdMaskFactory = $quoteIdMaskFactory;
-        $this->orderCollectionFactory = $orderCollectionFactory;
+        $this->quoteAccess = $quoteAccess;
         parent::__construct($context);
-    }
-
-    /**
-     * Resolve a real numeric quote_id from an incoming id.
-     * Numeric ids are returned as-is; masked (guest) ids are translated.
-     *
-     * @param string|int $incomingId
-     * @return int
-     * @throws NoSuchEntityException when the masked id cannot be resolved
-     */
-    private function resolveRealQuoteId($incomingId): int
-    {
-        if (is_numeric($incomingId)) {
-            return (int)$incomingId;
-        }
-
-        $mask = $this->quoteIdMaskFactory->create()->load($incomingId, 'masked_id');
-        $realId = (int)$mask->getQuoteId();
-
-        if ($realId <= 0) {
-            throw new NoSuchEntityException(__('Could not resolve masked quote id.'));
-        }
-
-        return $realId;
     }
 
     /**
@@ -124,16 +84,12 @@ class OrderStatus extends Action
             ]);
         }
 
-        try {
-            $realQuoteId = $this->resolveRealQuoteId($quoteIdIncoming);
-        } catch (NoSuchEntityException $e) {
-            // A masked id that can't be resolved means we cannot confirm an order.
-            // Report "not found" rather than erroring so the poller keeps its own
-            // timeout semantics.
-            $this->logger->info(
-                'ORDERSTATUS >>>>>> Could not resolve quote id: ' . $e->getMessage(),
-                ['incoming_quote' => $quoteIdIncoming]
-            );
+        // Resolve + authorize against the current session. Unknown and
+        // unauthorized quotes get the identical generic response (fail closed,
+        // no information leak) — which also preserves the poller's own timeout
+        // semantics on the legitimate path.
+        $quote = $this->quoteAccess->getAuthorizedQuote($quoteIdIncoming);
+        if (!$quote) {
             return $result->setData([
                 'success'     => true,
                 'orderExists' => false,
@@ -141,7 +97,7 @@ class OrderStatus extends Action
             ]);
         }
 
-        $order = $this->findOrderByQuoteId($realQuoteId);
+        $order = $this->quoteAccess->findOrderByQuoteId((int)$quote->getId());
 
         if ($order && $order->getId()) {
             return $result->setData([
@@ -156,36 +112,5 @@ class OrderStatus extends Action
             'orderExists' => false,
             'incrementId' => null
         ]);
-    }
-
-    /**
-     * Find the most recent sales order for a quote id, if any.
-     *
-     * Mirrors the "by quote id" lookup used by the webhook controller's
-     * findOrder(), which is the authoritative check for whether placeOrder
-     * produced an order for this cart.
-     *
-     * @param int $quoteId
-     * @return \Magento\Sales\Model\Order|null
-     */
-    private function findOrderByQuoteId(int $quoteId)
-    {
-        try {
-            $collection = $this->orderCollectionFactory->create()
-                ->addFieldToFilter('quote_id', $quoteId)
-                ->setOrder('entity_id', 'DESC')
-                ->setPageSize(1);
-
-            if ($collection->getSize() > 0) {
-                return $collection->getFirstItem();
-            }
-        } catch (\Exception $e) {
-            $this->logger->error(
-                'ORDERSTATUS >>>>>> Error looking up order by quote id: ' . $e->getMessage(),
-                ['quote_id' => $quoteId]
-            );
-        }
-
-        return null;
     }
 }

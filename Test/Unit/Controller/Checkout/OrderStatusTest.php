@@ -3,25 +3,23 @@
 namespace PayStand\PayStandMagento\Test\Unit\Controller\Checkout;
 
 use PayStand\PayStandMagento\Controller\Checkout\OrderStatus;
+use PayStand\PayStandMagento\Helper\QuoteAccess;
 use PHPUnit\Framework\TestCase;
 use PHPUnit\Framework\MockObject\MockObject;
 use Psr\Log\LoggerInterface;
 use Magento\Framework\App\Request\Http as HttpRequest;
 use Magento\Framework\Controller\Result\JsonFactory;
 use Magento\Framework\Controller\Result\Json as JsonResult;
-use Magento\Quote\Api\CartRepositoryInterface;
-use Magento\Quote\Model\QuoteIdMaskFactory;
-use Magento\Quote\Model\QuoteIdMask;
+use Magento\Quote\Model\Quote;
 use Magento\Sales\Model\Order;
-use Magento\Sales\Model\ResourceModel\Order\Collection as OrderCollection;
-use Magento\Sales\Model\ResourceModel\Order\CollectionFactory as OrderCollectionFactory;
 
 /**
  * Unit tests for Controller\Checkout\OrderStatus::execute().
  *
- * The endpoint the frontend polls to confirm placeOrder actually produced an
- * order for the paid quote. Constructor is bypassed and collaborators are
- * injected via reflection, so no real DB access occurs.
+ * Quote resolution + session authorization are delegated to QuoteAccess (mocked
+ * here; covered directly by QuoteAccessTest). These tests assert the controller
+ * contract: fail closed with the generic response for unknown/unauthorized
+ * quotes, report the order when authorized.
  */
 class OrderStatusTest extends TestCase
 {
@@ -34,8 +32,8 @@ class OrderStatusTest extends TestCase
     /** @var JsonResult|MockObject */
     private $jsonResultMock;
 
-    /** @var OrderCollectionFactory|MockObject */
-    private $orderCollectionFactoryMock;
+    /** @var QuoteAccess|MockObject */
+    private $quoteAccessMock;
 
     /** @var array|null Last payload passed to the JSON result's setData(). */
     private $captured;
@@ -62,27 +60,21 @@ class OrderStatusTest extends TestCase
             ->getMock();
         $jsonResultFactoryMock->method('create')->willReturn($this->jsonResultMock);
 
-        $this->orderCollectionFactoryMock = $this->getMockBuilder(OrderCollectionFactory::class)
+        $this->quoteAccessMock = $this->getMockBuilder(QuoteAccess::class)
             ->disableOriginalConstructor()
             ->getMock();
 
         $loggerMock = $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass();
-        $cartRepositoryMock = $this->getMockBuilder(CartRepositoryInterface::class)->getMockForAbstractClass();
-        $quoteIdMaskFactoryMock = $this->getMockBuilder(QuoteIdMaskFactory::class)
-            ->disableOriginalConstructor()
-            ->getMock();
 
         $this->controller = $this->getMockBuilder(OrderStatus::class)
             ->disableOriginalConstructor()
             ->onlyMethods([])
             ->getMock();
 
-        $this->set('logger',                 $loggerMock);
-        $this->set('resultJsonFactory',      $jsonResultFactoryMock);
-        $this->set('cartRepository',         $cartRepositoryMock);
-        $this->set('quoteIdMaskFactory',     $quoteIdMaskFactoryMock);
-        $this->set('orderCollectionFactory', $this->orderCollectionFactoryMock);
-        $this->set('_request',               $this->requestMock);
+        $this->set('logger',            $loggerMock);
+        $this->set('resultJsonFactory', $jsonResultFactoryMock);
+        $this->set('quoteAccess',       $this->quoteAccessMock);
+        $this->set('_request',          $this->requestMock);
     }
 
     public function testReturnsErrorWhenQuoteIdMissing(): void
@@ -96,22 +88,39 @@ class OrderStatusTest extends TestCase
         $this->assertSame('Missing quote id', $this->captured['error']);
     }
 
-    public function testReturnsOrderExistsTrueWhenOrderFoundForNumericQuote(): void
+    /**
+     * Unauthorized (or unknown) quote must produce the identical generic
+     * response as "no order yet" — sequential ids leak nothing.
+     */
+    public function testFailsClosedWhenQuoteNotAuthorized(): void
     {
-        // Numeric quote id resolves directly (no masked-id lookup).
         $this->requestMock->method('getParam')->with('quote')->willReturn('4189563');
+        $this->quoteAccessMock->method('getAuthorizedQuote')->willReturn(null);
+        $this->quoteAccessMock->expects($this->never())->method('findOrderByQuoteId');
+
+        $this->controller->execute();
+
+        $this->assertTrue($this->captured['success']);
+        $this->assertFalse($this->captured['orderExists']);
+        $this->assertNull($this->captured['incrementId']);
+    }
+
+    public function testReturnsOrderExistsTrueWhenOrderFound(): void
+    {
+        $this->requestMock->method('getParam')->with('quote')->willReturn('4189563');
+
+        $quoteMock = $this->buildQuoteMock(4189563);
+        $this->quoteAccessMock->method('getAuthorizedQuote')->with('4189563')->willReturn($quoteMock);
 
         $orderMock = $this->getMockBuilder(Order::class)
             ->disableOriginalConstructor()
             ->getMock();
         $orderMock->method('getId')->willReturn(42);
         $orderMock->method('getIncrementId')->willReturn('W001369548');
-
-        $this->stubCollection(1, $orderMock);
+        $this->quoteAccessMock->method('findOrderByQuoteId')->with(4189563)->willReturn($orderMock);
 
         $this->controller->execute();
 
-        $this->assertIsArray($this->captured);
         $this->assertTrue($this->captured['success']);
         $this->assertTrue($this->captured['orderExists']);
         $this->assertSame('W001369548', $this->captured['incrementId']);
@@ -121,37 +130,51 @@ class OrderStatusTest extends TestCase
     {
         $this->requestMock->method('getParam')->with('quote')->willReturn('4189563');
 
-        $this->stubCollection(0, null);
+        $quoteMock = $this->buildQuoteMock(4189563);
+        $this->quoteAccessMock->method('getAuthorizedQuote')->willReturn($quoteMock);
+        $this->quoteAccessMock->method('findOrderByQuoteId')->willReturn(null);
 
         $this->controller->execute();
 
-        $this->assertIsArray($this->captured);
         $this->assertTrue($this->captured['success']);
         $this->assertFalse($this->captured['orderExists']);
         $this->assertNull($this->captured['incrementId']);
     }
 
     /**
-     * Wire the order collection factory to return a collection reporting $size
-     * rows, whose first item is $firstItem.
-     *
-     * @param int $size
-     * @param Order|MockObject|null $firstItem
+     * Masked guest ids pass straight through to QuoteAccess — the controller
+     * must not require a numeric id.
      */
-    private function stubCollection(int $size, $firstItem): void
+    public function testMaskedGuestQuoteIdIsPassedToQuoteAccess(): void
     {
-        $collectionMock = $this->getMockBuilder(OrderCollection::class)
-            ->disableOriginalConstructor()
-            ->getMock();
-        $collectionMock->method('addFieldToFilter')->willReturnSelf();
-        $collectionMock->method('setOrder')->willReturnSelf();
-        $collectionMock->method('setPageSize')->willReturnSelf();
-        $collectionMock->method('getSize')->willReturn($size);
-        if ($firstItem !== null) {
-            $collectionMock->method('getFirstItem')->willReturn($firstItem);
-        }
+        $maskedId = 'abc123maskedguestid456';
+        $this->requestMock->method('getParam')->with('quote')->willReturn($maskedId);
 
-        $this->orderCollectionFactoryMock->method('create')->willReturn($collectionMock);
+        $quoteMock = $this->buildQuoteMock(777);
+        $this->quoteAccessMock->expects($this->once())
+            ->method('getAuthorizedQuote')
+            ->with($maskedId)
+            ->willReturn($quoteMock);
+        $this->quoteAccessMock->method('findOrderByQuoteId')->with(777)->willReturn(null);
+
+        $this->controller->execute();
+
+        $this->assertTrue($this->captured['success']);
+        $this->assertFalse($this->captured['orderExists']);
+    }
+
+    /**
+     * @param int $id
+     * @return Quote|MockObject
+     */
+    private function buildQuoteMock(int $id)
+    {
+        $quoteMock = $this->getMockBuilder(Quote::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['getId'])
+            ->getMock();
+        $quoteMock->method('getId')->willReturn($id);
+        return $quoteMock;
     }
 
     /**

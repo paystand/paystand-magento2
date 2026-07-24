@@ -848,7 +848,19 @@ class Paystand extends \Magento\Framework\App\Action\Action
             $this->_logger->error('>>>>> PAYSTAND-WEBHOOK: Lock acquisition failed for ' . $lockName . ': ' . $e->getMessage());
         }
         if (!$lockAcquired) {
-            $this->_logger->debug('>>>>> PAYSTAND-WEBHOOK: Could not acquire place-order lock for quote ' . $quoteId . '; using existing order if any');
+            // Fall back to search-only behaviour — observable in production
+            // telemetry so lock contention/leaks are detectable, since this is
+            // the failure mode closest to the original paid-but-orderless bug.
+            $this->_logger->warning('>>>>> PAYSTAND-WEBHOOK: Could not acquire place-order lock for quote ' . $quoteId . '; using existing order if any');
+            try {
+                CloudLogger::ship(CloudLogger::EVENT_PLACEORDER_LOCK_FALLBACK, [
+                    'quote_id'      => (string)$quoteId,
+                    'payment_id'    => $json->resource->id ?? '',
+                    'error_message' => 'Place-order lock not acquired; server-side creation skipped this delivery',
+                ]);
+            } catch (\Throwable $e) {
+                // CloudLogger failure — silently ignored
+            }
             return $this->findOrder($quote);
         }
 
@@ -861,17 +873,31 @@ class Paystand extends \Magento\Framework\App\Action\Action
             }
 
             // Reload the quote fresh so is_active reflects any placeOrder that
-            // committed while we waited on the lock. An inactive quote has already
-            // been submitted — do not place it again.
+            // committed while we waited on the lock.
             try {
                 $quote = $this->cartRepository->get($quoteId);
             } catch (\Exception $e) {
                 $this->_logger->error('>>>>> PAYSTAND-WEBHOOK: Could not reload quote ' . $quoteId . ': ' . $e->getMessage());
                 return null;
             }
+
+            // An inactive quote is ambiguous: order conversion deactivates it, but
+            // so do cart merge on login, multi-address checkout, and cron expiry.
+            // Disambiguate by re-checking for the order (conversion commits the
+            // order BEFORE deactivating the quote, so a conversion's order is
+            // visible by now). If no order exists, the quote was deactivated
+            // WITHOUT being converted — the exact paid-but-orderless case this
+            // fallback rescues — so reactivate it and place the order.
+            // (cartManagement->placeOrder() loads via getActive(), which is also
+            // why reactivation is required before placing.)
             if (!$quote->getIsActive()) {
-                $this->_logger->debug('>>>>> PAYSTAND-WEBHOOK: Quote ' . $quoteId . ' already submitted (inactive); using existing order');
-                return $this->findOrder($quote);
+                $existing = $this->findOrder($quote);
+                if ($existing && $existing->getId()) {
+                    $this->_logger->debug('>>>>> PAYSTAND-WEBHOOK: Quote ' . $quoteId . ' already converted; using existing order ' . $existing->getIncrementId());
+                    return $existing;
+                }
+                $this->_logger->warning('>>>>> PAYSTAND-WEBHOOK: Quote ' . $quoteId . ' inactive but never converted to an order; reactivating to rescue the paid cart');
+                $quote->setIsActive(true);
             }
 
             // Nothing to place: an empty cart.
@@ -887,39 +913,24 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 $payment->setMethod(\PayStand\PayStandMagento\Model\Directpost::METHOD_CODE);
             }
 
-            // An order cannot be placed without a customer email. Guests capture it
-            // in the Paystand widget, so it may be missing from the quote; recover
-            // it from the billing or shipping address. If none is resolvable, bail
-            // out explicitly and observably rather than letting placeOrder throw a
-            // generic exception that hides why the order could not be created.
-            if (!$quote->getCustomerEmail()) {
-                $email = null;
-                $billing = $quote->getBillingAddress();
-                if ($billing && $billing->getEmail()) {
-                    $email = $billing->getEmail();
+            // If no customer email is resolvable (quote, billing, or shipping),
+            // bail out explicitly and observably rather than letting placeOrder
+            // throw a generic exception that hides why the order failed.
+            $email = $this->resolveQuoteCustomerEmail($quote);
+            if (!$email) {
+                $this->_logger->error('>>>>> PAYSTAND-WEBHOOK: Cannot create order server-side — no customer email on quote ' . $quoteId);
+                try {
+                    CloudLogger::ship(CloudLogger::EVENT_PLACEORDER_EXCEPTION, [
+                        'quote_id'      => (string)$quoteId,
+                        'payment_id'    => $json->resource->id ?? '',
+                        'error_message' => 'Server-side order creation skipped: no customer email on quote',
+                    ]);
+                } catch (\Throwable $e) {
+                    // CloudLogger failure — silently ignored
                 }
-                if (!$email) {
-                    $shipping = $quote->getShippingAddress();
-                    if ($shipping && $shipping->getEmail()) {
-                        $email = $shipping->getEmail();
-                    }
-                }
-                if ($email) {
-                    $quote->setCustomerEmail($email);
-                } else {
-                    $this->_logger->error('>>>>> PAYSTAND-WEBHOOK: Cannot create order server-side — no customer email on quote ' . $quoteId);
-                    try {
-                        CloudLogger::ship(CloudLogger::EVENT_PLACEORDER_EXCEPTION, [
-                            'quote_id'      => (string)$quoteId,
-                            'payment_id'    => $json->resource->id ?? '',
-                            'error_message' => 'Server-side order creation skipped: no customer email on quote',
-                        ]);
-                    } catch (\Throwable $e) {
-                        // CloudLogger failure — silently ignored
-                    }
-                    return null;
-                }
+                return null;
             }
+            $quote->setCustomerEmail($email);
 
             $quote->collectTotals();
             $this->cartRepository->save($quote);
@@ -955,8 +966,40 @@ class Paystand extends \Magento\Framework\App\Action\Action
             try {
                 $this->lockManager->unlock($lockName);
             } catch (\Throwable $e) {
-                // best-effort unlock — the lock's provider TTL releases it otherwise
+                // Best-effort unlock — the lock provider releases it when the
+                // connection/session ends. Logged (not swallowed silently) so a
+                // leaking lock is visible in production diagnostics.
+                $this->_logger->error('>>>>> PAYSTAND-WEBHOOK: Failed to release place-order lock ' . $lockName . ': ' . $e->getMessage());
             }
         }
+    }
+
+    /**
+     * Resolve a customer email for a quote that is missing one.
+     *
+     * An order cannot be placed without a customer email. Guests enter it in the
+     * Paystand widget, so the quote itself may lack one; recover it from the
+     * billing or shipping address.
+     *
+     * @param \Magento\Quote\Model\Quote $quote
+     * @return string|null
+     */
+    protected function resolveQuoteCustomerEmail($quote)
+    {
+        if ($quote->getCustomerEmail()) {
+            return $quote->getCustomerEmail();
+        }
+
+        $billing = $quote->getBillingAddress();
+        if ($billing && $billing->getEmail()) {
+            return $billing->getEmail();
+        }
+
+        $shipping = $quote->getShippingAddress();
+        if ($shipping && $shipping->getEmail()) {
+            return $shipping->getEmail();
+        }
+
+        return null;
     }
 }
