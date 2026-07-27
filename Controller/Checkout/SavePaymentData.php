@@ -8,9 +8,8 @@ use Psr\Log\LoggerInterface;
 use Magento\Framework\Controller\Result\JsonFactory;
 use PayStand\PayStandMagento\Helper\CustomerPayerId;
 use PayStand\PayStandMagento\Helper\CloudLogger;
+use PayStand\PayStandMagento\Helper\QuoteAccess;
 use Magento\Quote\Api\CartRepositoryInterface;
-use Magento\Quote\Model\QuoteIdMaskFactory;
-use Magento\Framework\Exception\NoSuchEntityException;
 use Magento\Framework\App\Config\ScopeConfigInterface;
 use Magento\Store\Model\ScopeInterface;
 use Magento\Framework\Webapi\Response;
@@ -50,8 +49,8 @@ class SavePaymentData extends Action
     /** @var CartRepositoryInterface */
     protected $cartRepository;
 
-    /** @var QuoteIdMaskFactory */
-    protected $quoteIdMaskFactory;
+    /** @var QuoteAccess */
+    protected $quoteAccess;
 
     /** @var ScopeConfigInterface */
     protected $scopeConfig;
@@ -62,12 +61,20 @@ class SavePaymentData extends Action
     const ENABLE_PAYSTAND_ADJUSTMENT = 'payment/paystandmagento/enable_paystand_adjustment';
 
     /**
+     * Paystand payment ids are opaque lowercase-alphanumeric tokens (observed
+     * length 24). Accept a sane range so a format change upstream doesn't break
+     * the flow, but reject anything that clearly isn't a payment id before it
+     * is persisted onto the quote.
+     */
+    const PAYMENT_ID_PATTERN = '/^[a-z0-9]{16,64}$/i';
+
+    /**
      * @param Context $context
      * @param LoggerInterface $logger
      * @param JsonFactory $resultJsonFactory
      * @param CustomerPayerId $customerPayerIdHelper
      * @param CartRepositoryInterface $cartRepository
-     * @param QuoteIdMaskFactory $quoteIdMaskFactory
+     * @param QuoteAccess $quoteAccess
      * @param ScopeConfigInterface $scopeConfig
      */
     public function __construct(
@@ -76,41 +83,16 @@ class SavePaymentData extends Action
         JsonFactory $resultJsonFactory,
         CustomerPayerId $customerPayerIdHelper,
         CartRepositoryInterface $cartRepository,
-        QuoteIdMaskFactory $quoteIdMaskFactory,
+        QuoteAccess $quoteAccess,
         ScopeConfigInterface $scopeConfig
     ) {
         $this->logger = $logger;
         $this->resultJsonFactory = $resultJsonFactory;
         $this->customerPayerIdHelper = $customerPayerIdHelper;
         $this->cartRepository = $cartRepository;
-        $this->quoteIdMaskFactory = $quoteIdMaskFactory;
+        $this->quoteAccess = $quoteAccess;
         $this->scopeConfig = $scopeConfig;
         parent::__construct($context);
-    }
-
-    /**
-     * Resolve a real numeric quote_id from an incoming ID.
-     * If the incoming value is numeric, it is returned as-is.
-     * If it is a masked id (string), it is translated to the underlying quote_id.
-     *
-     * @param string|int $incomingId
-     * @return int
-     * @throws NoSuchEntityException when the masked ID cannot be resolved
-     */
-    private function resolveRealQuoteId($incomingId): int
-    {
-        if (is_numeric($incomingId)) {
-            return (int)$incomingId;
-        }
-
-        $mask = $this->quoteIdMaskFactory->create()->load($incomingId, 'masked_id');
-        $realId = (int)$mask->getQuoteId();
-
-        if ($realId <= 0) {
-            throw new NoSuchEntityException(__('Could not resolve masked quote id.'));
-        }
-
-        return $realId;
     }
 
     /**
@@ -144,6 +126,10 @@ class SavePaymentData extends Action
         $payerDiscount   = isset($data['payerDiscount']) ? (float)$data['payerDiscount'] : 0.0;
         $payerTotalFees  = isset($data['payerTotalFees']) ? (float)$data['payerTotalFees'] : 0.0;
         $initPayer       = $data['initPayer'] ?? false;
+        // Paystand payment id of the just-posted charge. Recorded on the quote so
+        // checkout can refuse to re-open the widget for an already-paid cart, even
+        // if placeOrder later failed to convert it into an order.
+        $paymentId       = $data['paymentId'] ?? null;
 
         if (!$payerId || !$quoteIdIncoming) {
             $this->logger->error('SAVEPAYMENTDATA >>>>>> Missing payerId or quote');
@@ -157,11 +143,32 @@ class SavePaymentData extends Action
         }
 
         try {
-            // 1) Resolve real quote id (supports guest masked IDs and numeric IDs)
-            $realQuoteId = $this->resolveRealQuoteId($quoteIdIncoming);
-
-            // 2) Load quote (use get() to support possibly inactive quotes after order placement)
-            $quote = $this->cartRepository->get($realQuoteId);
+            // 1+2) Resolve, load, and AUTHORIZE the quote against the current
+            // session (masked ids act as guest capability tokens; numeric ids
+            // require the session to own the quote). Fail closed: a caller who
+            // does not own the quote cannot write payment data onto it.
+            $quote = $this->quoteAccess->getAuthorizedQuote($quoteIdIncoming);
+            if (!$quote) {
+                $this->logger->warning('SAVEPAYMENTDATA >>>>>> Quote not found or not owned by session', [
+                    'incoming_quote' => $quoteIdIncoming
+                ]);
+                try {
+                    CloudLogger::ship(CloudLogger::EVENT_SAVEPAYMENTDATA_ERROR, [
+                        'quote_id'      => (string)$quoteIdIncoming,
+                        'error_message' => 'Quote not found or not owned by requesting session',
+                    ]);
+                } catch (\Exception $e) {
+                    // CloudLogger failure — silently ignored to protect payment flow
+                }
+                return $result->setHttpResponseCode(Response::HTTP_FORBIDDEN)->setData([
+                    'success' => false,
+                    'error' => [
+                        'code' => 'QUOTE_ACCESS_DENIED',
+                        'message' => 'Could not load quote'
+                    ]
+                ]);
+            }
+            $realQuoteId = (int)$quote->getId();
 
             // 3) Check if paystand adjustment is enabled
             $isAdjustmentEnabled = $this->scopeConfig->isSetFlag(
@@ -194,8 +201,42 @@ class SavePaymentData extends Action
                 $this->logger->info('SAVEPAYMENTDATA >>>>>> Paystand adjustment is disabled, not storing adjustment');
             }
 
-            // 5) Persist only the adjustment on the quote; totals will be updated in the PayStand observer
+            // 5) Persist the adjustment on the quote; totals will be updated in the PayStand observer.
+            //    Also record the posted payment's id so the re-charge guard can detect
+            //    an already-paid cart. Rules:
+            //    - Reject values that don't look like a Paystand payment id.
+            //    - Never overwrite an existing recorded id: the FIRST payment is the
+            //      reconciliation anchor. A different id arriving for the same quote
+            //      is the duplicate-payment signal itself — keep the original and
+            //      ship a dedicated telemetry event so it is visible in production.
             $quote->setData('paystand_adjustment', $paystandAdjustment);
+            if (!empty($paymentId) && !preg_match(self::PAYMENT_ID_PATTERN, (string)$paymentId)) {
+                $this->logger->warning('SAVEPAYMENTDATA >>>>>> Ignoring malformed paymentId', [
+                    'quote_id' => $realQuoteId
+                ]);
+                $paymentId = null;
+            }
+            if (!empty($paymentId)) {
+                $existingPaymentId = (string)$quote->getData('paystand_payment_id');
+                if ($existingPaymentId === '') {
+                    $quote->setData('paystand_payment_id', $paymentId);
+                } elseif ($existingPaymentId !== (string)$paymentId) {
+                    $this->logger->error('SAVEPAYMENTDATA >>>>>> Duplicate payment id for quote', [
+                        'quote_id'            => $realQuoteId,
+                        'recorded_payment_id' => $existingPaymentId,
+                        'new_payment_id'      => $paymentId
+                    ]);
+                    try {
+                        CloudLogger::ship(CloudLogger::EVENT_DUPLICATE_PAYMENT_RECORDED, [
+                            'quote_id'      => (string)$realQuoteId,
+                            'payment_id'    => (string)$paymentId,
+                            'error_message' => 'Duplicate payment id observed for quote; first=' . $existingPaymentId,
+                        ]);
+                    } catch (\Exception $e) {
+                        // CloudLogger failure — silently ignored to protect payment flow
+                    }
+                }
+            }
             $this->cartRepository->save($quote);
 
             if ($isAdjustmentEnabled) {
@@ -272,27 +313,6 @@ class SavePaymentData extends Action
                 'message' => 'Payer ID not updated'
             ]);
 
-        } catch (NoSuchEntityException $e) {
-            // Masked id could not be resolved or quote not found
-            $this->logger->error(
-                'SAVEPAYMENTDATA >>>>>> Quote not found / masked id invalid: ' . $e->getMessage(),
-                ['incoming_quote' => $quoteIdIncoming]
-            );
-            try {
-                CloudLogger::ship(CloudLogger::EVENT_SAVEPAYMENTDATA_ERROR, [
-                    'quote_id'      => $quoteIdIncoming ?? '',
-                    'error_message' => 'Quote not found: ' . $e->getMessage(),
-                ]);
-            } catch (\Exception $e) {
-                // CloudLogger failure — silently ignored to protect payment flow
-            }
-            return $result->setHttpResponseCode(Response::HTTP_NOT_FOUND)->setData([
-                'success' => false,
-                'error' => [
-                    'code' => 'QUOTE_NOT_FOUND',
-                    'message' => 'Could not load quote'
-                ]
-            ]);
         } catch (\Exception $e) {
             $this->logger->error(
                 'SAVEPAYMENTDATA >>>>>> Error loading quote: ' . $e->getMessage(),
