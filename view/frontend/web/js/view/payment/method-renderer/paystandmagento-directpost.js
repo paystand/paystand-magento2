@@ -395,15 +395,38 @@ define(
         // duration and restored via resolveButton() by the terminal path.
         let loadCheckoutInFlight = false;
 
-        async function loadCheckout() {
-            if (loadCheckoutInFlight) {
-                return;
-            }
-            loadCheckoutInFlight = true;
-            disableButton();
+        // The re-charge guard gates every checkout attempt's widget-open (not
+        // just repeats), so an unbounded hang there would be a worse regression
+        // than the bug being fixed. Bounded exactly like fetchServerQuoteData():
+        // the abort stays armed across the body read, not just the headers.
+        const QUOTE_PAYMENT_STATUS_TIMEOUT_MS = 8000;
 
-            // Re-charge guard: refuse to open the widget for a cart already paid.
-            const qid = quote.getQuoteId();
+        // Falls back to the client snapshot as the terminal path no matter how
+        // the server-derived config failed, so checkout is never left without a
+        // config. isServerFetchFailure distinguishes a genuine network/endpoint
+        // failure (expected, 'getquotedata_fallback') from a bug building the
+        // config off an otherwise-successful response ('build_config_error').
+        function fallbackToClientSnapshot(error, isServerFetchFailure) {
+            console.error('[Paystand] Falling back to client snapshot:', error);
+            cfLog(
+                isServerFetchFailure ? 'getquotedata_fallback' : 'build_config_error',
+                quote.getQuoteId() || '',
+                '',
+                error && (error.message || String(error))
+            );
+            try {
+                initCheckout(buildPaystandCheckoutConfig(null));
+            } catch (fallbackError) {
+                console.error('[Paystand] Client snapshot fallback also failed:', fallbackError);
+            }
+        }
+
+        // Resolves to the already-paid status payload for a quote, or null when
+        // the cart is not paid OR the check could not complete. Fails open by
+        // design: a transient backend problem must never block a first payment.
+        async function fetchQuotePaymentStatus(qid) {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(function () { controller.abort(); }, QUOTE_PAYMENT_STATUS_TIMEOUT_MS);
             try {
                 const resp = await fetch(
                     '/paystandmagento/checkout/quotepaymentstatus?quote=' + encodeURIComponent(qid),
@@ -412,60 +435,79 @@ define(
                         headers: {
                             'Content-Type': 'application/json',
                             'X-Requested-With': 'XMLHttpRequest'
-                        }
+                        },
+                        signal: controller.signal
                     }
                 );
-                if (resp.ok) {
-                    const status = await resp.json();
-                    if (status && status.alreadyPaid) {
-                        cfLog('recharge_blocked', qid, (status.paymentId || ''),
-                            'Quote already has a posted Paystand payment; blocking re-charge'
-                        );
-                        showAlreadyPaidModal(status);
-                        loadCheckoutInFlight = false;
-                        // Leave the button disabled — the cart has already been paid.
-                        return;
-                    }
+                if (!resp.ok) {
+                    return null;
+                }
+                // Parse INSIDE the armed window: a server that sends headers and
+                // then stalls the body would otherwise hang here forever.
+                const status = await resp.json();
+                return (status && status.alreadyPaid) ? status : null;
+            } catch (error) {
+                // Includes an abort once the timeout above fires.
+                cfLog('recharge_guard_error', qid, '', error && (error.message || String(error)));
+                return null;
+            } finally {
+                clearTimeout(timeoutId);
+            }
+        }
+
+        async function loadCheckout() {
+            if (loadCheckoutInFlight) {
+                return;
+            }
+            loadCheckoutInFlight = true;
+            disableButton();
+
+            // EVERY exit path must clear loadCheckoutInFlight. Leaving it set
+            // disables the Paystand button permanently and locks the shopper out
+            // of checkout entirely — a worse outcome than anything guarded
+            // against here — so the whole body runs under try/finally.
+            let blocked = false;
+            try {
+                const qid = quote.getQuoteId();
+
+                // Re-charge guard: refuse to open the widget for a cart already paid.
+                const alreadyPaid = await fetchQuotePaymentStatus(qid);
+                if (alreadyPaid) {
+                    cfLog('recharge_blocked', qid, (alreadyPaid.paymentId || ''),
+                        'Quote already has a posted Paystand payment; blocking re-charge'
+                    );
+                    showAlreadyPaidModal(alreadyPaid);
+                    blocked = true;
+                    return;
+                }
+
+                // Not already paid — resolve a fresh, tax-inclusive server-side
+                // total before building the widget config.
+                let serverQuote = null;
+                try {
+                    serverQuote = await fetchServerQuoteData();
+                } catch (fetchError) {
+                    fallbackToClientSnapshot(fetchError, true);
+                    return;
+                }
+                try {
+                    initCheckout(buildPaystandCheckoutConfig(serverQuote));
+                } catch (buildError) {
+                    fallbackToClientSnapshot(buildError, false);
                 }
             } catch (error) {
-                // Fail open — allow checkout if the guard check itself fails.
-                cfLog('recharge_guard_error', qid, '', error && (error.message || String(error)));
-            }
-
-            // Not already paid — resolve a fresh, tax-inclusive server-side total
-            // before building the widget config, falling back to the client snapshot
-            // on any failure so checkout is never left without a config.
-            function fallbackToClientSnapshot(error, isServerFetchFailure) {
-                console.error('[Paystand] Falling back to client snapshot:', error);
-                cfLog(
-                    isServerFetchFailure ? 'getquotedata_fallback' : 'build_config_error',
-                    quote.getQuoteId() || '',
-                    '',
-                    error && (error.message || String(error))
-                );
-                try {
-                    initCheckout(buildPaystandCheckoutConfig(null));
-                } catch (fallbackError) {
-                    console.error('[Paystand] Client snapshot fallback also failed:', fallbackError);
+                // Nothing above should reach here, but an unexpected throw must
+                // not wedge checkout with the button stuck disabled.
+                console.error('[Paystand] loadCheckout failed:', error);
+                cfLog('load_checkout_error', quote.getQuoteId() || '', '', error && (error.message || String(error)));
+            } finally {
+                loadCheckoutInFlight = false;
+                if (!blocked) {
+                    // Single source of truth for "should the button be enabled".
+                    // A blocked (already-paid) cart deliberately stays disabled.
+                    resolveButton();
                 }
             }
-
-            fetchServerQuoteData()
-                .then(function (serverQuote) {
-                    try {
-                        initCheckout(buildPaystandCheckoutConfig(serverQuote));
-                    } catch (buildError) {
-                        fallbackToClientSnapshot(buildError, false);
-                    }
-                })
-                .catch(function (error) {
-                    fallbackToClientSnapshot(error, true);
-                })
-                .finally(function () {
-                    loadCheckoutInFlight = false;
-                    // Single source of truth for "should the button be enabled".
-                    resolveButton();
-                });
         }
 
         // ── Order-placement confirmation ────────────────────────────────────
