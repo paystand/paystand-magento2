@@ -5,6 +5,8 @@ namespace PayStand\PayStandMagento\Controller\Webhook;
 use \Magento\Framework\App\Config\ScopeConfigInterface as ScopeConfig;
 use \Magento\Quote\Model\QuoteIdMaskFactory as QuoteIdMaskFactory;
 use Magento\Quote\Api\CartRepositoryInterface;
+use Magento\Quote\Api\CartManagementInterface;
+use Magento\Framework\Lock\LockManagerInterface;
 use \stdClass;
 use Magento\Sales\Model\Order\Payment\Transaction\BuilderInterface as BuilderInterface;
 use Magento\Sales\Model\Order;
@@ -82,6 +84,12 @@ class Paystand extends \Magento\Framework\App\Action\Action
     /** @var CartRepositoryInterface */
     private $cartRepository;
 
+    /** @var CartManagementInterface */
+    private $cartManagement;
+
+    /** @var LockManagerInterface */
+    private $lockManager;
+
     /**
      * @param \Magento\Framework\App\Action\Context $context ,
      * @param \Psr\Log\LoggerInterface $logger
@@ -100,7 +108,9 @@ class Paystand extends \Magento\Framework\App\Action\Action
         \Magento\Framework\DB\TransactionFactory $transactionFactory,
         \Magento\Sales\Api\InvoiceRepositoryInterface $invoiceRepository,
         \Magento\Sales\Api\OrderRepositoryInterface $orderRepository,
-        CartRepositoryInterface $cartRepository
+        CartRepositoryInterface $cartRepository,
+        CartManagementInterface $cartManagement,
+        LockManagerInterface $lockManager
     ) {
         $this->_logger = $logger;
         $this->_request = $request;
@@ -115,6 +125,8 @@ class Paystand extends \Magento\Framework\App\Action\Action
         $this->_invoiceRepository = $invoiceRepository;
         $this->_orderRepository = $orderRepository;
         $this->cartRepository = $cartRepository;
+        $this->cartManagement = $cartManagement;
+        $this->lockManager = $lockManager;
         $this->updateOrderOn = $this->scopeConfig->getValue(self::UPDATE_ORDER_ON, self::STORE_SCOPE);
         parent::__construct($context);
     }
@@ -279,7 +291,18 @@ class Paystand extends \Magento\Framework\App\Action\Action
             );
         }
 
-        // Order does not exist — ship to CloudLogger and return 404 so Paystand retries
+        // Order still does not exist after retries. The payment was already
+        // captured at Paystand, so a missing order means the client-side placeOrder
+        // failed to convert the paid quote — leaving the shopper charged with no
+        // order. Rather than only searching, make the webhook the source of truth:
+        // create the order server-side from the paid quote so a captured payment
+        // always yields an order.
+        if (!$order || !$order->getId()) {
+            $order = $this->createOrderFromQuote($quote, $json);
+        }
+
+        // Server-side creation also failed (or was not possible) — ship to
+        // CloudLogger and return 404 so Paystand retries the webhook.
         if (!$order || !$order->getId()) {
             $this->_logger->error('>>>>> PAYSTAND-ERROR: Order not found after retries for quote: ' . $quote->getId());
             try {
@@ -790,6 +813,281 @@ class Paystand extends \Magento\Framework\App\Action\Action
         }
 
         $this->_logger->debug(">>>>> PAYSTAND-WEBHOOK: Could not find any order for Quote ID: {$quoteId}");
+        return null;
+    }
+
+    /**
+     * Create an order server-side from a paid-but-unconverted quote.
+     *
+     * The payment already posted at Paystand but the client-side placeOrder never
+     * produced an order. Convert the quote into an order here so a captured payment
+     * always yields one. Best-effort and guarded: any failure returns null and the
+     * caller falls back to the existing "404 so Paystand retries" behaviour.
+     *
+     * @param \Magento\Quote\Model\Quote $quote
+     * @param \stdClass $json
+     * @return \Magento\Sales\Model\Order|null
+     */
+    protected function createOrderFromQuote($quote, $json)
+    {
+        $quoteId = $quote ? (int)$quote->getId() : 0;
+        if ($quoteId <= 0) {
+            return null;
+        }
+
+        // Only create an order for a payment status that actually advances one.
+        // execute()'s processable-status list also admits 'failed' and 'canceled'
+        // because those still drive state updates on an EXISTING order — but a
+        // declined payment must never bring a new, shippable order into being.
+        //
+        // newOrderStatus() is the module's single source of truth for "does this
+        // status advance an order", so delegate rather than keeping a second list
+        // that could drift: 'processing'/'posted'/'paid'/updateOrderOn map to
+        // STATE_PROCESSING and create; 'canceled' maps to STATE_CANCELED and
+        // 'failed' maps to '' — neither creates.
+        //
+        // 'processing' DOES create. It is the status the webhook actually carries
+        // while a capture settles (observed on every no-order delivery in the
+        // PHD-46847 incident), so excluding it would disable this rescue in the
+        // exact case it exists for. Creating on 'processing' is safe because
+        // invoicing is decoupled: execute() only creates the transaction/invoice
+        // once the status reaches updateOrderOn, so an unsettled payment yields an
+        // order in STATE_PROCESSING but no financial capture.
+        //
+        // The status is re-read from the payload rather than taken from
+        // execute()'s local — this method is protected, directly unit-tested,
+        // and must enforce its own precondition instead of trusting the caller.
+        // The empty check is load-bearing: newOrderStatus() compares loosely
+        // against updateOrderOn, and '' == null is true in PHP, so an absent
+        // status would otherwise map to STATE_PROCESSING.
+        $psPaymentStatus = $json->resource->status ?? null;
+        if (!$psPaymentStatus || $this->newOrderStatus($psPaymentStatus) !== Order::STATE_PROCESSING) {
+            $this->_logger->debug(
+                '>>>>> PAYSTAND-WEBHOOK: Not creating order server-side for quote ' . $quoteId
+                . ' — payment status "' . (string)$psPaymentStatus . '" does not advance an order'
+            );
+            return null;
+        }
+
+        // Serialize order creation for this quote so a concurrent webhook (or a
+        // Paystand retry) cannot place a second order for the same cart. The
+        // client-side placeOrder does not take this lock, so inside the critical
+        // section we also re-read the quote's is_active flag — the authoritative
+        // "already submitted" signal — before placing.
+        $lockName = 'paystand_place_order_' . $quoteId;
+        $lockAcquired = false;
+        try {
+            $lockAcquired = $this->lockManager->lock($lockName, 5);
+        } catch (\Throwable $e) {
+            $this->_logger->error('>>>>> PAYSTAND-WEBHOOK: Lock acquisition failed for ' . $lockName . ': ' . $e->getMessage());
+        }
+        if (!$lockAcquired) {
+            // Fall back to search-only behaviour — observable in production
+            // telemetry so lock contention/leaks are detectable, since this is
+            // the failure mode closest to the original paid-but-orderless bug.
+            $this->_logger->warning('>>>>> PAYSTAND-WEBHOOK: Could not acquire place-order lock for quote ' . $quoteId . '; using existing order if any');
+            try {
+                CloudLogger::ship(CloudLogger::EVENT_PLACEORDER_LOCK_FALLBACK, [
+                    'quote_id'      => (string)$quoteId,
+                    'payment_id'    => $json->resource->id ?? '',
+                    'error_message' => 'Place-order lock not acquired; server-side creation skipped this delivery',
+                ]);
+            } catch (\Throwable $e) {
+                // CloudLogger failure — silently ignored
+            }
+            return $this->findOrder($quote);
+        }
+
+        // Tracks whether we resurrected a deliberately-deactivated quote, so the
+        // failure path can undo it rather than leaving a stale cart active.
+        $reactivated = false;
+        // Set the instant placeOrder() commits. Past that point our in-memory
+        // quote is stale (placeOrder rewrites the quote row), so the rollback
+        // below must not save it back over Magento's own writes.
+        $placed = false;
+
+        try {
+            // Idempotency: re-check right before creating, in case a concurrent
+            // client-side placeOrder just succeeded.
+            $existing = $this->findOrder($quote);
+            if ($existing && $existing->getId()) {
+                return $existing;
+            }
+
+            // Reload the quote fresh so is_active reflects any placeOrder that
+            // committed while we waited on the lock.
+            try {
+                $quote = $this->cartRepository->get($quoteId);
+            } catch (\Exception $e) {
+                $this->_logger->error('>>>>> PAYSTAND-WEBHOOK: Could not reload quote ' . $quoteId . ': ' . $e->getMessage());
+                return null;
+            }
+
+            // An inactive quote is ambiguous: order conversion deactivates it, but
+            // so do cart merge on login, multi-address checkout, cron expiry, and
+            // deliberate holds/cancellations (admin action, fraud review). We must
+            // NOT resurrect a quote for any of those unrelated reasons.
+            //
+            // Disambiguate in two steps, in this order:
+            // 1. Re-check for an order (conversion commits the order BEFORE
+            //    deactivating the quote, so a genuine conversion's order is
+            //    already visible here). This MUST run first so a held-but-actually-
+            //    converted quote still returns its real order instead of being
+            //    reactivated.
+            // 2. Reactivate only if no order exists. What makes that safe is the
+            //    successful-capture status gate at the top of this method: a quote
+            //    deactivated for a benign reason was, by definition, never paid, so
+            //    no successful-payment webhook exists to reach this code for it.
+            //    The payment-evidence check below is a null-guard, not the primary
+            //    protection — deliberately NOT keyed on quote.paystand_payment_id
+            //    alone, since that marker is written by SavePaymentData and is
+            //    absent precisely when that client-side call failed, which is one
+            //    of the failures this rescue exists for.
+            // (cartManagement->placeOrder() loads via getActive(), which is also
+            // why reactivation is required before placing.)
+            if (!$quote->getIsActive()) {
+                $existing = $this->findOrder($quote);
+                if ($existing && $existing->getId()) {
+                    $this->_logger->debug('>>>>> PAYSTAND-WEBHOOK: Quote ' . $quoteId . ' already converted; using existing order ' . $existing->getIncrementId());
+                    return $existing;
+                }
+                // Either identifies the payment; in practice a verified delivery
+                // always carries resource.id, so this only trips on a malformed
+                // payload that somehow cleared verification.
+                // ?: not ?? on purpose — we want a value that actually identifies a
+                // payment, so an empty-string marker must fall through to the
+                // webhook's id rather than be kept and block the rescue.
+                $paymentEvidence = $quote->getData('paystand_payment_id') ?: ($json->resource->id ?? null);
+                if (!$paymentEvidence) {
+                    $this->_logger->debug('>>>>> PAYSTAND-WEBHOOK: Quote ' . $quoteId . ' inactive, never converted, and no payment evidence; not reactivating');
+                    return null;
+                }
+                $this->_logger->warning('>>>>> PAYSTAND-WEBHOOK: Quote ' . $quoteId . ' inactive but never converted despite a successful payment; reactivating to rescue the paid cart');
+                $quote->setIsActive(true);
+                $reactivated = true;
+            }
+
+            // Nothing to place: an empty cart.
+            if (!$quote->getItemsCount()) {
+                $this->_logger->error('>>>>> PAYSTAND-WEBHOOK: Cannot create order server-side — quote empty. Quote ID: ' . $quoteId);
+                return null;
+            }
+
+            // A quote abandoned before the client-side placeOrder may not have a
+            // payment method assigned; placeOrder requires one.
+            $payment = $quote->getPayment();
+            if ($payment && !$payment->getMethod()) {
+                $payment->setMethod(\PayStand\PayStandMagento\Model\Directpost::METHOD_CODE);
+            }
+
+            // If no customer email is resolvable (quote, billing, or shipping),
+            // bail out explicitly and observably rather than letting placeOrder
+            // throw a generic exception that hides why the order failed.
+            $email = $this->resolveQuoteCustomerEmail($quote);
+            if (!$email) {
+                $this->_logger->error('>>>>> PAYSTAND-WEBHOOK: Cannot create order server-side — no customer email on quote ' . $quoteId);
+                try {
+                    CloudLogger::ship(CloudLogger::EVENT_PLACEORDER_EXCEPTION, [
+                        'quote_id'      => (string)$quoteId,
+                        'payment_id'    => $json->resource->id ?? '',
+                        'error_message' => 'Server-side order creation skipped: no customer email on quote',
+                    ]);
+                } catch (\Throwable $e) {
+                    // CloudLogger failure — silently ignored
+                }
+                return null;
+            }
+            $quote->setCustomerEmail($email);
+
+            $quote->collectTotals();
+            $this->cartRepository->save($quote);
+
+            $orderId = $this->cartManagement->placeOrder($quoteId);
+            $placed = true;
+            $order = $this->_orderRepository->get($orderId);
+
+            $this->_logger->debug('>>>>> PAYSTAND-WEBHOOK: Created order server-side from quote ' . $quoteId . ': ' . $order->getIncrementId());
+            try {
+                CloudLogger::ship(CloudLogger::EVENT_WEBHOOK_ORDER_CREATED, [
+                    'quote_id'      => (string)$quoteId,
+                    'payment_id'    => $json->resource->id ?? '',
+                    'error_message' => 'order=' . $order->getIncrementId() . ' created server-side (source-of-truth fallback)',
+                ]);
+            } catch (\Throwable $e) {
+                // CloudLogger failure — silently ignored to protect payment flow
+            }
+
+            return $order;
+        } catch (\Throwable $e) {
+            $this->_logger->error('>>>>> PAYSTAND-ERROR: Server-side order creation failed for quote ' . $quoteId . ': ' . $e->getMessage());
+
+            // The quote was reactivated for a rescue that then failed BEFORE the
+            // order was placed. Leaving it active would resurrect a cart Magento
+            // had deliberately deactivated (e.g. merged on login) and re-expose
+            // it in the shopper's session, with every webhook retry repeating the
+            // attempt. Put it back.
+            //
+            // Skipped once $placed is set: a throw after placeOrder committed
+            // (e.g. the order reload failing) leaves our copy of the quote stale,
+            // and saving it would clobber the row placeOrder just rewrote.
+            if ($reactivated && !$placed) {
+                try {
+                    $quote->setIsActive(false);
+                    $this->cartRepository->save($quote);
+                    $this->_logger->debug('>>>>> PAYSTAND-WEBHOOK: Rolled back reactivation of quote ' . $quoteId);
+                } catch (\Throwable $rollbackError) {
+                    $this->_logger->error('>>>>> PAYSTAND-ERROR: Failed to roll back reactivation of quote ' . $quoteId . ': ' . $rollbackError->getMessage());
+                }
+            }
+
+            try {
+                CloudLogger::ship(CloudLogger::EVENT_PLACEORDER_EXCEPTION, [
+                    'quote_id'      => (string)$quoteId,
+                    'payment_id'    => $json->resource->id ?? '',
+                    'error_message' => 'Server-side placeOrder failed: ' . $e->getMessage(),
+                ]);
+            } catch (\Throwable $inner) {
+                // CloudLogger failure — silently ignored
+            }
+            return null;
+        } finally {
+            try {
+                $this->lockManager->unlock($lockName);
+            } catch (\Throwable $e) {
+                // Best-effort unlock — the lock provider releases it when the
+                // connection/session ends. Logged (not swallowed silently) so a
+                // leaking lock is visible in production diagnostics.
+                $this->_logger->error('>>>>> PAYSTAND-WEBHOOK: Failed to release place-order lock ' . $lockName . ': ' . $e->getMessage());
+            }
+        }
+    }
+
+    /**
+     * Resolve a customer email for a quote that is missing one.
+     *
+     * An order cannot be placed without a customer email. Guests enter it in the
+     * Paystand widget, so the quote itself may lack one; recover it from the
+     * billing or shipping address.
+     *
+     * @param \Magento\Quote\Model\Quote $quote
+     * @return string|null
+     */
+    protected function resolveQuoteCustomerEmail($quote)
+    {
+        if ($quote->getCustomerEmail()) {
+            return $quote->getCustomerEmail();
+        }
+
+        $billing = $quote->getBillingAddress();
+        if ($billing && $billing->getEmail()) {
+            return $billing->getEmail();
+        }
+
+        $shipping = $quote->getShippingAddress();
+        if ($shipping && $shipping->getEmail()) {
+            return $shipping->getEmail();
+        }
+
         return null;
     }
 }
