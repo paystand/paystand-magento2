@@ -5,32 +5,9 @@ namespace PayStand\PayStandMagento\Helper;
 use Psr\Log\LoggerInterface;
 
 /**
- * Guards a quote's shipping selection across a totals recollection, and
- * describes it for telemetry.
- *
- * Why this exists — Magento destroys the shopper's shipping selection when a
- * rate re-request comes back empty. In Quote\Address::collectShippingRates():
- *
- *     $found = $this->requestShippingRates();
- *     if (!$found) {
- *         $this->setShippingAmount(0)->setBaseShippingAmount(0)
- *              ->setShippingMethod('')->setShippingDescription('');
- *     }
- *
- * and Quote\Address\Total\Shipping::collect() zeroes the shipping total up
- * front, restoring it only if a rate matching the method is still present.
- *
- * ValidationRules\ShippingMethodValidationRule then requires BOTH the method
- * and a matching rate:
- *
- *     $validationResult = $shippingMethod && $shippingRate;
- *
- * so a lost rate surfaces as the misleading "The shipping method is missing.
- * Select the shipping method and try again." — which is what blocks order
- * placement after the shopper has already been charged.
- *
- * A transient carrier/rate-request failure must never cost a shopper their
- * cart, so any recollection we initiate is bracketed by snapshot()/restore().
+ * Guards a quote's shipping selection across a totals recollection, and describes it
+ * for telemetry. Magento clears the method and zeroes the amount when a rate
+ * re-request returns nothing (Quote\Address::collectShippingRates).
  */
 class QuoteShipping
 {
@@ -44,9 +21,7 @@ class QuoteShipping
 
     /**
      * Capture the shipping selection before a recollection.
-     *
-     * Returns null for virtual quotes and any quote without a shipping address,
-     * which signals the caller that there is nothing to protect.
+     * Null for virtual quotes or quotes with no shipping address — nothing to protect.
      *
      * @param \Magento\Quote\Model\Quote $quote
      * @return array|null
@@ -72,9 +47,7 @@ class QuoteShipping
 
     /**
      * Restore a shipping selection that a recollection cleared.
-     *
-     * Only ever puts back what the shopper had already chosen — it never
-     * invents a method — so a genuine shipping change is left alone.
+     * Only puts back what the shopper already chose; never invents a method.
      *
      * @param \Magento\Quote\Model\Quote $quote
      * @param array|null $snapshot Result of snapshot() taken before recollecting
@@ -92,9 +65,8 @@ class QuoteShipping
             return false;
         }
 
-        // Only act when the recollection actually dropped the method. A rate
-        // that is merely absent is left for Magento to resolve; blindly forcing
-        // an amount back would risk charging a stale shipping price.
+        // Only act when the method was dropped; forcing an amount back on a merely
+        // missing rate would risk charging a stale shipping price.
         if ($address->getShippingMethod()) {
             return false;
         }
@@ -119,10 +91,7 @@ class QuoteShipping
 
     /**
      * One-line description of the shipping selection, for telemetry.
-     *
-     * Reports the rate separately from the method because the validation rule
-     * needs both — "method set, rate missing" is the exact broken state we are
-     * hunting, and it is invisible if only the method is logged.
+     * Rate is reported separately from the method: validation requires both.
      *
      * @param \Magento\Quote\Model\Quote $quote
      * @return string
@@ -145,10 +114,8 @@ class QuoteShipping
             $method = (string)$address->getShippingMethod();
             $hasRate = $method ? (bool)$address->getShippingRateByCode($method) : false;
 
-            // Address completeness travels with the shipping state because an
-            // incomplete address is the other way a paid cart becomes unplaceable
-            // ("street"/"city"/"telephone" is required). Report only presence, never
-            // the values — these events leave the merchant's server.
+            // An incomplete address also blocks placement. Presence only — never the
+            // values, since these events leave the merchant's server.
             $missing = [];
             foreach (['street' => 'street', 'city' => 'city', 'telephone' => 'tel', 'country_id' => 'country'] as $field => $label) {
                 $value = $address->getData($field);

@@ -10,13 +10,8 @@ use Magento\Quote\Model\Quote;
 use Magento\Quote\Model\Quote\Address;
 
 /**
- * Unit tests for Helper\QuoteShipping — the guard that keeps a totals
- * recollection from costing a shopper their shipping selection.
- *
- * Background: Quote\Address::collectShippingRates() clears the shipping method
- * and zeroes the amount whenever a rate re-request comes back empty, and
- * ShippingMethodValidationRule then rejects the order with "The shipping method
- * is missing." after the customer has already been charged.
+ * Unit tests for Helper\QuoteShipping — keeps a totals recollection from costing
+ * a shopper their shipping selection.
  */
 class QuoteShippingTest extends TestCase
 {
@@ -59,7 +54,7 @@ class QuoteShippingTest extends TestCase
     // ── restore ──────────────────────────────────────────────────────────────
 
     /**
-     * The core case: the recollection wiped the method, so it must be put back.
+     * The recollection wiped the method, so it must be put back.
      */
     public function testRestorePutsBackAClearedSelection(): void
     {
@@ -81,8 +76,7 @@ class QuoteShippingTest extends TestCase
     }
 
     /**
-     * A surviving selection must be left completely alone — restoring over a
-     * live method could reinstate a stale shipping price.
+     * Restoring over a live method could reinstate a stale shipping price.
      */
     public function testRestoreLeavesASurvivingSelectionUntouched(): void
     {
@@ -111,8 +105,7 @@ class QuoteShippingTest extends TestCase
     // ── describe ─────────────────────────────────────────────────────────────
 
     /**
-     * "method set, rate missing" is the state that fails order placement, so
-     * the breadcrumb has to distinguish it from a healthy selection.
+     * "method set, rate missing" is the state that fails placement.
      */
     public function testDescribeFlagsAMissingRate(): void
     {
@@ -137,9 +130,7 @@ class QuoteShippingTest extends TestCase
     }
 
     /**
-     * The address variant of the same defect: a paid cart that placeOrder rejects
-     * with "street"/"city"/"telephone is required". The breadcrumb has to name the
-     * missing fields, and must never carry their values off the merchant's server.
+     * Names the missing fields without carrying their values off the server.
      */
     public function testDescribeReportsMissingAddressFields(): void
     {

@@ -30,6 +30,12 @@ class Paystand extends \Magento\Framework\App\Action\Action
     const BASE_URL = 'https://api.paystand.com/v3';
     const STORE_SCOPE = \Magento\Store\Model\ScopeInterface::SCOPE_STORE;
 
+    /**
+     * Stop requesting redelivery for an unplaceable quote after this long. A late
+     * success would create an order at stale prices, possibly after a refund.
+     */
+    const RESCUE_ABANDON_AFTER_HOURS = 24;
+
     /** @var \Psr\Log\LoggerInterface */
     protected $_logger;
 
@@ -92,6 +98,14 @@ class Paystand extends \Magento\Framework\App\Action\Action
 
     /** @var \PayStand\PayStandMagento\Helper\QuoteShipping */
     private $quoteShipping;
+
+    /**
+     * Why the last createOrderFromQuote() failed. 'terminal' means Magento rejected
+     * the cart itself, so retrying the same cart fails the same way.
+     *
+     * @var array{terminal: bool, message: string}|null
+     */
+    private $lastRescueFailure = null;
 
     /**
      * @param \Magento\Framework\App\Action\Context $context ,
@@ -306,9 +320,36 @@ class Paystand extends \Magento\Framework\App\Action\Action
             $order = $this->createOrderFromQuote($quote, $json);
         }
 
-        // Server-side creation also failed (or was not possible) — ship to
-        // CloudLogger and return 404 so Paystand retries the webhook.
+        // Server-side creation also failed (or was not possible).
         if (!$order || !$order->getId()) {
+            // Give up only when the failure is terminal AND the event has outlived
+            // the window; a transient blip must still get its retries.
+            if ($this->isRescueTerminalAndExpired($json)) {
+                $reason = $this->lastRescueFailure['message'] ?? 'unknown';
+                $this->_logger->error(
+                    '>>>>> PAYSTAND-ABANDONED: Giving up on quote ' . $quote->getId()
+                    . ' after ' . self::RESCUE_ABANDON_AFTER_HOURS . 'h; cart cannot be placed: ' . $reason
+                );
+                try {
+                    CloudLogger::ship(CloudLogger::EVENT_RESCUE_ABANDONED, [
+                        'quote_id'      => (string)$quote->getId(),
+                        'payment_id'    => $json->resource->id ?? '',
+                        'error_message' => 'Paid but unplaceable for >' . self::RESCUE_ABANDON_AFTER_HOURS
+                            . 'h; needs manual resolution. Last error: ' . $reason,
+                    ]);
+                } catch (\Throwable $e) {
+                    // CloudLogger failure — silently ignored to protect payment flow
+                }
+                // 200 stops redelivery. The payment stands with no order, so the
+                // rescue_abandoned event above is what support works from.
+                $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
+                $result->setData([
+                    'success_message' => __('Order cannot be created for this quote; abandoned after retry window')
+                ]);
+                return $result;
+            }
+
+            // Otherwise keep the existing behaviour: 404 so Paystand retries.
             $this->_logger->error('>>>>> PAYSTAND-ERROR: Order not found after retries for quote: ' . $quote->getId());
             try {
                 CloudLogger::ship(CloudLogger::EVENT_WEBHOOK_NO_ORDER, [
@@ -822,12 +863,8 @@ class Paystand extends \Magento\Framework\App\Action\Action
     }
 
     /**
-     * Create an order server-side from a paid-but-unconverted quote.
-     *
-     * The payment already posted at Paystand but the client-side placeOrder never
-     * produced an order. Convert the quote into an order here so a captured payment
-     * always yields one. Best-effort and guarded: any failure returns null and the
-     * caller falls back to the existing "404 so Paystand retries" behaviour.
+     * Create an order server-side from a paid-but-unconverted quote, so a captured
+     * payment always yields one. Any failure returns null and the caller 404s.
      *
      * @param \Magento\Quote\Model\Quote $quote
      * @param \stdClass $json
@@ -840,31 +877,11 @@ class Paystand extends \Magento\Framework\App\Action\Action
             return null;
         }
 
-        // Only create an order for a payment status that actually advances one.
-        // execute()'s processable-status list also admits 'failed' and 'canceled'
-        // because those still drive state updates on an EXISTING order — but a
-        // declined payment must never bring a new, shippable order into being.
-        //
-        // newOrderStatus() is the module's single source of truth for "does this
-        // status advance an order", so delegate rather than keeping a second list
-        // that could drift: 'processing'/'posted'/'paid'/updateOrderOn map to
-        // STATE_PROCESSING and create; 'canceled' maps to STATE_CANCELED and
-        // 'failed' maps to '' — neither creates.
-        //
-        // 'processing' DOES create. It is the status the webhook actually carries
-        // while a capture settles (observed on every no-order delivery in the
-        // PHD-46847 incident), so excluding it would disable this rescue in the
-        // exact case it exists for. Creating on 'processing' is safe because
-        // invoicing is decoupled: execute() only creates the transaction/invoice
-        // once the status reaches updateOrderOn, so an unsettled payment yields an
-        // order in STATE_PROCESSING but no financial capture.
-        //
-        // The status is re-read from the payload rather than taken from
-        // execute()'s local — this method is protected, directly unit-tested,
-        // and must enforce its own precondition instead of trusting the caller.
-        // The empty check is load-bearing: newOrderStatus() compares loosely
-        // against updateOrderOn, and '' == null is true in PHP, so an absent
-        // status would otherwise map to STATE_PROCESSING.
+        // Only create for a status that advances an order, so a declined payment can
+        // never produce one. newOrderStatus() is the single source of truth: it maps
+        // 'processing'/'posted'/'paid' to STATE_PROCESSING, 'failed'/'canceled' not.
+        // The empty check is load-bearing — newOrderStatus() compares loosely against
+        // updateOrderOn, and '' == null is true in PHP.
         $psPaymentStatus = $json->resource->status ?? null;
         if (!$psPaymentStatus || $this->newOrderStatus($psPaymentStatus) !== Order::STATE_PROCESSING) {
             $this->_logger->debug(
@@ -903,12 +920,10 @@ class Paystand extends \Magento\Framework\App\Action\Action
             return $this->findOrder($quote);
         }
 
-        // Tracks whether we resurrected a deliberately-deactivated quote, so the
-        // failure path can undo it rather than leaving a stale cart active.
+        // Whether we reactivated the quote, so the failure path can undo it.
         $reactivated = false;
-        // Set the instant placeOrder() commits. Past that point our in-memory
-        // quote is stale (placeOrder rewrites the quote row), so the rollback
-        // below must not save it back over Magento's own writes.
+        // Once placeOrder commits, our in-memory quote is stale and must not be
+        // saved back over Magento's writes — so the rollback below is skipped.
         $placed = false;
 
         try {
@@ -928,40 +943,18 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 return null;
             }
 
-            // An inactive quote is ambiguous: order conversion deactivates it, but
-            // so do cart merge on login, multi-address checkout, cron expiry, and
-            // deliberate holds/cancellations (admin action, fraud review). We must
-            // NOT resurrect a quote for any of those unrelated reasons.
-            //
-            // Disambiguate in two steps, in this order:
-            // 1. Re-check for an order (conversion commits the order BEFORE
-            //    deactivating the quote, so a genuine conversion's order is
-            //    already visible here). This MUST run first so a held-but-actually-
-            //    converted quote still returns its real order instead of being
-            //    reactivated.
-            // 2. Reactivate only if no order exists. What makes that safe is the
-            //    successful-capture status gate at the top of this method: a quote
-            //    deactivated for a benign reason was, by definition, never paid, so
-            //    no successful-payment webhook exists to reach this code for it.
-            //    The payment-evidence check below is a null-guard, not the primary
-            //    protection — deliberately NOT keyed on quote.paystand_payment_id
-            //    alone, since that marker is written by SavePaymentData and is
-            //    absent precisely when that client-side call failed, which is one
-            //    of the failures this rescue exists for.
-            // (cartManagement->placeOrder() loads via getActive(), which is also
-            // why reactivation is required before placing.)
+            // An inactive quote may be converted OR merely merged/expired/held, so
+            // check for an order first (conversion commits it before deactivating)
+            // and only reactivate when none exists. placeOrder loads via getActive(),
+            // so reactivation is required before placing.
             if (!$quote->getIsActive()) {
                 $existing = $this->findOrder($quote);
                 if ($existing && $existing->getId()) {
                     $this->_logger->debug('>>>>> PAYSTAND-WEBHOOK: Quote ' . $quoteId . ' already converted; using existing order ' . $existing->getIncrementId());
                     return $existing;
                 }
-                // Either identifies the payment; in practice a verified delivery
-                // always carries resource.id, so this only trips on a malformed
-                // payload that somehow cleared verification.
-                // ?: not ?? on purpose — we want a value that actually identifies a
-                // payment, so an empty-string marker must fall through to the
-                // webhook's id rather than be kept and block the rescue.
+                // ?: not ?? — an empty marker must fall through to the webhook's id
+                // rather than be kept and block the rescue.
                 $paymentEvidence = $quote->getData('paystand_payment_id') ?: ($json->resource->id ?? null);
                 if (!$paymentEvidence) {
                     $this->_logger->debug('>>>>> PAYSTAND-WEBHOOK: Quote ' . $quoteId . ' inactive, never converted, and no payment evidence; not reactivating');
@@ -1004,13 +997,8 @@ class Paystand extends \Magento\Framework\App\Action\Action
             }
             $quote->setCustomerEmail($email);
 
-            // Deliberately NOT calling collectTotals() here. placeOrder()
-            // collects totals itself as part of submission, so ours added
-            // nothing — but it could trigger a shipping-rate re-request, and an
-            // empty result makes Magento clear the shipping method outright
-            // (see Helper\QuoteShipping). Doing that to a paid quote we are
-            // trying to rescue would guarantee the very "shipping method is
-            // missing" failure this rescue exists to recover from.
+            // No collectTotals() here: placeOrder collects them itself, and ours could
+            // clear the shipping method on the paid quote we are rescuing.
             try {
                 CloudLogger::ship(CloudLogger::EVENT_QUOTE_SHIPPING_STATE, [
                     'quote_id'      => (string)$quoteId,
@@ -1040,17 +1028,17 @@ class Paystand extends \Magento\Framework\App\Action\Action
 
             return $order;
         } catch (\Throwable $e) {
+            // LocalizedException = Magento rejecting the cart (shipping, address, stock,
+            // minimum). Anything else is infrastructure and worth retrying.
+            $this->lastRescueFailure = [
+                'terminal' => $e instanceof \Magento\Framework\Exception\LocalizedException,
+                'message'  => $e->getMessage(),
+            ];
             $this->_logger->error('>>>>> PAYSTAND-ERROR: Server-side order creation failed for quote ' . $quoteId . ': ' . $e->getMessage());
 
-            // The quote was reactivated for a rescue that then failed BEFORE the
-            // order was placed. Leaving it active would resurrect a cart Magento
-            // had deliberately deactivated (e.g. merged on login) and re-expose
-            // it in the shopper's session, with every webhook retry repeating the
-            // attempt. Put it back.
-            //
-            // Skipped once $placed is set: a throw after placeOrder committed
-            // (e.g. the order reload failing) leaves our copy of the quote stale,
-            // and saving it would clobber the row placeOrder just rewrote.
+            // Undo a reactivation whose placement then failed, so a deactivated cart
+            // is not resurrected in the shopper's session. Skipped once placed, since
+            // our copy is stale and would clobber what placeOrder wrote.
             if ($reactivated && !$placed) {
                 try {
                     $quote->setIsActive(false);
@@ -1084,11 +1072,39 @@ class Paystand extends \Magento\Framework\App\Action\Action
     }
 
     /**
-     * Resolve a customer email for a quote that is missing one.
+     * True when the last failure was terminal AND the event is past the retry window.
+     * Fails safe: an unusable timestamp never abandons.
      *
-     * An order cannot be placed without a customer email. Guests enter it in the
-     * Paystand widget, so the quote itself may lack one; recover it from the
-     * billing or shipping address.
+     * @param \stdClass $json
+     * @return bool
+     */
+    protected function isRescueTerminalAndExpired($json): bool
+    {
+        if (empty($this->lastRescueFailure['terminal'])) {
+            return false;
+        }
+
+        // Fixed across redeliveries, so it measures how long this has been failing.
+        $created = $json->created ?? null;
+        if (!$created) {
+            return false;
+        }
+
+        try {
+            $createdAt = new \DateTimeImmutable((string)$created);
+            $now = new \DateTimeImmutable('now');
+        } catch (\Exception $e) {
+            return false;
+        }
+
+        $ageHours = ($now->getTimestamp() - $createdAt->getTimestamp()) / 3600;
+
+        return $ageHours > self::RESCUE_ABANDON_AFTER_HOURS;
+    }
+
+    /**
+     * Resolve a customer email for a quote missing one — guests enter it in the
+     * widget, so recover it from the billing or shipping address.
      *
      * @param \Magento\Quote\Model\Quote $quote
      * @return string|null

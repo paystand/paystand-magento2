@@ -132,9 +132,8 @@ class SavePaymentData extends Action
         $payerDiscount   = isset($data['payerDiscount']) ? (float)$data['payerDiscount'] : 0.0;
         $payerTotalFees  = isset($data['payerTotalFees']) ? (float)$data['payerTotalFees'] : 0.0;
         $initPayer       = $data['initPayer'] ?? false;
-        // Paystand payment id of the just-posted charge. Recorded on the quote so
-        // checkout can refuse to re-open the widget for an already-paid cart, even
-        // if placeOrder later failed to convert it into an order.
+        // Recorded on the quote so checkout can refuse to re-open the widget for a
+        // cart that has already been paid.
         $paymentId       = $data['paymentId'] ?? null;
 
         if (!$payerId || !$quoteIdIncoming) {
@@ -208,13 +207,9 @@ class SavePaymentData extends Action
             }
 
             // 5) Persist the adjustment on the quote; totals will be updated in the PayStand observer.
-            //    Also record the posted payment's id so the re-charge guard can detect
-            //    an already-paid cart. Rules:
-            //    - Reject values that don't look like a Paystand payment id.
-            //    - Never overwrite an existing recorded id: the FIRST payment is the
-            //      reconciliation anchor. A different id arriving for the same quote
-            //      is the duplicate-payment signal itself — keep the original and
-            //      ship a dedicated telemetry event so it is visible in production.
+            //    The payment id is format-checked and never overwritten — the first one
+            //    is the reconciliation anchor, and a second distinct id is the
+            //    duplicate-payment signal, so it is logged rather than stored.
             $quote->setData('paystand_adjustment', $paystandAdjustment);
             if (!empty($paymentId) && !preg_match(self::PAYMENT_ID_PATTERN, (string)$paymentId)) {
                 $this->logger->warning('SAVEPAYMENTDATA >>>>>> Ignoring malformed paymentId', [
@@ -243,11 +238,8 @@ class SavePaymentData extends Action
                     }
                 }
             }
-            // Breadcrumb immediately after capture: this call happens seconds
-            // after the card is charged and seconds before placeOrder, so it
-            // brackets the window in which a quote's shipping rate has been
-            // observed to disappear. Reports the method and rate separately —
-            // "method set, rate missing" is the state that fails placement.
+            // Runs between capture and placeOrder, bracketing the window where a
+            // quote's shipping rate has been seen to disappear.
             try {
                 CloudLogger::ship(CloudLogger::EVENT_QUOTE_SHIPPING_STATE, [
                     'quote_id'      => (string)$realQuoteId,

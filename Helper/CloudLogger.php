@@ -43,6 +43,10 @@ class CloudLogger
     // Shipping method/rate/amount observed on a quote at a point in the payment
     // flow. Emitted only when the state changes, to pinpoint when a rate is lost.
     const EVENT_QUOTE_SHIPPING_STATE = 'quote_shipping_state';
+    // Server-side order recovery has given up on a paid quote: the cart is
+    // rejected for a business reason and has stayed that way past the retry
+    // window. Terminal — this is the queue support should work from.
+    const EVENT_RESCUE_ABANDONED = 'rescue_abandoned';
 
     /**
      * Resolve the merchant's customer ID from store config.

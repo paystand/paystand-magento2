@@ -45,10 +45,8 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
     }
 
     /**
-     * Report the shipping selection either side of the recollection.
-     *
-     * This is the breadcrumb that shows, on a live failure, exactly when a
-     * quote's shipping rate disappears relative to the payment being captured.
+     * Report the shipping selection either side of the recollection, so a live
+     * failure shows exactly when the rate disappeared.
      *
      * @param \Magento\Quote\Model\Quote $quote
      * @param string $before describe() output taken before recollecting
@@ -103,13 +101,8 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
             // collected earlier in the request lifecycle would return stale data
             // here despite this call.
             //
-            // That recollection can COST the shopper their shipping selection:
-            // if it triggers a rate re-request that comes back empty, Magento
-            // clears the method and zeroes the amount (see QuoteShipping). This
-            // endpoint runs on every widget open, immediately before the card is
-            // charged, so a transient carrier failure here would strand a paying
-            // customer with an unplaceable cart. Bracket the recollection and put
-            // the selection back if it was cleared.
+            // Bracketed because that recollection can clear the shipping selection
+            // when a rate re-request returns nothing (see QuoteShipping).
             $shippingSnapshot = $this->quoteShipping->snapshot($quote);
             $shippingBefore = $this->quoteShipping->describe($quote);
 
