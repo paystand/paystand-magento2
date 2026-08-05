@@ -90,6 +90,9 @@ class Paystand extends \Magento\Framework\App\Action\Action
     /** @var LockManagerInterface */
     private $lockManager;
 
+    /** @var \PayStand\PayStandMagento\Helper\QuoteShipping */
+    private $quoteShipping;
+
     /**
      * @param \Magento\Framework\App\Action\Context $context ,
      * @param \Psr\Log\LoggerInterface $logger
@@ -110,7 +113,8 @@ class Paystand extends \Magento\Framework\App\Action\Action
         \Magento\Sales\Api\OrderRepositoryInterface $orderRepository,
         CartRepositoryInterface $cartRepository,
         CartManagementInterface $cartManagement,
-        LockManagerInterface $lockManager
+        LockManagerInterface $lockManager,
+        \PayStand\PayStandMagento\Helper\QuoteShipping $quoteShipping
     ) {
         $this->_logger = $logger;
         $this->_request = $request;
@@ -127,6 +131,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
         $this->cartRepository = $cartRepository;
         $this->cartManagement = $cartManagement;
         $this->lockManager = $lockManager;
+        $this->quoteShipping = $quoteShipping;
         $this->updateOrderOn = $this->scopeConfig->getValue(self::UPDATE_ORDER_ON, self::STORE_SCOPE);
         parent::__construct($context);
     }
@@ -999,7 +1004,23 @@ class Paystand extends \Magento\Framework\App\Action\Action
             }
             $quote->setCustomerEmail($email);
 
-            $quote->collectTotals();
+            // Deliberately NOT calling collectTotals() here. placeOrder()
+            // collects totals itself as part of submission, so ours added
+            // nothing — but it could trigger a shipping-rate re-request, and an
+            // empty result makes Magento clear the shipping method outright
+            // (see Helper\QuoteShipping). Doing that to a paid quote we are
+            // trying to rescue would guarantee the very "shipping method is
+            // missing" failure this rescue exists to recover from.
+            try {
+                CloudLogger::ship(CloudLogger::EVENT_QUOTE_SHIPPING_STATE, [
+                    'quote_id'      => (string)$quoteId,
+                    'payment_id'    => $json->resource->id ?? '',
+                    'error_message' => 'createOrderFromQuote pre-place ' . $this->quoteShipping->describe($quote),
+                ]);
+            } catch (\Throwable $e) {
+                // CloudLogger failure — silently ignored to protect payment flow
+            }
+
             $this->cartRepository->save($quote);
 
             $orderId = $this->cartManagement->placeOrder($quoteId);

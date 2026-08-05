@@ -15,6 +15,8 @@ use Magento\Customer\Model\Session as CustomerSession;
 use Magento\Customer\Api\CustomerRepositoryInterface;
 use Magento\Framework\Exception\NoSuchEntityException;
 use Magento\Framework\Exception\LocalizedException;
+use PayStand\PayStandMagento\Helper\CloudLogger;
+use PayStand\PayStandMagento\Helper\QuoteShipping;
 use Psr\Log\LoggerInterface;
 
 class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
@@ -24,19 +26,51 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
     private CustomerSession $customerSession;
     private CustomerRepositoryInterface $customerRepository;
     private LoggerInterface $logger;
+    private QuoteShipping $quoteShipping;
 
     public function __construct(
         JsonFactory $resultJsonFactory,
         CheckoutSession $checkoutSession,
         CustomerSession $customerSession,
         CustomerRepositoryInterface $customerRepository,
-        LoggerInterface $logger
+        LoggerInterface $logger,
+        QuoteShipping $quoteShipping
     ) {
         $this->resultJsonFactory = $resultJsonFactory;
         $this->checkoutSession = $checkoutSession;
         $this->customerSession = $customerSession;
         $this->customerRepository = $customerRepository;
         $this->logger = $logger;
+        $this->quoteShipping = $quoteShipping;
+    }
+
+    /**
+     * Report the shipping selection either side of the recollection.
+     *
+     * This is the breadcrumb that shows, on a live failure, exactly when a
+     * quote's shipping rate disappears relative to the payment being captured.
+     *
+     * @param \Magento\Quote\Model\Quote $quote
+     * @param string $before describe() output taken before recollecting
+     * @param bool $restored Whether the selection had to be put back
+     * @return void
+     */
+    private function shipShippingBreadcrumb($quote, string $before, bool $restored): void
+    {
+        try {
+            $after = $this->quoteShipping->describe($quote);
+            if (!$restored && $before === $after) {
+                // Nothing changed — don't spend an event on the common case.
+                return;
+            }
+            CloudLogger::ship(CloudLogger::EVENT_QUOTE_SHIPPING_STATE, [
+                'quote_id'      => (string)$quote->getId(),
+                'error_message' => 'getquotedata before[' . $before . '] after[' . $after . ']'
+                    . ($restored ? ' RESTORED' : ''),
+            ]);
+        } catch (\Throwable $e) {
+            // CloudLogger failure — silently ignored to protect the payment flow
+        }
     }
 
     /**
@@ -68,8 +102,29 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
             // so the flag must be cleared first or a quote that was already
             // collected earlier in the request lifecycle would return stale data
             // here despite this call.
+            //
+            // That recollection can COST the shopper their shipping selection:
+            // if it triggers a rate re-request that comes back empty, Magento
+            // clears the method and zeroes the amount (see QuoteShipping). This
+            // endpoint runs on every widget open, immediately before the card is
+            // charged, so a transient carrier failure here would strand a paying
+            // customer with an unplaceable cart. Bracket the recollection and put
+            // the selection back if it was cleared.
+            $shippingSnapshot = $this->quoteShipping->snapshot($quote);
+            $shippingBefore = $this->quoteShipping->describe($quote);
+
             $quote->setTotalsCollectedFlag(false);
             $quote->collectTotals();
+
+            $restored = $this->quoteShipping->restore($quote, $shippingSnapshot, 'getquotedata');
+            if ($restored) {
+                // Recollect once more so the totals we return reflect the
+                // restored shipping rather than the stripped figures.
+                $quote->setTotalsCollectedFlag(false);
+                $quote->collectTotals();
+            }
+
+            $this->shipShippingBreadcrumb($quote, $shippingBefore, $restored);
 
             // Get quote totals
             $totals = $quote->getTotals();

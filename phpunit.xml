@@ -13,6 +13,7 @@
             <file>Test/Unit/Controller/Checkout/OrderStatusTest.php</file>
             <file>Test/Unit/Controller/Checkout/QuotePaymentStatusTest.php</file>
             <file>Test/Unit/Helper/QuoteAccessTest.php</file>
+            <file>Test/Unit/Helper/QuoteShippingTest.php</file>
             <file>Test/Unit/Plugin/QuoteSubmitLoggerPluginTest.php</file>
         </testsuite>
     </testsuites>

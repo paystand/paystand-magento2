@@ -9,6 +9,7 @@ use Magento\Framework\Controller\Result\JsonFactory;
 use PayStand\PayStandMagento\Helper\CustomerPayerId;
 use PayStand\PayStandMagento\Helper\CloudLogger;
 use PayStand\PayStandMagento\Helper\QuoteAccess;
+use PayStand\PayStandMagento\Helper\QuoteShipping;
 use Magento\Quote\Api\CartRepositoryInterface;
 use Magento\Framework\App\Config\ScopeConfigInterface;
 use Magento\Store\Model\ScopeInterface;
@@ -52,6 +53,9 @@ class SavePaymentData extends Action
     /** @var QuoteAccess */
     protected $quoteAccess;
 
+    /** @var QuoteShipping */
+    protected $quoteShipping;
+
     /** @var ScopeConfigInterface */
     protected $scopeConfig;
 
@@ -84,6 +88,7 @@ class SavePaymentData extends Action
         CustomerPayerId $customerPayerIdHelper,
         CartRepositoryInterface $cartRepository,
         QuoteAccess $quoteAccess,
+        QuoteShipping $quoteShipping,
         ScopeConfigInterface $scopeConfig
     ) {
         $this->logger = $logger;
@@ -91,6 +96,7 @@ class SavePaymentData extends Action
         $this->customerPayerIdHelper = $customerPayerIdHelper;
         $this->cartRepository = $cartRepository;
         $this->quoteAccess = $quoteAccess;
+        $this->quoteShipping = $quoteShipping;
         $this->scopeConfig = $scopeConfig;
         parent::__construct($context);
     }
@@ -237,6 +243,21 @@ class SavePaymentData extends Action
                     }
                 }
             }
+            // Breadcrumb immediately after capture: this call happens seconds
+            // after the card is charged and seconds before placeOrder, so it
+            // brackets the window in which a quote's shipping rate has been
+            // observed to disappear. Reports the method and rate separately —
+            // "method set, rate missing" is the state that fails placement.
+            try {
+                CloudLogger::ship(CloudLogger::EVENT_QUOTE_SHIPPING_STATE, [
+                    'quote_id'      => (string)$realQuoteId,
+                    'payment_id'    => (string)($paymentId ?? ''),
+                    'error_message' => 'savepaymentdata ' . $this->quoteShipping->describe($quote),
+                ]);
+            } catch (\Exception $e) {
+                // CloudLogger failure — silently ignored to protect payment flow
+            }
+
             $this->cartRepository->save($quote);
 
             if ($isAdjustmentEnabled) {

@@ -3,6 +3,7 @@
 namespace PayStand\PayStandMagento\Test\Unit\Controller\Webhook;
 
 use PayStand\PayStandMagento\Controller\Webhook\Paystand;
+use PayStand\PayStandMagento\Helper\QuoteShipping;
 use PayStand\PayStandMagento\Model\Directpost;
 use PHPUnit\Framework\TestCase;
 use PHPUnit\Framework\MockObject\MockObject;
@@ -65,10 +66,37 @@ class CreateOrderFromQuoteTest extends TestCase
             ->getMock();
 
         $this->set('_logger',          $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass());
+        $this->set('quoteShipping',    $this->getMockBuilder(QuoteShipping::class)
+            ->disableOriginalConstructor()
+            ->getMock());
         $this->set('lockManager',      $this->lockManagerMock);
         $this->set('cartRepository',   $this->cartRepositoryMock);
         $this->set('cartManagement',   $this->cartManagementMock);
         $this->set('_orderRepository', $this->orderRepositoryMock);
+    }
+
+    /**
+     * Regression guard: createOrderFromQuote must NOT recollect totals before
+     * placeOrder. placeOrder collects them itself, and our extra call could
+     * trigger a shipping-rate re-request whose empty result makes Magento clear
+     * the shipping method outright — guaranteeing the "shipping method is
+     * missing" failure on the very paid quote this rescue exists to recover.
+     */
+    public function testDoesNotRecollectTotalsBeforePlacingOrder(): void
+    {
+        $quote = $this->buildInitialQuote(42);
+        $this->lockManagerMock->method('lock')->willReturn(true);
+
+        $reloaded = $this->buildReloadedQuote([]);
+        $reloaded->expects($this->never())->method('collectTotals');
+        $this->cartRepositoryMock->method('get')->willReturn($reloaded);
+        $this->controller->method('findOrder')->willReturn(null);
+
+        $order = $this->buildOrder(77, 'W000000077');
+        $this->cartManagementMock->expects($this->once())->method('placeOrder')->willReturn(77);
+        $this->orderRepositoryMock->method('get')->willReturn($order);
+
+        $this->assertSame($order, $this->invoke($quote));
     }
 
     public function testReturnsNullWhenQuoteHasNoId(): void

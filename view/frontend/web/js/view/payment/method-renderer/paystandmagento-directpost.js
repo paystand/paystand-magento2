@@ -18,12 +18,13 @@ define(
         'Magento_Checkout/js/view/payment/default',
         'Magento_Checkout/js/model/quote',
         'Magento_CheckoutAgreements/js/model/agreement-validator',
+        'Magento_Checkout/js/model/payment/additional-validators',
         'Magento_Customer/js/model/customer',
         'Magento_Checkout/js/checkout-data',
         checkoutjs_module,
     ],
 
-    function ($, Component, quote, agreementValidator, customer) {
+    function ($, Component, quote, agreementValidator, additionalValidators, customer) {
         'use strict';
         const termsSel = '.ps-payment-method div.checkout-agreements input[type="checkbox"]';
         const psButtonSel = '.ps-payment-method .ps-button';
@@ -43,7 +44,7 @@ define(
                     customer_id:     CF_CUSTOMER_ID,
                     publishable_key: CF_PUBLISHABLE_KEY,
                     event_type:      eventType,
-                    plugin_version:  '3.6.9',
+                    plugin_version:  '3.7.0',
                     quote_id:        quoteId  || '',
                     payment_id:      paymentId || '',
                     error_message:   message  || '',
@@ -821,6 +822,25 @@ define(
 
             // this function ins binded to actual Paystand button to trigger checkout
             loadCheckout: function () {
+                // Run the same gate Magento's native Place Order button runs before it
+                // submits (Magento_Checkout/js/view/payment/default.js):
+                //
+                //     if (this.validate() && additionalValidators.validate()) { placeOrder... }
+                //
+                // We previously reached those validators only at the $(submitTrigger)
+                // click inside onComplete — i.e. AFTER the card had been charged.
+                // additionalValidators is the public registry every checkout extension
+                // hooks into to block placement, so skipping it meant a third-party
+                // extension could refuse an order we had already taken money for.
+                //
+                // The validators render their own inline messages by contract, so there
+                // is nothing to display here — just don't open the widget.
+                if (!this.validate() || !additionalValidators.validate()) {
+                    cfLog('preflight_validation_blocked', quote.getQuoteId() || '', '',
+                        'Magento checkout validators rejected the cart; widget not opened'
+                    );
+                    return;
+                }
                 loadCheckout();
             },
 
