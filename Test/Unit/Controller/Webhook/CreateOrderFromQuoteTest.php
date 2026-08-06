@@ -3,6 +3,7 @@
 namespace PayStand\PayStandMagento\Test\Unit\Controller\Webhook;
 
 use PayStand\PayStandMagento\Controller\Webhook\Paystand;
+use PayStand\PayStandMagento\Helper\QuoteShipping;
 use PayStand\PayStandMagento\Model\Directpost;
 use PHPUnit\Framework\TestCase;
 use PHPUnit\Framework\MockObject\MockObject;
@@ -65,10 +66,34 @@ class CreateOrderFromQuoteTest extends TestCase
             ->getMock();
 
         $this->set('_logger',          $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass());
+        $this->set('quoteShipping',    $this->getMockBuilder(QuoteShipping::class)
+            ->disableOriginalConstructor()
+            ->getMock());
         $this->set('lockManager',      $this->lockManagerMock);
         $this->set('cartRepository',   $this->cartRepositoryMock);
         $this->set('cartManagement',   $this->cartManagementMock);
         $this->set('_orderRepository', $this->orderRepositoryMock);
+    }
+
+    /**
+     * placeOrder collects totals itself; ours could clear the shipping method on
+     * the paid quote being rescued.
+     */
+    public function testDoesNotRecollectTotalsBeforePlacingOrder(): void
+    {
+        $quote = $this->buildInitialQuote(42);
+        $this->lockManagerMock->method('lock')->willReturn(true);
+
+        $reloaded = $this->buildReloadedQuote([]);
+        $reloaded->expects($this->never())->method('collectTotals');
+        $this->cartRepositoryMock->method('get')->willReturn($reloaded);
+        $this->controller->method('findOrder')->willReturn(null);
+
+        $order = $this->buildOrder(77, 'W000000077');
+        $this->cartManagementMock->expects($this->once())->method('placeOrder')->willReturn(77);
+        $this->orderRepositoryMock->method('get')->willReturn($order);
+
+        $this->assertSame($order, $this->invoke($quote));
     }
 
     public function testReturnsNullWhenQuoteHasNoId(): void
@@ -177,10 +202,7 @@ class CreateOrderFromQuoteTest extends TestCase
     }
 
     /**
-     * The verified webhook's own payment id rescues a paid-but-orderless quote
-     * even when the quote marker is missing — i.e. when the client-side
-     * savepaymentdata call never landed. Relying on the marker alone would miss
-     * exactly the failure this fallback exists for.
+     * The webhook's own payment id suffices when the quote marker is missing.
      */
     public function testInactiveQuoteIsRescuedOnWebhookPaymentAloneWithoutMarker(): void
     {
@@ -206,9 +228,7 @@ class CreateOrderFromQuoteTest extends TestCase
     // ── payment-status gate ──────────────────────────────────────────────────
 
     /**
-     * A declined payment must NEVER produce an order. execute()'s processable
-     * list admits 'failed' (it drives order-state updates), so this method has
-     * to re-check — otherwise the merchant ships against a declined payment.
+     * execute() admits 'failed' for order-state updates, so this method re-checks.
      */
     public function testFailedPaymentNeverCreatesOrder(): void
     {
@@ -220,14 +240,9 @@ class CreateOrderFromQuoteTest extends TestCase
     }
 
     /**
-     * Regression for the PHD-46847 incident itself: EVERY no-order webhook
-     * delivery for the stranded payment carried "Payment status: processing"
-     * (07-20 19:26:57Z / 19:32:07Z / 20:32:17Z), while the capture had already
-     * happened client-side. A gate that excluded 'processing' would return null
-     * here and disable this rescue in the exact case it exists for.
-     *
-     * Creating on 'processing' is safe because invoicing is decoupled: execute()
-     * only creates the transaction/invoice once the status reaches updateOrderOn.
+     * 'processing' is the status the webhook actually carries while a capture
+     * settles, so excluding it would disable the rescue. Safe because invoicing is
+     * deferred until updateOrderOn.
      */
     public function testProcessingPaymentCreatesOrder(): void
     {
@@ -257,10 +272,7 @@ class CreateOrderFromQuoteTest extends TestCase
     }
 
     /**
-     * Guards the loose comparison inside newOrderStatus(): it opens with
-     * `$status == $this->updateOrderOn`, and '' == null is true in PHP, so an
-     * absent status would map to STATE_PROCESSING without the explicit empty
-     * check in front of the delegation.
+     * newOrderStatus() compares loosely, and '' == null is true in PHP.
      */
     public function testMissingPaymentStatusDoesNotCreateOrder(): void
     {
@@ -391,10 +403,7 @@ class CreateOrderFromQuoteTest extends TestCase
     }
 
     /**
-     * If a rescue reactivated the quote and placeOrder then failed, the quote
-     * must be put back to inactive — otherwise a cart Magento deliberately
-     * deactivated (e.g. merged on login) is resurrected in the shopper's
-     * session, and every webhook retry repeats the attempt.
+     * A reactivation whose placement failed must be undone.
      */
     public function testReactivationIsRolledBackWhenPlaceOrderFails(): void
     {
@@ -424,10 +433,8 @@ class CreateOrderFromQuoteTest extends TestCase
     }
 
     /**
-     * Once placeOrder() has committed, our in-memory quote is stale (placeOrder
-     * rewrites the quote row). A later throw — e.g. reloading the order failing
-     * — must NOT trigger the rollback save, which would clobber Magento's own
-     * writes on a quote that now belongs to a real order.
+     * After placeOrder commits our quote copy is stale, so a later throw must not
+     * roll back over Magento's writes.
      */
     public function testReactivationIsNotRolledBackAfterPlaceOrderCommitted(): void
     {

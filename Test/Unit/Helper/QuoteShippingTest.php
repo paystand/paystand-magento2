@@ -1,0 +1,256 @@
+<?php
+
+namespace PayStand\PayStandMagento\Test\Unit\Helper;
+
+use PayStand\PayStandMagento\Helper\QuoteShipping;
+use PHPUnit\Framework\TestCase;
+use PHPUnit\Framework\MockObject\MockObject;
+use Psr\Log\LoggerInterface;
+use Magento\Quote\Model\Quote;
+use Magento\Quote\Model\Quote\Address;
+use Magento\Quote\Model\Quote\Address\Rate;
+
+/**
+ * Unit tests for Helper\QuoteShipping — keeps a totals recollection from costing
+ * a shopper their shipping selection.
+ */
+class QuoteShippingTest extends TestCase
+{
+    /** @var QuoteShipping */
+    private $helper;
+
+    protected function setUp(): void
+    {
+        $this->helper = new QuoteShipping(
+            $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass()
+        );
+    }
+
+    // ── snapshot ─────────────────────────────────────────────────────────────
+
+    public function testSnapshotReturnsNullForVirtualQuote(): void
+    {
+        $quote = $this->buildQuote(true, null);
+        $this->assertNull($this->helper->snapshot($quote));
+    }
+
+    public function testSnapshotReturnsNullWhenNoShippingAddress(): void
+    {
+        $quote = $this->buildQuote(false, null);
+        $this->assertNull($this->helper->snapshot($quote));
+    }
+
+    public function testSnapshotCapturesTheSelection(): void
+    {
+        $address = $this->buildAddress('flatrate_flatrate', 77.00, 'Flat Rate - Fixed');
+        $quote = $this->buildQuote(false, $address);
+
+        $snapshot = $this->helper->snapshot($quote);
+
+        $this->assertSame('flatrate_flatrate', $snapshot['method']);
+        $this->assertSame(77.00, $snapshot['amount']);
+        $this->assertSame('Flat Rate - Fixed', $snapshot['description']);
+    }
+
+    // ── restore ──────────────────────────────────────────────────────────────
+
+    /**
+     * The recollection wiped the method, so it must be put back.
+     */
+    public function testRestorePutsBackAClearedSelection(): void
+    {
+        // Method reads back as '' — exactly what Magento leaves behind.
+        $address = $this->buildAddress('', 0.0, '');
+        $address->expects($this->once())->method('setShippingMethod')->with('flatrate_flatrate');
+        $address->expects($this->once())->method('setShippingAmount')->with(77.00);
+        $address->expects($this->once())->method('setBaseShippingAmount')->with(77.00);
+
+        $quote = $this->buildQuote(false, $address);
+        $snapshot = [
+            'method'      => 'flatrate_flatrate',
+            'amount'      => 77.00,
+            'baseAmount'  => 77.00,
+            'description' => 'Flat Rate - Fixed',
+        ];
+
+        $this->assertTrue($this->helper->restore($quote, $snapshot, 'test'));
+    }
+
+    /**
+     * Restoring over a live method could reinstate a stale shipping price.
+     */
+    public function testRestoreLeavesASurvivingSelectionUntouched(): void
+    {
+        $address = $this->buildAddress('flatrate_flatrate', 77.00, 'Flat Rate - Fixed');
+        $address->expects($this->never())->method('setShippingMethod');
+
+        $quote = $this->buildQuote(false, $address);
+        $snapshot = [
+            'method'      => 'flatrate_flatrate',
+            'amount'      => 77.00,
+            'baseAmount'  => 77.00,
+            'description' => 'Flat Rate - Fixed',
+        ];
+
+        $this->assertFalse($this->helper->restore($quote, $snapshot, 'test'));
+    }
+
+    public function testRestoreIsANoOpWithoutASnapshot(): void
+    {
+        $quote = $this->buildQuote(false, $this->buildAddress('', 0.0, ''));
+
+        $this->assertFalse($this->helper->restore($quote, null, 'test'));
+        $this->assertFalse($this->helper->restore($quote, ['method' => ''], 'test'));
+    }
+
+    // ── describe ─────────────────────────────────────────────────────────────
+
+    /**
+     * "method set, rate missing" is the state that fails placement.
+     */
+    public function testDescribeFlagsAMissingRate(): void
+    {
+        $address = $this->buildAddress('flatrate_flatrate', 0.0, '');
+        $address->method('getAllShippingRates')->willReturn([]);
+
+        $out = $this->helper->describe($this->buildQuote(false, $address));
+
+        $this->assertStringContainsString('method=flatrate_flatrate', $out);
+        $this->assertStringContainsString('rate=NO', $out);
+    }
+
+    public function testDescribeReportsAHealthySelection(): void
+    {
+        $address = $this->buildAddress('flatrate_flatrate', 77.00, 'Flat Rate - Fixed');
+        $address->method('getAllShippingRates')->willReturn([$this->buildRate('flatrate_flatrate')]);
+
+        $out = $this->helper->describe($this->buildQuote(false, $address));
+
+        $this->assertStringContainsString('method=flatrate_flatrate', $out);
+        $this->assertStringContainsString('rate=yes', $out);
+    }
+
+    /**
+     * A live rate for some other carrier does not make the chosen method
+     * placeable, so the code has to match rather than the list being non-empty.
+     */
+    public function testDescribeIgnoresARateForADifferentMethod(): void
+    {
+        $address = $this->buildAddress('flatrate_flatrate', 0.0, '');
+        $address->method('getAllShippingRates')->willReturn([$this->buildRate('ups_ground')]);
+
+        $out = $this->helper->describe($this->buildQuote(false, $address));
+
+        $this->assertStringContainsString('method=flatrate_flatrate', $out);
+        $this->assertStringContainsString('rate=NO', $out);
+    }
+
+    /**
+     * Names the missing fields without carrying their values off the server.
+     */
+    public function testDescribeReportsMissingAddressFields(): void
+    {
+        $address = $this->buildAddress('flatrate_flatrate', 5.00, 'Flat Rate', [
+            'street'     => [''],
+            'city'       => '',
+            'telephone'  => '5551234567',
+            'country_id' => 'US',
+        ]);
+        $address->method('getAllShippingRates')->willReturn([$this->buildRate('flatrate_flatrate')]);
+
+        $out = $this->helper->describe($this->buildQuote(false, $address));
+
+        $this->assertStringContainsString('addr=MISSING[street,city]', $out);
+        $this->assertStringNotContainsString('5551234567', $out, 'must not leak address values');
+    }
+
+    public function testDescribeReportsACompleteAddress(): void
+    {
+        $address = $this->buildAddress('flatrate_flatrate', 5.00, 'Flat Rate');
+        $address->method('getAllShippingRates')->willReturn([$this->buildRate('flatrate_flatrate')]);
+
+        $this->assertStringContainsString(
+            'addr=complete',
+            $this->helper->describe($this->buildQuote(false, $address))
+        );
+    }
+
+    public function testDescribeHandlesVirtualQuote(): void
+    {
+        $this->assertSame('shipping=virtual', $this->helper->describe($this->buildQuote(true, null)));
+    }
+
+    public function testDescribeNeverThrows(): void
+    {
+        $this->assertSame('shipping=no-quote', $this->helper->describe(null));
+    }
+
+    // ── helpers ──────────────────────────────────────────────────────────────
+
+    /**
+     * @param string $code
+     * @return Rate|MockObject
+     */
+    private function buildRate(string $code)
+    {
+        $rate = $this->getMockBuilder(Rate::class)
+            ->disableOriginalConstructor()
+            ->addMethods(['getCode'])
+            ->getMock();
+        $rate->method('getCode')->willReturn($code);
+        return $rate;
+    }
+
+    /**
+     * @param bool $isVirtual
+     * @param Address|MockObject|null $address
+     * @return Quote|MockObject
+     */
+    private function buildQuote(bool $isVirtual, $address)
+    {
+        $quote = $this->getMockBuilder(Quote::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['isVirtual', 'getShippingAddress', 'getId'])
+            ->getMock();
+        $quote->method('isVirtual')->willReturn($isVirtual);
+        $quote->method('getShippingAddress')->willReturn($address);
+        $quote->method('getId')->willReturn(4277928);
+        return $quote;
+    }
+
+    /**
+     * getShippingAmount / getBaseShippingAmount / getShippingDescription /
+     * setShippingMethod / setShippingDescription are magic data accessors on
+     * Address, so they need addMethods() rather than onlyMethods().
+     *
+     * @param string $method
+     * @param float $amount
+     * @param string $description
+     * @return Address|MockObject
+     */
+    private function buildAddress(string $method, float $amount, string $description, array $addressData = null)
+    {
+        $address = $this->getMockBuilder(Address::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['getShippingMethod', 'getAllShippingRates', 'setShippingAmount', 'setBaseShippingAmount', 'getData'])
+            ->addMethods(['setShippingMethod', 'getShippingAmount', 'getBaseShippingAmount', 'getShippingDescription', 'setShippingDescription'])
+            ->getMock();
+        $address->method('getShippingMethod')->willReturn($method);
+        $address->method('getShippingAmount')->willReturn($amount);
+        $address->method('getBaseShippingAmount')->willReturn($amount);
+        $address->method('getShippingDescription')->willReturn($description);
+
+        // Complete address unless a scenario overrides it.
+        $data = $addressData ?? [
+            'street'     => ['123 Main St'],
+            'city'       => 'Santa Cruz',
+            'telephone'  => '5551234567',
+            'country_id' => 'US',
+        ];
+        $address->method('getData')->willReturnCallback(function ($key = null) use ($data) {
+            return $data[$key] ?? null;
+        });
+
+        return $address;
+    }
+}

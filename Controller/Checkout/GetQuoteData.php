@@ -15,6 +15,8 @@ use Magento\Customer\Model\Session as CustomerSession;
 use Magento\Customer\Api\CustomerRepositoryInterface;
 use Magento\Framework\Exception\NoSuchEntityException;
 use Magento\Framework\Exception\LocalizedException;
+use PayStand\PayStandMagento\Helper\CloudLogger;
+use PayStand\PayStandMagento\Helper\QuoteShipping;
 use Psr\Log\LoggerInterface;
 
 class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
@@ -24,19 +26,52 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
     private CustomerSession $customerSession;
     private CustomerRepositoryInterface $customerRepository;
     private LoggerInterface $logger;
+    private QuoteShipping $quoteShipping;
 
     public function __construct(
         JsonFactory $resultJsonFactory,
         CheckoutSession $checkoutSession,
         CustomerSession $customerSession,
         CustomerRepositoryInterface $customerRepository,
-        LoggerInterface $logger
+        LoggerInterface $logger,
+        QuoteShipping $quoteShipping
     ) {
         $this->resultJsonFactory = $resultJsonFactory;
         $this->checkoutSession = $checkoutSession;
         $this->customerSession = $customerSession;
         $this->customerRepository = $customerRepository;
         $this->logger = $logger;
+        $this->quoteShipping = $quoteShipping;
+    }
+
+    /**
+     * Report the shipping selection either side of the recollection, so a live
+     * failure shows exactly when the rate disappeared.
+     *
+     * @param \Magento\Quote\Model\Quote $quote
+     * @param string $before describe() output taken before recollecting
+     * @param bool $restored Whether the selection had to be put back
+     * @param bool $retryFailed Whether the re-requested rates came back empty too
+     * @return void
+     */
+    private function shipShippingBreadcrumb($quote, string $before, bool $restored, bool $retryFailed): void
+    {
+        try {
+            $after = $this->quoteShipping->describe($quote);
+            if (!$restored && $before === $after) {
+                // Nothing changed — don't spend an event on the common case.
+                return;
+            }
+            // RESTORED-NO-RATE means the method is back but nothing can price it,
+            // so the cart is still unplaceable — the queue worth alerting on.
+            $marker = $restored ? ($retryFailed ? ' RESTORED-NO-RATE' : ' RESTORED') : '';
+            CloudLogger::ship(CloudLogger::EVENT_QUOTE_SHIPPING_STATE, [
+                'quote_id'      => (string)$quote->getId(),
+                'error_message' => 'getquotedata before[' . $before . '] after[' . $after . ']' . $marker,
+            ]);
+        } catch (\Throwable $e) {
+            // CloudLogger failure — silently ignored to protect the payment flow
+        }
     }
 
     /**
@@ -68,8 +103,34 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
             // so the flag must be cleared first or a quote that was already
             // collected earlier in the request lifecycle would return stale data
             // here despite this call.
+            //
+            // Bracketed because that recollection can clear the shipping selection
+            // when a rate re-request returns nothing (see QuoteShipping).
+            $shippingSnapshot = $this->quoteShipping->snapshot($quote);
+            $shippingBefore = $this->quoteShipping->describe($quote);
+
             $quote->setTotalsCollectedFlag(false);
             $quote->collectTotals();
+
+            $restored = $this->quoteShipping->restore($quote, $shippingSnapshot, 'getquotedata');
+            $retryFailed = false;
+            if ($restored) {
+                // Re-arm the rate request before recollecting: the first pass
+                // consumed the flag, so a plain recollect finds no rate to price
+                // the restored method and would return shipping as 0.
+                $shippingAddress = $quote->getShippingAddress();
+                if ($shippingAddress) {
+                    $shippingAddress->setCollectShippingRates(true);
+                }
+                $quote->setTotalsCollectedFlag(false);
+                $quote->collectTotals();
+
+                // Restoring a second time means the retry cleared the method again,
+                // so the selection is back but still has no rate to price it.
+                $retryFailed = $this->quoteShipping->restore($quote, $shippingSnapshot, 'getquotedata-retry');
+            }
+
+            $this->shipShippingBreadcrumb($quote, $shippingBefore, $restored, $retryFailed);
 
             // Get quote totals
             $totals = $quote->getTotals();
