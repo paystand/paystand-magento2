@@ -51,9 +51,10 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
      * @param \Magento\Quote\Model\Quote $quote
      * @param string $before describe() output taken before recollecting
      * @param bool $restored Whether the selection had to be put back
+     * @param bool $retryFailed Whether the re-requested rates came back empty too
      * @return void
      */
-    private function shipShippingBreadcrumb($quote, string $before, bool $restored): void
+    private function shipShippingBreadcrumb($quote, string $before, bool $restored, bool $retryFailed): void
     {
         try {
             $after = $this->quoteShipping->describe($quote);
@@ -61,10 +62,12 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
                 // Nothing changed — don't spend an event on the common case.
                 return;
             }
+            // RESTORED-NO-RATE means the method is back but nothing can price it,
+            // so the cart is still unplaceable — the queue worth alerting on.
+            $marker = $restored ? ($retryFailed ? ' RESTORED-NO-RATE' : ' RESTORED') : '';
             CloudLogger::ship(CloudLogger::EVENT_QUOTE_SHIPPING_STATE, [
                 'quote_id'      => (string)$quote->getId(),
-                'error_message' => 'getquotedata before[' . $before . '] after[' . $after . ']'
-                    . ($restored ? ' RESTORED' : ''),
+                'error_message' => 'getquotedata before[' . $before . '] after[' . $after . ']' . $marker,
             ]);
         } catch (\Throwable $e) {
             // CloudLogger failure — silently ignored to protect the payment flow
@@ -110,6 +113,7 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
             $quote->collectTotals();
 
             $restored = $this->quoteShipping->restore($quote, $shippingSnapshot, 'getquotedata');
+            $retryFailed = false;
             if ($restored) {
                 // Re-arm the rate request before recollecting: the first pass
                 // consumed the flag, so a plain recollect finds no rate to price
@@ -121,11 +125,12 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
                 $quote->setTotalsCollectedFlag(false);
                 $quote->collectTotals();
 
-                // The retry can come back empty too; keep the shopper's method.
-                $this->quoteShipping->restore($quote, $shippingSnapshot, 'getquotedata-retry');
+                // Restoring a second time means the retry cleared the method again,
+                // so the selection is back but still has no rate to price it.
+                $retryFailed = $this->quoteShipping->restore($quote, $shippingSnapshot, 'getquotedata-retry');
             }
 
-            $this->shipShippingBreadcrumb($quote, $shippingBefore, $restored);
+            $this->shipShippingBreadcrumb($quote, $shippingBefore, $restored, $retryFailed);
 
             // Get quote totals
             $totals = $quote->getTotals();

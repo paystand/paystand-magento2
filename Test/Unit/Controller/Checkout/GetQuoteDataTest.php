@@ -138,6 +138,31 @@ class GetQuoteDataTest extends TestCase
     }
 
     /**
+     * When the re-requested rates come back empty too, the method is restored a
+     * second time — the state the RESTORED-NO-RATE breadcrumb reports.
+     */
+    public function testRestoresAgainWhenTheRetryAlsoComesBackEmpty(): void
+    {
+        $address = $this->buildAddress('flatrate_flatrate', 5.00, [
+            'flatrate_flatrate', // snapshot
+            'flatrate_flatrate', // describe (before)
+            '',                  // restore — wiped
+            '',                  // restore after the retry — wiped again
+            'flatrate_flatrate', // describe (after)
+        ]);
+        $quote = $this->buildQuote($address, 38.49);
+
+        $address->expects($this->exactly(2))->method('setShippingMethod')->with('flatrate_flatrate');
+        $quote->expects($this->exactly(2))->method('collectTotals');
+
+        $this->checkoutSessionMock->method('getQuote')->willReturn($quote);
+
+        $this->controller->execute();
+
+        $this->assertTrue($this->captured['success']);
+    }
+
+    /**
      * A virtual quote has nothing to snapshot, so the bracket must stay out of
      * the way rather than erroring on a missing shipping address.
      */
