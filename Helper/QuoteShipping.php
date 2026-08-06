@@ -112,7 +112,17 @@ class QuoteShipping
             }
 
             $method = (string)$address->getShippingMethod();
-            $hasRate = $method ? (bool)$address->getShippingRateByCode($method) : false;
+            // getShippingRateByCode() returns the first code match including rates
+            // only flagged deleted, so walk the live list the totals collector uses.
+            $hasRate = false;
+            if ($method !== '') {
+                foreach ($address->getAllShippingRates() as $rate) {
+                    if ($rate->getCode() === $method) {
+                        $hasRate = true;
+                        break;
+                    }
+                }
+            }
 
             // An incomplete address also blocks placement. Presence only — never the
             // values, since these events leave the merchant's server.

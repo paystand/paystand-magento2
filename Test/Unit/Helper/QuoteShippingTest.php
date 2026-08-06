@@ -8,6 +8,7 @@ use PHPUnit\Framework\MockObject\MockObject;
 use Psr\Log\LoggerInterface;
 use Magento\Quote\Model\Quote;
 use Magento\Quote\Model\Quote\Address;
+use Magento\Quote\Model\Quote\Address\Rate;
 
 /**
  * Unit tests for Helper\QuoteShipping — keeps a totals recollection from costing
@@ -110,7 +111,7 @@ class QuoteShippingTest extends TestCase
     public function testDescribeFlagsAMissingRate(): void
     {
         $address = $this->buildAddress('flatrate_flatrate', 0.0, '');
-        $address->method('getShippingRateByCode')->willReturn(false);
+        $address->method('getAllShippingRates')->willReturn([]);
 
         $out = $this->helper->describe($this->buildQuote(false, $address));
 
@@ -121,12 +122,27 @@ class QuoteShippingTest extends TestCase
     public function testDescribeReportsAHealthySelection(): void
     {
         $address = $this->buildAddress('flatrate_flatrate', 77.00, 'Flat Rate - Fixed');
-        $address->method('getShippingRateByCode')->willReturn(new \stdClass());
+        $address->method('getAllShippingRates')->willReturn([$this->buildRate('flatrate_flatrate')]);
 
         $out = $this->helper->describe($this->buildQuote(false, $address));
 
         $this->assertStringContainsString('method=flatrate_flatrate', $out);
         $this->assertStringContainsString('rate=yes', $out);
+    }
+
+    /**
+     * A live rate for some other carrier does not make the chosen method
+     * placeable, so the code has to match rather than the list being non-empty.
+     */
+    public function testDescribeIgnoresARateForADifferentMethod(): void
+    {
+        $address = $this->buildAddress('flatrate_flatrate', 0.0, '');
+        $address->method('getAllShippingRates')->willReturn([$this->buildRate('ups_ground')]);
+
+        $out = $this->helper->describe($this->buildQuote(false, $address));
+
+        $this->assertStringContainsString('method=flatrate_flatrate', $out);
+        $this->assertStringContainsString('rate=NO', $out);
     }
 
     /**
@@ -140,7 +156,7 @@ class QuoteShippingTest extends TestCase
             'telephone'  => '5551234567',
             'country_id' => 'US',
         ]);
-        $address->method('getShippingRateByCode')->willReturn(new \stdClass());
+        $address->method('getAllShippingRates')->willReturn([$this->buildRate('flatrate_flatrate')]);
 
         $out = $this->helper->describe($this->buildQuote(false, $address));
 
@@ -151,7 +167,7 @@ class QuoteShippingTest extends TestCase
     public function testDescribeReportsACompleteAddress(): void
     {
         $address = $this->buildAddress('flatrate_flatrate', 5.00, 'Flat Rate');
-        $address->method('getShippingRateByCode')->willReturn(new \stdClass());
+        $address->method('getAllShippingRates')->willReturn([$this->buildRate('flatrate_flatrate')]);
 
         $this->assertStringContainsString(
             'addr=complete',
@@ -170,6 +186,20 @@ class QuoteShippingTest extends TestCase
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────
+
+    /**
+     * @param string $code
+     * @return Rate|MockObject
+     */
+    private function buildRate(string $code)
+    {
+        $rate = $this->getMockBuilder(Rate::class)
+            ->disableOriginalConstructor()
+            ->addMethods(['getCode'])
+            ->getMock();
+        $rate->method('getCode')->willReturn($code);
+        return $rate;
+    }
 
     /**
      * @param bool $isVirtual
@@ -202,7 +232,7 @@ class QuoteShippingTest extends TestCase
     {
         $address = $this->getMockBuilder(Address::class)
             ->disableOriginalConstructor()
-            ->onlyMethods(['getShippingMethod', 'getShippingRateByCode', 'setShippingAmount', 'setBaseShippingAmount', 'getData'])
+            ->onlyMethods(['getShippingMethod', 'getAllShippingRates', 'setShippingAmount', 'setBaseShippingAmount', 'getData'])
             ->addMethods(['setShippingMethod', 'getShippingAmount', 'getBaseShippingAmount', 'getShippingDescription', 'setShippingDescription'])
             ->getMock();
         $address->method('getShippingMethod')->willReturn($method);

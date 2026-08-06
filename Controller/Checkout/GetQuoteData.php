@@ -111,10 +111,18 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
 
             $restored = $this->quoteShipping->restore($quote, $shippingSnapshot, 'getquotedata');
             if ($restored) {
-                // Recollect once more so the totals we return reflect the
-                // restored shipping rather than the stripped figures.
+                // Re-arm the rate request before recollecting: the first pass
+                // consumed the flag, so a plain recollect finds no rate to price
+                // the restored method and would return shipping as 0.
+                $shippingAddress = $quote->getShippingAddress();
+                if ($shippingAddress) {
+                    $shippingAddress->setCollectShippingRates(true);
+                }
                 $quote->setTotalsCollectedFlag(false);
                 $quote->collectTotals();
+
+                // The retry can come back empty too; keep the shopper's method.
+                $this->quoteShipping->restore($quote, $shippingSnapshot, 'getquotedata-retry');
             }
 
             $this->shipShippingBreadcrumb($quote, $shippingBefore, $restored);
