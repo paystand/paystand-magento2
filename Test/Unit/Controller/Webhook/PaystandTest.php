@@ -337,6 +337,75 @@ class PaystandTest extends TestCase
         $this->controller->execute();
     }
 
+    // ── Bounded rescue retries ─────────────────────────────────────────────────
+
+    /**
+     * A terminal failure past the window returns 200 so redelivery stops and the
+     * case surfaces as rescue_abandoned.
+     */
+    public function testAbandonsRetriesWhenFailureIsTerminalAndEventIsOld(): void
+    {
+        // makeBody()'s created is 2026-01-01, comfortably past the window.
+        $this->requestMock->method('getContent')->willReturn($this->makeBody());
+        $this->controller->method('getPaystandAccessToken')->willReturn('fake-token');
+        $this->controller->method('verifyPaystandEvent')->willReturn(true);
+        $this->setupQuoteIdMask();
+        $this->setupQuoteMock();
+
+        $this->controller->method('findOrder')->willReturn(null);
+        $this->controller->method('createOrderFromQuote')->willReturn(null);
+        $this->set('lastRescueFailure', [
+            'terminal' => true,
+            'message'  => 'The shipping method is missing. Select the shipping method and try again.',
+        ]);
+
+        $this->jsonResultMock->expects($this->once())
+            ->method('setHttpResponseCode')
+            ->with(200)
+            ->willReturnSelf();
+
+        $this->controller->execute();
+    }
+
+    /**
+     * Exercised directly rather than through execute(), which sleeps ~19s per call.
+     *
+     * @dataProvider rescueRetryScenarios
+     */
+    public function testRescueAbandonDecision(bool $expected, $failure, $created, string $case): void
+    {
+        $this->set('lastRescueFailure', $failure);
+
+        $json = json_decode(json_encode(['created' => $created, 'resource' => ['id' => 'pay-1']]));
+
+        $method = new \ReflectionMethod(Paystand::class, 'isRescueTerminalAndExpired');
+        $method->setAccessible(true);
+
+        $this->assertSame($expected, $method->invoke($this->controller, $json), $case);
+    }
+
+    /**
+     * @return array<string, array{0: bool, 1: mixed, 2: mixed, 3: string}>
+     */
+    public static function rescueRetryScenarios(): array
+    {
+        $old = '2026-01-01T00:00:00.000Z';
+        $fresh = gmdate('Y-m-d\TH:i:s.000\Z');
+        $terminal = ['terminal' => true, 'message' => 'The shipping method is missing.'];
+
+        return [
+            'terminal + old event => abandon' => [true, $terminal, $old, 'a rejected cart past the window is futile to retry'],
+            // Infrastructure faults are not the cart's fault — they keep their retries however old.
+            'transient + old event => retry' => [false, ['terminal' => false, 'message' => 'deadlock'], $old, 'infra faults must keep retrying'],
+            // A rate lost to a transient carrier blip can come back on the next delivery.
+            'terminal + fresh event => retry' => [false, $terminal, $fresh, 'a fresh terminal failure may still resolve'],
+            // Fail safe: unknown age must never drop a paid order.
+            'terminal + no timestamp => retry' => [false, $terminal, null, 'unknown age must fall back to retrying'],
+            'terminal + unparseable timestamp => retry' => [false, $terminal, 'not-a-date', 'a bad timestamp must not abandon'],
+            'no recorded failure => retry' => [false, null, $old, 'nothing failed terminally, so nothing to abandon'],
+        ];
+    }
+
     /**
      * When the order search finds nothing, the webhook must fall back to creating
      * the order server-side (source of truth) instead of returning 404 — a

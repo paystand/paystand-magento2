@@ -10,9 +10,11 @@
             <file>Test/Unit/Helper/CloudLoggerTest.php</file>
             <file>Test/Unit/Controller/Webhook/PaystandTest.php</file>
             <file>Test/Unit/Controller/Webhook/CreateOrderFromQuoteTest.php</file>
+            <file>Test/Unit/Controller/Checkout/GetQuoteDataTest.php</file>
             <file>Test/Unit/Controller/Checkout/OrderStatusTest.php</file>
             <file>Test/Unit/Controller/Checkout/QuotePaymentStatusTest.php</file>
             <file>Test/Unit/Helper/QuoteAccessTest.php</file>
+            <file>Test/Unit/Helper/QuoteShippingTest.php</file>
             <file>Test/Unit/Plugin/QuoteSubmitLoggerPluginTest.php</file>
         </testsuite>
     </testsuites>

@@ -16,7 +16,7 @@ use Magento\Store\Model\ScopeInterface;
 class CloudLogger
 {
     const INGEST_URL     = 'https://magento-plugin-logs.paystand-core-services.workers.dev/ingest';
-    const PLUGIN_VERSION = '3.6.9';
+    const PLUGIN_VERSION = '3.7.0';
 
     // Config paths
     const CONFIG_PUBLISHABLE_KEY = 'payment/paystandmagento/publishable_key';
@@ -40,6 +40,13 @@ class CloudLogger
     // The webhook could not acquire the per-quote place-order lock and fell
     // back to search-only behaviour.
     const EVENT_PLACEORDER_LOCK_FALLBACK = 'placeorder_lock_fallback';
+    // Shipping method/rate/amount observed on a quote at a point in the payment
+    // flow. Emitted only when the state changes, to pinpoint when a rate is lost.
+    const EVENT_QUOTE_SHIPPING_STATE = 'quote_shipping_state';
+    // Server-side order recovery has given up on a paid quote: the cart is
+    // rejected for a business reason and has stayed that way past the retry
+    // window. Terminal — this is the queue support should work from.
+    const EVENT_RESCUE_ABANDONED = 'rescue_abandoned';
 
     /**
      * Resolve the merchant's customer ID from store config.
