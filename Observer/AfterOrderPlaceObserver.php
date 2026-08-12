@@ -605,44 +605,10 @@ class AfterOrderPlaceObserver implements ObserverInterface
                 $invoice->getOrder()->setCustomerNoteNotify(false);
                 $invoice->getOrder()->setIsInProcess(true);
                 $order->addStatusHistoryComment(__('Automatically INVOICED by Paystand'), false);
-                
-                // Update order totals to reflect the paystand_adjustment in invoice totals
-                $paystandAdjustment = (float)$order->getData('paystand_adjustment');
-                
-                // If there's an existing adjustment (!=0), always update order totals
-                if ($paystandAdjustment !== 0.0) {
-                    $currentTotalInvoiced = (float)$order->getTotalInvoiced();
-                    $currentBaseTotalInvoiced = (float)$order->getBaseTotalInvoiced();
-                    $currentTotalPaid = (float)$order->getTotalPaid();
-                    $currentBaseTotalPaid = (float)$order->getBaseTotalPaid();
-                    
-                    $newTotalInvoiced = $currentTotalInvoiced + $paystandAdjustment;
-                    $newBaseTotalInvoiced = $currentBaseTotalInvoiced + $paystandAdjustment;
-                    $newTotalPaid = $currentTotalPaid + $paystandAdjustment;
-                    $newBaseTotalPaid = $currentBaseTotalPaid + $paystandAdjustment;
-                    
-                    $order->setTotalInvoiced($newTotalInvoiced);
-                    $order->setBaseTotalInvoiced($newBaseTotalInvoiced);
-                    $order->setTotalPaid($newTotalPaid);
-                    $order->setBaseTotalPaid($newBaseTotalPaid);
-                    
-                    $this->_logger->debug(">>>>> PAYSTAND-CREATE-INVOICE: Updated order invoice totals - total_invoiced from {$currentTotalInvoiced} to {$newTotalInvoiced}, total_paid from {$currentTotalPaid} to {$newTotalPaid}");
-                    
-                    // Update payment amounts to include the adjustment
-                    $payment = $order->getPayment();
-                    if ($payment) {
-                        $currentAmountPaid = (float)$payment->getAmountPaid();
-                        $currentBaseAmountPaid = (float)$payment->getBaseAmountPaid();
-                        
-                        $newAmountPaid = $currentAmountPaid + $paystandAdjustment;
-                        $newBaseAmountPaid = $currentBaseAmountPaid + $paystandAdjustment;
-                        
-                        $payment->setAmountPaid($newAmountPaid);
-                        $payment->setBaseAmountPaid($newBaseAmountPaid);
-                        
-                        $this->_logger->debug(">>>>> PAYSTAND-CREATE-INVOICE: Updated payment amounts - amount_paid from {$currentAmountPaid} to {$newAmountPaid}, base_amount_paid from {$currentBaseAmountPaid} to {$newBaseAmountPaid}");
-                    }
-                }
+
+                // The adjustment is added to the invoice above, before register(), so
+                // register() and pay() already carry it into total_invoiced, total_paid
+                // and the payment's amount_paid. Adding it again here would double it.
 
                 // Create transaction to save invoice and order
                 $transactionSave = $this->_transactionFactory

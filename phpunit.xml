@@ -16,6 +16,7 @@
             <file>Test/Unit/Helper/QuoteAccessTest.php</file>
             <file>Test/Unit/Helper/QuoteShippingTest.php</file>
             <file>Test/Unit/Plugin/QuoteSubmitLoggerPluginTest.php</file>
+            <file>Test/Unit/Plugin/CapturedQuoteTotalsTest.php</file>
         </testsuite>
     </testsuites>
 </phpunit>

@@ -73,6 +73,13 @@ class SavePaymentData extends Action
     const PAYMENT_ID_PATTERN = '/^[a-z0-9]{16,64}$/i';
 
     /**
+     * Statuses that mean the money was actually taken, matching the values
+     * Model\Config\Source\PaymentStatus offers for updateOrderOn. Only these
+     * freeze a quote's totals; anything else leaves the cart free to recollect.
+     */
+    const CAPTURED_STATUSES = ['posted', 'paid'];
+
+    /**
      * @param Context $context
      * @param LoggerInterface $logger
      * @param JsonFactory $resultJsonFactory
@@ -135,6 +142,8 @@ class SavePaymentData extends Action
         // Recorded on the quote so checkout can refuse to re-open the widget for a
         // cart that has already been paid.
         $paymentId       = $data['paymentId'] ?? null;
+        // Narrower than the payment id above: only a confirmed capture freezes totals.
+        $paymentStatus   = $data['paymentStatus'] ?? null;
 
         if (!$payerId || !$quoteIdIncoming) {
             $this->logger->error('SAVEPAYMENTDATA >>>>>> Missing payerId or quote');
@@ -238,6 +247,22 @@ class SavePaymentData extends Action
                     }
                 }
             }
+
+            // Recorded only for a confirmed capture, and only alongside a payment id.
+            // Freezing totals on anything weaker would strand a cart whose payment
+            // never completed, since the quote's totals could then never recollect.
+            if (!empty($paymentId) && !empty($paymentStatus)) {
+                $status = strtolower(trim((string)$paymentStatus));
+                if (in_array($status, self::CAPTURED_STATUSES, true)) {
+                    $quote->setData('paystand_capture_status', $status);
+                } else {
+                    $this->logger->info('SAVEPAYMENTDATA >>>>>> Payment status is not a capture, totals stay live', [
+                        'quote_id'       => $realQuoteId,
+                        'payment_status' => $status
+                    ]);
+                }
+            }
+
             // Runs between capture and placeOrder, bracketing the window where a
             // quote's shipping rate has been seen to disappear.
             try {
