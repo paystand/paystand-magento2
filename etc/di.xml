@@ -5,5 +5,10 @@
                 type="PayStand\PayStandMagento\Plugin\QuoteSubmitLoggerPlugin"
                 sortOrder="10" />
     </type>
+    <type name="Magento\Quote\Model\Quote">
+        <plugin name="paystand_captured_quote_totals"
+                type="PayStand\PayStandMagento\Plugin\CapturedQuoteTotals"
+                sortOrder="10" />
+    </type>
 </config>
 

@@ -120,8 +120,51 @@ class CloudLoggerTest extends TestCase
     {
         // Intercept the cURL call by temporarily overriding INGEST_URL to a local
         // server we control — not feasible in pure unit test without reflection.
-        // Instead, verify the constant is set so the payload builder has a version.
-        $this->assertSame(CloudLogger::PLUGIN_VERSION, '3.7.0');
+        // Instead, check the constant tracks composer.json, so every log event
+        // reports the version that was actually released.
+        $composer = json_decode(file_get_contents(__DIR__ . '/../../../composer.json'), true);
+
+        $this->assertNotEmpty($composer['version'], 'composer.json must declare a version');
+        $this->assertSame(
+            $composer['version'],
+            CloudLogger::PLUGIN_VERSION,
+            'CloudLogger::PLUGIN_VERSION has drifted from composer.json'
+        );
+    }
+
+    /**
+     * The Luma renderer reports its own plugin_version to the log endpoint, and it
+     * has drifted from composer.json before — a released bundle claiming the prior
+     * version makes log events attribute a bug to the wrong release.
+     */
+    public function testLumaRendererReportsTheSameVersion(): void
+    {
+        $composer = json_decode(file_get_contents(__DIR__ . '/../../../composer.json'), true);
+        $renderer = file_get_contents(
+            __DIR__ . '/../../../view/frontend/web/js/view/payment/method-renderer/paystandmagento-directpost.js'
+        );
+
+        $this->assertMatchesRegularExpression(
+            "/plugin_version:\s*'" . preg_quote($composer['version'], '/') . "'/",
+            $renderer,
+            'plugin_version in paystandmagento-directpost.js has drifted from composer.json'
+        );
+    }
+
+    /**
+     * setup_version drives whether Magento runs the module's schema patches, so a
+     * stale value can leave a released column uncreated.
+     */
+    public function testModuleXmlDeclaresTheSameVersion(): void
+    {
+        $composer = json_decode(file_get_contents(__DIR__ . '/../../../composer.json'), true);
+        $moduleXml = simplexml_load_file(__DIR__ . '/../../../etc/module.xml');
+
+        $this->assertSame(
+            $composer['version'],
+            (string)$moduleXml->module['setup_version'],
+            'etc/module.xml setup_version has drifted from composer.json'
+        );
     }
 
     public function testErrorMessageIsTruncatedTo512Chars(): void

@@ -11,6 +11,7 @@ use \stdClass;
 use Magento\Sales\Model\Order\Payment\Transaction\BuilderInterface as BuilderInterface;
 use Magento\Sales\Model\Order;
 use PayStand\PayStandMagento\Helper\CloudLogger;
+use PayStand\PayStandMagento\Model\Config\Source\PaymentStatus;
 
 /**
  * Webhook Receiver Controller for Paystand
@@ -997,6 +998,23 @@ class Paystand extends \Magento\Framework\App\Action\Action
             }
             $quote->setCustomerEmail($email);
 
+            // placeOrder below reloads the quote from the database and collects its
+            // totals, which re-adjudicates cart price rules and can drop a discount
+            // the shopper already paid on. The client-side save that normally records
+            // these markers is exactly what failed in a rescue, so record them here.
+            $captureId = $quote->getData('paystand_payment_id') ?: ($json->resource->id ?? null);
+            $captureStatus = strtolower(trim((string)$psPaymentStatus));
+            if ($captureId && in_array($captureStatus, PaymentStatus::CAPTURED_STATUSES, true)) {
+                $quote->setData('paystand_payment_id', $captureId);
+                $quote->setData('paystand_capture_status', $captureStatus);
+                $this->_logger->debug(
+                    '>>>>> PAYSTAND-WEBHOOK: Recorded capture markers on quote ' . $quoteId
+                    . ' status=' . $captureStatus . ' before server-side placeOrder'
+                );
+            } else {
+                $this->preserveCaptureStatus($quote, $quoteId);
+            }
+
             // No collectTotals() here: placeOrder collects them itself, and ours could
             // clear the shipping method on the paid quote we are rescuing.
             try {
@@ -1068,6 +1086,45 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 // leaking lock is visible in production diagnostics.
                 $this->_logger->error('>>>>> PAYSTAND-WEBHOOK: Failed to release place-order lock ' . $lockName . ': ' . $e->getMessage());
             }
+        }
+    }
+
+    /**
+     * Carries a capture status recorded since this quote was loaded back onto the
+     * in-memory copy, so saving a delivery that has no capture of its own cannot
+     * persist a null over it and unfreeze a cart that was already charged.
+     *
+     * @param \Magento\Quote\Model\Quote $quote
+     * @param int|string $quoteId
+     * @return void
+     */
+    protected function preserveCaptureStatus($quote, $quoteId)
+    {
+        try {
+            if (!empty($quote->getData('paystand_capture_status'))) {
+                return;
+            }
+
+            // Uses the connection the quote itself is saved through, so this needs no
+            // extra dependency and cannot drift from that table.
+            $resource = $quote->getResource();
+            $connection = $resource->getConnection();
+            $select = $connection->select()
+                ->from($resource->getMainTable(), 'paystand_capture_status')
+                ->where('entity_id = ?', $quoteId);
+            $persisted = $connection->fetchOne($select);
+
+            if (!empty($persisted)) {
+                $quote->setData('paystand_capture_status', $persisted);
+                $this->_logger->debug(
+                    '>>>>> PAYSTAND-WEBHOOK: Kept capture status ' . $persisted
+                    . ' recorded for quote ' . $quoteId . ' since it was loaded'
+                );
+            }
+        } catch (\Throwable $e) {
+            // A failed read must not stop the rescue; the worst case is the status
+            // this delivery already held being saved as it was loaded.
+            $this->_logger->error('>>>>> PAYSTAND-WEBHOOK: Could not re-read capture status: ' . $e->getMessage());
         }
     }
 

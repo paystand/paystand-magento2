@@ -504,6 +504,122 @@ class CreateOrderFromQuoteTest extends TestCase
     }
 
     /**
+     * placeOrder reloads the quote and collects its totals, which re-adjudicates
+     * cart price rules. The rescue runs precisely when the client-side save that
+     * normally records the capture markers did not, so it must record them itself
+     * or the discount the shopper paid on can be dropped from the order.
+     */
+    /**
+     * @dataProvider capturedStatusProvider
+     */
+    public function testCaptureMarkersAreRecordedBeforePlacingOrder(string $status): void
+    {
+        $quote = $this->buildInitialQuote(42);
+        $this->lockManagerMock->method('lock')->willReturn(true);
+
+        $reloaded = $this->buildReloadedQuote(['paystandPaymentId' => null]);
+        $written = [];
+        $reloaded->method('setData')->willReturnCallback(
+            function ($key, $value = null) use (&$written, $reloaded) {
+                $written[$key] = $value;
+                return $reloaded;
+            }
+        );
+        $this->cartRepositoryMock->method('get')->willReturn($reloaded);
+        $this->controller->method('findOrder')->willReturn(null);
+
+        $order = $this->buildOrder(77, 'W000000077');
+        $this->cartManagementMock->method('placeOrder')->willReturn(77);
+        $this->orderRepositoryMock->method('get')->willReturn($order);
+
+        $this->invoke($quote, $status, 'pay-webhook-999');
+
+        $this->assertSame($status, $written['paystand_capture_status'] ?? null);
+        $this->assertSame('pay-webhook-999', $written['paystand_payment_id'] ?? null);
+    }
+
+    /**
+     * @return array
+     */
+    public static function capturedStatusProvider(): array
+    {
+        return [
+            'card capture posts'  => ['posted'],
+            'settled payment'     => ['paid'],
+        ];
+    }
+
+    /**
+     * The ordering is load-bearing: placeOrder reloads the quote from the database,
+     * so a marker only reaches the totals freeze if it was saved before that call.
+     */
+    public function testMarkersAreSavedBeforePlaceOrderIsCalled(): void
+    {
+        $quote = $this->buildInitialQuote(42);
+        $this->lockManagerMock->method('lock')->willReturn(true);
+
+        $reloaded = $this->buildReloadedQuote([]);
+        $this->cartRepositoryMock->method('get')->willReturn($reloaded);
+        $this->controller->method('findOrder')->willReturn(null);
+
+        $sequence = [];
+        $reloaded->method('setData')->willReturnCallback(
+            function ($key, $value = null) use (&$sequence, $reloaded) {
+                if ($key === 'paystand_capture_status') {
+                    $sequence[] = 'stamp';
+                }
+                return $reloaded;
+            }
+        );
+        $this->cartRepositoryMock->method('save')->willReturnCallback(
+            function () use (&$sequence) {
+                $sequence[] = 'save';
+            }
+        );
+        $this->cartManagementMock->method('placeOrder')->willReturnCallback(
+            function () use (&$sequence) {
+                $sequence[] = 'placeOrder';
+                return 77;
+            }
+        );
+        $this->orderRepositoryMock->method('get')->willReturn($this->buildOrder(77, 'W000000077'));
+
+        $this->invoke($quote, 'posted', 'pay-webhook-999');
+
+        $this->assertSame(['stamp', 'save', 'placeOrder'], $sequence);
+    }
+
+    /**
+     * A payment still in flight must not freeze the cart: the same reasoning as
+     * the client-side writer, where an unconfirmed capture would strand a quote
+     * whose totals could then never recollect.
+     */
+    public function testNonCaptureStatusRecordsNoFreezeMarker(): void
+    {
+        $quote = $this->buildInitialQuote(42);
+        $this->lockManagerMock->method('lock')->willReturn(true);
+
+        $reloaded = $this->buildReloadedQuote([]);
+        $written = [];
+        $reloaded->method('setData')->willReturnCallback(
+            function ($key, $value = null) use (&$written, $reloaded) {
+                $written[$key] = $value;
+                return $reloaded;
+            }
+        );
+        $this->cartRepositoryMock->method('get')->willReturn($reloaded);
+        $this->controller->method('findOrder')->willReturn(null);
+
+        $order = $this->buildOrder(77, 'W000000077');
+        $this->cartManagementMock->method('placeOrder')->willReturn(77);
+        $this->orderRepositoryMock->method('get')->willReturn($order);
+
+        $this->invoke($quote, 'processing', 'pay-webhook-999');
+
+        $this->assertArrayNotHasKey('paystand_capture_status', $written);
+    }
+
+    /**
      * The quote handed INTO createOrderFromQuote — only its id is consulted
      * before the method reloads a fresh copy from the repository.
      *
@@ -539,8 +655,9 @@ class CreateOrderFromQuoteTest extends TestCase
             'customerEmail'     => 'shopper@example.com',
             'billingEmail'      => null,
             'shippingEmail'     => null,
-            'paymentMethod'     => Directpost::METHOD_CODE,
-            'paystandPaymentId' => 'pay-default123',
+            'paymentMethod'         => Directpost::METHOD_CODE,
+            'paystandPaymentId'     => 'pay-default123',
+            'paystandCaptureStatus' => null,
         ], $overrides);
 
         // getCustomerEmail/setCustomerEmail are magic data accessors on Quote.
@@ -549,7 +666,7 @@ class CreateOrderFromQuoteTest extends TestCase
             ->onlyMethods([
                 'getId', 'getIsActive', 'setIsActive', 'getItemsCount',
                 'getPayment', 'getBillingAddress', 'getShippingAddress', 'collectTotals',
-                'getData',
+                'getData', 'setData',
             ])
             ->addMethods(['getCustomerEmail', 'setCustomerEmail'])
             ->getMock();
@@ -559,7 +676,19 @@ class CreateOrderFromQuoteTest extends TestCase
         $quote->method('getItemsCount')->willReturn($config['items']);
         $quote->method('getCustomerEmail')->willReturn($config['customerEmail']);
         $quote->method('collectTotals')->willReturnSelf();
-        $quote->method('getData')->with('paystand_payment_id')->willReturn($config['paystandPaymentId']);
+        // Keyed callback, not ->with(): the rescue reads the capture status too, and a
+        // single-argument constraint would turn that read into a masked failure.
+        $quote->method('getData')->willReturnCallback(
+            function ($key = '', $index = null) use ($config) {
+                if ($key === 'paystand_payment_id') {
+                    return $config['paystandPaymentId'];
+                }
+                if ($key === 'paystand_capture_status') {
+                    return $config['paystandCaptureStatus'];
+                }
+                return null;
+            }
+        );
 
         $payment = $this->getMockBuilder(Payment::class)
             ->disableOriginalConstructor()
