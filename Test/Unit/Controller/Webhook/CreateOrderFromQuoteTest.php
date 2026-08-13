@@ -504,6 +504,68 @@ class CreateOrderFromQuoteTest extends TestCase
     }
 
     /**
+     * placeOrder reloads the quote and collects its totals, which re-adjudicates
+     * cart price rules. The rescue runs precisely when the client-side save that
+     * normally records the capture markers did not, so it must record them itself
+     * or the discount the shopper paid on can be dropped from the order.
+     */
+    public function testCaptureMarkersAreRecordedBeforePlacingOrder(): void
+    {
+        $quote = $this->buildInitialQuote(42);
+        $this->lockManagerMock->method('lock')->willReturn(true);
+
+        $reloaded = $this->buildReloadedQuote(['paystandPaymentId' => null]);
+        $written = [];
+        $reloaded->method('setData')->willReturnCallback(
+            function ($key, $value = null) use (&$written, $reloaded) {
+                $written[$key] = $value;
+                return $reloaded;
+            }
+        );
+        $this->cartRepositoryMock->method('get')->willReturn($reloaded);
+        $this->controller->method('findOrder')->willReturn(null);
+
+        $order = $this->buildOrder(77, 'W000000077');
+        $this->cartManagementMock->method('placeOrder')->willReturn(77);
+        $this->orderRepositoryMock->method('get')->willReturn($order);
+
+        $this->invoke($quote, 'posted', 'pay-webhook-999');
+
+        $this->assertSame('posted', $written['paystand_capture_status'] ?? null);
+        $this->assertSame('pay-webhook-999', $written['paystand_payment_id'] ?? null);
+    }
+
+    /**
+     * A payment still in flight must not freeze the cart: the same reasoning as
+     * the client-side writer, where an unconfirmed capture would strand a quote
+     * whose totals could then never recollect.
+     */
+    public function testNonCaptureStatusRecordsNoFreezeMarker(): void
+    {
+        $quote = $this->buildInitialQuote(42);
+        $this->lockManagerMock->method('lock')->willReturn(true);
+
+        $reloaded = $this->buildReloadedQuote([]);
+        $written = [];
+        $reloaded->method('setData')->willReturnCallback(
+            function ($key, $value = null) use (&$written, $reloaded) {
+                $written[$key] = $value;
+                return $reloaded;
+            }
+        );
+        $this->cartRepositoryMock->method('get')->willReturn($reloaded);
+        $this->controller->method('findOrder')->willReturn(null);
+
+        $order = $this->buildOrder(77, 'W000000077');
+        $this->cartManagementMock->method('placeOrder')->willReturn(77);
+        $this->orderRepositoryMock->method('get')->willReturn($order);
+
+        $this->invoke($quote, 'processing', 'pay-webhook-999');
+
+        $this->assertArrayNotHasKey('paystand_capture_status', $written);
+    }
+
+    /**
      * The quote handed INTO createOrderFromQuote — only its id is consulted
      * before the method reloads a fresh copy from the repository.
      *
@@ -549,7 +611,7 @@ class CreateOrderFromQuoteTest extends TestCase
             ->onlyMethods([
                 'getId', 'getIsActive', 'setIsActive', 'getItemsCount',
                 'getPayment', 'getBillingAddress', 'getShippingAddress', 'collectTotals',
-                'getData',
+                'getData', 'setData',
             ])
             ->addMethods(['getCustomerEmail', 'setCustomerEmail'])
             ->getMock();

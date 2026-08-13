@@ -41,8 +41,18 @@ class CapturedQuoteTotals
                 . ' status=' . $subject->getData('paystand_capture_status')
             );
         } catch (\Throwable $e) {
-            // Leaving the flag alone lets totals collect as they normally would.
-            $this->logger->error('PAYSTAND-CAPTURED-TOTALS: ' . $e->getMessage());
+            // Fail open: leaving the flag alone collects totals as normal, so a broken
+            // check cannot block checkout. The quote id is logged because that drifts.
+            $quoteId = null;
+            try {
+                $quoteId = $subject ? $subject->getId() : null;
+            } catch (\Throwable $ignored) {
+                $quoteId = null;
+            }
+            $this->logger->error(
+                'PAYSTAND-CAPTURED-TOTALS: check failed for quote ' . ($quoteId ?: 'unknown')
+                . ', totals will collect normally: ' . $e->getMessage()
+            );
         }
     }
 

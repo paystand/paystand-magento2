@@ -11,6 +11,7 @@ use \stdClass;
 use Magento\Sales\Model\Order\Payment\Transaction\BuilderInterface as BuilderInterface;
 use Magento\Sales\Model\Order;
 use PayStand\PayStandMagento\Helper\CloudLogger;
+use PayStand\PayStandMagento\Model\Config\Source\PaymentStatus;
 
 /**
  * Webhook Receiver Controller for Paystand
@@ -996,6 +997,21 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 return null;
             }
             $quote->setCustomerEmail($email);
+
+            // placeOrder below reloads the quote from the database and collects its
+            // totals, which re-adjudicates cart price rules and can drop a discount
+            // the shopper already paid on. The client-side save that normally records
+            // these markers is exactly what failed in a rescue, so record them here.
+            $captureId = $quote->getData('paystand_payment_id') ?: ($json->resource->id ?? null);
+            $captureStatus = strtolower(trim((string)$psPaymentStatus));
+            if ($captureId && in_array($captureStatus, PaymentStatus::CAPTURED_STATUSES, true)) {
+                $quote->setData('paystand_payment_id', $captureId);
+                $quote->setData('paystand_capture_status', $captureStatus);
+                $this->_logger->debug(
+                    '>>>>> PAYSTAND-WEBHOOK: Recorded capture markers on quote ' . $quoteId
+                    . ' status=' . $captureStatus . ' before server-side placeOrder'
+                );
+            }
 
             // No collectTotals() here: placeOrder collects them itself, and ours could
             // clear the shipping method on the paid quote we are rescuing.

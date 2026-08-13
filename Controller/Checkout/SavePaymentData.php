@@ -10,6 +10,7 @@ use PayStand\PayStandMagento\Helper\CustomerPayerId;
 use PayStand\PayStandMagento\Helper\CloudLogger;
 use PayStand\PayStandMagento\Helper\QuoteAccess;
 use PayStand\PayStandMagento\Helper\QuoteShipping;
+use PayStand\PayStandMagento\Model\Config\Source\PaymentStatus;
 use Magento\Quote\Api\CartRepositoryInterface;
 use Magento\Framework\App\Config\ScopeConfigInterface;
 use Magento\Store\Model\ScopeInterface;
@@ -73,11 +74,10 @@ class SavePaymentData extends Action
     const PAYMENT_ID_PATTERN = '/^[a-z0-9]{16,64}$/i';
 
     /**
-     * Statuses that mean the money was actually taken, matching the values
-     * Model\Config\Source\PaymentStatus offers for updateOrderOn. Only these
-     * freeze a quote's totals; anything else leaves the cart free to recollect.
+     * Statuses that freeze a quote's totals. Shared with the webhook rescue path
+     * so both writers of paystand_capture_status agree on what a capture is.
      */
-    const CAPTURED_STATUSES = ['posted', 'paid'];
+    const CAPTURED_STATUSES = PaymentStatus::CAPTURED_STATUSES;
 
     /**
      * @param Context $context

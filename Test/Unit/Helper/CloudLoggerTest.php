@@ -132,6 +132,41 @@ class CloudLoggerTest extends TestCase
         );
     }
 
+    /**
+     * The Luma renderer reports its own plugin_version to the log endpoint, and it
+     * has drifted from composer.json before — a released bundle claiming the prior
+     * version makes log events attribute a bug to the wrong release.
+     */
+    public function testLumaRendererReportsTheSameVersion(): void
+    {
+        $composer = json_decode(file_get_contents(__DIR__ . '/../../../composer.json'), true);
+        $renderer = file_get_contents(
+            __DIR__ . '/../../../view/frontend/web/js/view/payment/method-renderer/paystandmagento-directpost.js'
+        );
+
+        $this->assertMatchesRegularExpression(
+            "/plugin_version:\s*'" . preg_quote($composer['version'], '/') . "'/",
+            $renderer,
+            'plugin_version in paystandmagento-directpost.js has drifted from composer.json'
+        );
+    }
+
+    /**
+     * setup_version drives whether Magento runs the module's schema patches, so a
+     * stale value can leave a released column uncreated.
+     */
+    public function testModuleXmlDeclaresTheSameVersion(): void
+    {
+        $composer = json_decode(file_get_contents(__DIR__ . '/../../../composer.json'), true);
+        $moduleXml = simplexml_load_file(__DIR__ . '/../../../etc/module.xml');
+
+        $this->assertSame(
+            $composer['version'],
+            (string)$moduleXml->module['setup_version'],
+            'etc/module.xml setup_version has drifted from composer.json'
+        );
+    }
+
     public function testErrorMessageIsTruncatedTo512Chars(): void
     {
         // Verify truncation logic directly via reflection on the payload builder
