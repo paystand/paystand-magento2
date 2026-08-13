@@ -251,16 +251,17 @@ class SavePaymentData extends Action
             // Recorded only for a confirmed capture, and only alongside a payment id.
             // Freezing totals on anything weaker would strand a cart whose payment
             // never completed, since the quote's totals could then never recollect.
-            if (!empty($paymentId) && !empty($paymentStatus)) {
-                $status = strtolower(trim((string)$paymentStatus));
-                if (in_array($status, self::CAPTURED_STATUSES, true)) {
-                    $quote->setData('paystand_capture_status', $status);
-                } else {
+            $captureStatus = $this->captureStatusFor($paymentId, $paymentStatus);
+            if ($captureStatus !== null) {
+                $quote->setData('paystand_capture_status', $captureStatus);
+            } else {
+                if (!empty($paymentId) && !empty($paymentStatus)) {
                     $this->logger->info('SAVEPAYMENTDATA >>>>>> Payment status is not a capture, totals stay live', [
                         'quote_id'       => $realQuoteId,
-                        'payment_status' => $status
+                        'payment_status' => strtolower(trim((string)$paymentStatus))
                     ]);
                 }
+                $this->preserveCaptureStatus($quote, $realQuoteId);
             }
 
             // Runs between capture and placeOrder, bracketing the window where a
@@ -371,6 +372,64 @@ class SavePaymentData extends Action
                     'message' => 'Could not load quote'
                 ]
             ]);
+        }
+    }
+
+    /**
+     * The status to freeze a quote's totals on, or null when this is not a confirmed
+     * capture. A payment id is required too, so a status without one cannot freeze.
+     *
+     * @param string|null $paymentId
+     * @param string|null $paymentStatus
+     * @return string|null
+     */
+    private function captureStatusFor($paymentId, $paymentStatus)
+    {
+        if (empty($paymentId) || empty($paymentStatus)) {
+            return null;
+        }
+
+        $status = strtolower(trim((string)$paymentStatus));
+
+        return in_array($status, self::CAPTURED_STATUSES, true) ? $status : null;
+    }
+
+    /**
+     * Carries a capture status recorded since this quote was loaded back onto the
+     * in-memory copy, so saving a request that has no capture of its own cannot
+     * persist a null over it and unfreeze a cart that was already charged.
+     *
+     * @param \Magento\Quote\Model\Quote $quote
+     * @param int|string $quoteId
+     * @return void
+     */
+    private function preserveCaptureStatus($quote, $quoteId)
+    {
+        try {
+            if (!empty($quote->getData('paystand_capture_status'))) {
+                return;
+            }
+
+            // The quote's own connection, so this needs no extra dependency and
+            // cannot drift from the table the quote is about to be saved to.
+            $resource = $quote->getResource();
+            $connection = $resource->getConnection();
+            $select = $connection->select()
+                ->from($resource->getMainTable(), 'paystand_capture_status')
+                ->where('entity_id = ?', $quoteId);
+            $persisted = $connection->fetchOne($select);
+
+            if (!empty($persisted)) {
+                $quote->setData('paystand_capture_status', $persisted);
+                $this->logger->info('SAVEPAYMENTDATA >>>>>> Kept capture status recorded since load', [
+                    'quote_id'       => $quoteId,
+                    'capture_status' => $persisted
+                ]);
+            }
+        } catch (\Throwable $e) {
+            // A failed read must not break the payment flow; the worst case is the
+            // status this request already held being saved as it was loaded.
+            $this->logger->error('SAVEPAYMENTDATA >>>>>> Could not re-read capture status: ' . $e->getMessage());
         }
     }
 }
