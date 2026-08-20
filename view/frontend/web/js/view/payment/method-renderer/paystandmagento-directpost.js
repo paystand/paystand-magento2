@@ -40,17 +40,54 @@ define(
             fetch(CF_INGEST_URL, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
+                // Without keepalive the redirect after placeOrder cancels any log
+                // still in flight, which is what makes the last events before a
+                // navigation go missing.
+                keepalive: true,
                 body: JSON.stringify({
                     customer_id:     CF_CUSTOMER_ID,
                     publishable_key: CF_PUBLISHABLE_KEY,
                     event_type:      eventType,
-                    plugin_version:  '3.7.1',
+                    plugin_version:  '3.7.2',
                     quote_id:        quoteId  || '',
                     payment_id:      paymentId || '',
                     error_message:   message  || '',
                     env:             CF_ENV,
                 }),
             }).catch(function() {});
+        }
+
+        // ── Navigation trace ────────────────────────────────────────────────
+        // Hands the paid-quote context to the next page load, so the landing page
+        // can be reported by PayStand_PayStandMagento/js/paystand-nav-trace.
+        const NAV_TRACE_KEY = 'ps_nav_trace';
+
+        function markNavigation(quoteId, paymentId) {
+            try {
+                window.sessionStorage.setItem(NAV_TRACE_KEY, JSON.stringify({
+                    v: 1,
+                    t: Date.now(),
+                    q: quoteId || '',
+                    p: paymentId || '',
+                    c: CF_CUSTOMER_ID,
+                    k: CF_PUBLISHABLE_KEY,
+                    e: CF_ENV
+                }));
+            } catch (e) {
+                // Private-mode storage failure — the trace is diagnostic only.
+            }
+        }
+
+        // Records when checkout actually went away, which separates a page that
+        // redirected from one that stayed put with the confirm poll still running.
+        function traceUnload(quoteId, paymentId, startedAt) {
+            function onHide() {
+                window.removeEventListener('pagehide', onHide);
+                cfLog('checkout_page_unload', quoteId, paymentId,
+                    'checkout page unloaded ' + (Date.now() - startedAt) + 'ms after placeOrder dispatch'
+                );
+            }
+            window.addEventListener('pagehide', onHide);
         }
         // ────────────────────────────────────────────────────────────────────
 
@@ -634,6 +671,11 @@ define(
                 cfLog('place_order_calling', qid, pid,
                     'About to click submitTrigger to call placeOrder'
                 );
+
+                // Armed before the click: the redirect it causes can unload the page
+                // at any point after, including before the next statement runs.
+                markNavigation(qid, pid);
+                traceUnload(qid, pid, Date.now());
 
                 try {
                     $(submitTrigger).click();

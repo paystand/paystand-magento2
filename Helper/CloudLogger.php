@@ -16,7 +16,7 @@ use Magento\Store\Model\ScopeInterface;
 class CloudLogger
 {
     const INGEST_URL     = 'https://magento-plugin-logs.paystand-core-services.workers.dev/ingest';
-    const PLUGIN_VERSION = '3.7.1';
+    const PLUGIN_VERSION = '3.7.2';
 
     // Config paths
     const CONFIG_PUBLISHABLE_KEY = 'payment/paystandmagento/publishable_key';
@@ -47,6 +47,9 @@ class CloudLogger
     // rejected for a business reason and has stayed that way past the retry
     // window. Terminal — this is the queue support should work from.
     const EVENT_RESCUE_ABANDONED = 'rescue_abandoned';
+    // The order confirmation page refused to render and redirected to the cart.
+    // Names the checkout-session values it found missing.
+    const EVENT_SUCCESS_PAGE_BOUNCED = 'success_page_bounced';
 
     /**
      * Resolve the merchant's customer ID from store config.

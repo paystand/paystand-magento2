@@ -9,6 +9,7 @@ use Psr\Log\LoggerInterface;
 use Magento\Quote\Model\Quote;
 use Magento\Quote\Model\Quote\Address;
 use Magento\Quote\Model\Quote\Address\Rate;
+use Magento\Quote\Model\Quote\Address\RateFactory;
 
 /**
  * Unit tests for Helper\QuoteShipping — keeps a totals recollection from costing
@@ -19,10 +20,26 @@ class QuoteShippingTest extends TestCase
     /** @var QuoteShipping */
     private $helper;
 
+    /** @var RateFactory|MockObject */
+    private $rateFactory;
+
+    /** @var Rate|MockObject Last rate the factory handed out, so a test can assert on it. */
+    private $lastCreatedRate;
+
     protected function setUp(): void
     {
+        $this->rateFactory = $this->getMockBuilder(RateFactory::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['create'])
+            ->getMock();
+        $this->rateFactory->method('create')->willReturnCallback(function () {
+            $this->lastCreatedRate = $this->buildWritableRate();
+            return $this->lastCreatedRate;
+        });
+
         $this->helper = new QuoteShipping(
-            $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass()
+            $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass(),
+            $this->rateFactory
         );
     }
 
@@ -40,9 +57,10 @@ class QuoteShippingTest extends TestCase
         $this->assertNull($this->helper->snapshot($quote));
     }
 
-    public function testSnapshotCapturesTheSelection(): void
+    public function testSnapshotCapturesTheSelectionAndRateRow(): void
     {
-        $address = $this->buildAddress('flatrate_flatrate', 77.00, 'Flat Rate - Fixed');
+        $rate = $this->buildReadableRate('flatrate_flatrate', 77.00);
+        $address = $this->buildAddress('flatrate_flatrate', 77.00, 'Flat Rate - Fixed', null, $rate);
         $quote = $this->buildQuote(false, $address);
 
         $snapshot = $this->helper->snapshot($quote);
@@ -50,6 +68,18 @@ class QuoteShippingTest extends TestCase
         $this->assertSame('flatrate_flatrate', $snapshot['method']);
         $this->assertSame(77.00, $snapshot['amount']);
         $this->assertSame('Flat Rate - Fixed', $snapshot['description']);
+        $this->assertSame('flatrate_flatrate', $snapshot['rate']['code']);
+        $this->assertSame(77.00, $snapshot['rate']['price']);
+    }
+
+    public function testSnapshotCapturesNullRateWhenNoRateRow(): void
+    {
+        // Method set but no rate row for it — the state that fails placement.
+        $address = $this->buildAddress('flatrate_flatrate', 0.0, '', null, null);
+        $snapshot = $this->helper->snapshot($this->buildQuote(false, $address));
+
+        $this->assertSame('flatrate_flatrate', $snapshot['method']);
+        $this->assertNull($snapshot['rate']);
     }
 
     // ── restore ──────────────────────────────────────────────────────────────
@@ -59,8 +89,8 @@ class QuoteShippingTest extends TestCase
      */
     public function testRestorePutsBackAClearedSelection(): void
     {
-        // Method reads back as '' — exactly what Magento leaves behind.
-        $address = $this->buildAddress('', 0.0, '');
+        // Method and rate both read back empty — exactly what Magento leaves behind.
+        $address = $this->buildAddress('', 0.0, '', null, null);
         $address->expects($this->once())->method('setShippingMethod')->with('flatrate_flatrate');
         $address->expects($this->once())->method('setShippingAmount')->with(77.00);
         $address->expects($this->once())->method('setBaseShippingAmount')->with(77.00);
@@ -71,18 +101,21 @@ class QuoteShippingTest extends TestCase
             'amount'      => 77.00,
             'baseAmount'  => 77.00,
             'description' => 'Flat Rate - Fixed',
+            'rate'        => null,
         ];
 
         $this->assertTrue($this->helper->restore($quote, $snapshot, 'test'));
     }
 
     /**
-     * Restoring over a live method could reinstate a stale shipping price.
+     * Both method and its rate row survived, so there is nothing to do.
      */
     public function testRestoreLeavesASurvivingSelectionUntouched(): void
     {
-        $address = $this->buildAddress('flatrate_flatrate', 77.00, 'Flat Rate - Fixed');
+        $rate = $this->buildReadableRate('flatrate_flatrate', 77.00);
+        $address = $this->buildAddress('flatrate_flatrate', 77.00, 'Flat Rate - Fixed', null, $rate);
         $address->expects($this->never())->method('setShippingMethod');
+        $address->expects($this->never())->method('addShippingRate');
 
         $quote = $this->buildQuote(false, $address);
         $snapshot = [
@@ -90,17 +123,89 @@ class QuoteShippingTest extends TestCase
             'amount'      => 77.00,
             'baseAmount'  => 77.00,
             'description' => 'Flat Rate - Fixed',
+            'rate'        => ['code' => 'flatrate_flatrate'],
         ];
 
         $this->assertFalse($this->helper->restore($quote, $snapshot, 'test'));
     }
 
+    /**
+     * The method survived but its rate row was dropped — placeOrder's validator
+     * needs the rate back, without re-selecting the method.
+     */
+    public function testRestoreReattachesADroppedRateForASurvivingMethod(): void
+    {
+        $address = $this->buildAddress('flatrate_flatrate', 77.00, 'Flat Rate - Fixed', null, null);
+        $address->expects($this->never())->method('setShippingMethod');
+        $address->expects($this->once())->method('addShippingRate');
+
+        $quote = $this->buildQuote(false, $address);
+        $snapshot = [
+            'method'      => 'flatrate_flatrate',
+            'amount'      => 77.00,
+            'baseAmount'  => 77.00,
+            'description' => 'Flat Rate - Fixed',
+            'rate'        => [
+                'code' => 'flatrate_flatrate', 'carrier' => 'flatrate', 'carrierTitle' => 'Flat Rate',
+                'method' => 'flatrate', 'methodTitle' => 'Fixed', 'price' => 77.00,
+            ],
+        ];
+
+        $this->assertTrue($this->helper->restore($quote, $snapshot, 'test'));
+        $this->assertSame('flatrate_flatrate', $this->lastCreatedRate->getCode());
+    }
+
+    /**
+     * Both cleared: put the method back AND re-attach the rate row.
+     */
+    public function testRestoreReattachesRateAndMethodWhenBothCleared(): void
+    {
+        $address = $this->buildAddress('', 0.0, '', null, null);
+        $address->expects($this->once())->method('setShippingMethod')->with('flatrate_flatrate');
+        $address->expects($this->once())->method('addShippingRate');
+
+        $quote = $this->buildQuote(false, $address);
+        $snapshot = [
+            'method'      => 'flatrate_flatrate',
+            'amount'      => 77.00,
+            'baseAmount'  => 77.00,
+            'description' => 'Flat Rate - Fixed',
+            'rate'        => [
+                'code' => 'flatrate_flatrate', 'carrier' => 'flatrate', 'carrierTitle' => 'Flat Rate',
+                'method' => 'flatrate', 'methodTitle' => 'Fixed', 'price' => 77.00,
+            ],
+        ];
+
+        $this->assertTrue($this->helper->restore($quote, $snapshot, 'test'));
+    }
+
     public function testRestoreIsANoOpWithoutASnapshot(): void
     {
-        $quote = $this->buildQuote(false, $this->buildAddress('', 0.0, ''));
+        $quote = $this->buildQuote(false, $this->buildAddress('', 0.0, '', null, null));
 
         $this->assertFalse($this->helper->restore($quote, null, 'test'));
         $this->assertFalse($this->helper->restore($quote, ['method' => ''], 'test'));
+    }
+
+    // ── recollectPreservingShipping ──────────────────────────────────────────
+
+    /**
+     * A recollection that keeps the selection needs no restore and no retry.
+     */
+    public function testRecollectPreservingShippingLeavesAHealthySelection(): void
+    {
+        $rate = $this->buildReadableRate('flatrate_flatrate', 77.00);
+        $address = $this->buildAddress('flatrate_flatrate', 77.00, 'Flat Rate - Fixed', null, $rate);
+        $address->method('getAllShippingRates')->willReturn([$this->buildRate('flatrate_flatrate')]);
+
+        $quote = $this->buildQuote(false, $address);
+        $quote->expects($this->atLeastOnce())->method('collectTotals');
+
+        $result = $this->helper->recollectPreservingShipping($quote, 'test');
+
+        $this->assertFalse($result['restored']);
+        $this->assertFalse($result['retryFailed']);
+        $this->assertStringContainsString('method=flatrate_flatrate', $result['before']);
     }
 
     // ── describe ─────────────────────────────────────────────────────────────
@@ -188,6 +293,8 @@ class QuoteShippingTest extends TestCase
     // ── helpers ──────────────────────────────────────────────────────────────
 
     /**
+     * A rate that only answers getCode(), for describe()'s rate-list matching.
+     *
      * @param string $code
      * @return Rate|MockObject
      */
@@ -202,19 +309,71 @@ class QuoteShippingTest extends TestCase
     }
 
     /**
+     * A rate exposing the getters snapshot() reads off the selected rate row.
+     *
+     * @return Rate|MockObject
+     */
+    private function buildReadableRate(string $code, float $price)
+    {
+        $rate = $this->getMockBuilder(Rate::class)
+            ->disableOriginalConstructor()
+            ->addMethods(['getCode', 'getCarrier', 'getCarrierTitle', 'getMethod', 'getMethodTitle', 'getPrice'])
+            ->getMock();
+        $rate->method('getCode')->willReturn($code);
+        $rate->method('getCarrier')->willReturn('flatrate');
+        $rate->method('getCarrierTitle')->willReturn('Flat Rate');
+        $rate->method('getMethod')->willReturn('flatrate');
+        $rate->method('getMethodTitle')->willReturn('Fixed');
+        $rate->method('getPrice')->willReturn($price);
+        return $rate;
+    }
+
+    /**
+     * A rate whose setters chain, matching how restore() rebuilds a rate row, and
+     * that reads its code back so a test can assert what was rebuilt.
+     *
+     * @return Rate|MockObject
+     */
+    private function buildWritableRate()
+    {
+        $rate = $this->getMockBuilder(Rate::class)
+            ->disableOriginalConstructor()
+            ->addMethods([
+                'setCode', 'setCarrier', 'setCarrierTitle', 'setMethod', 'setMethodTitle', 'setPrice', 'getCode',
+            ])
+            ->getMock();
+        $code = null;
+        $rate->method('setCode')->willReturnCallback(function ($value) use ($rate, &$code) {
+            $code = $value;
+            return $rate;
+        });
+        foreach (['setCarrier', 'setCarrierTitle', 'setMethod', 'setMethodTitle', 'setPrice'] as $setter) {
+            $rate->method($setter)->willReturnSelf();
+        }
+        $rate->method('getCode')->willReturnCallback(function () use (&$code) {
+            return $code;
+        });
+        return $rate;
+    }
+
+    /**
      * @param bool $isVirtual
      * @param Address|MockObject|null $address
      * @return Quote|MockObject
      */
     private function buildQuote(bool $isVirtual, $address)
     {
+        // setTotalsCollectedFlag is a magic data accessor on Quote, so it needs
+        // addMethods() rather than onlyMethods().
         $quote = $this->getMockBuilder(Quote::class)
             ->disableOriginalConstructor()
-            ->onlyMethods(['isVirtual', 'getShippingAddress', 'getId'])
+            ->onlyMethods(['isVirtual', 'getShippingAddress', 'getId', 'collectTotals'])
+            ->addMethods(['setTotalsCollectedFlag'])
             ->getMock();
         $quote->method('isVirtual')->willReturn($isVirtual);
         $quote->method('getShippingAddress')->willReturn($address);
         $quote->method('getId')->willReturn(4277928);
+        $quote->method('setTotalsCollectedFlag')->willReturnSelf();
         return $quote;
     }
 
@@ -226,19 +385,30 @@ class QuoteShippingTest extends TestCase
      * @param string $method
      * @param float $amount
      * @param string $description
+     * @param array|null $addressData
+     * @param Rate|MockObject|null $rateByCode Rate returned by getShippingRateByCode(), or null if dropped
      * @return Address|MockObject
      */
-    private function buildAddress(string $method, float $amount, string $description, array $addressData = null)
-    {
+    private function buildAddress(
+        string $method,
+        float $amount,
+        string $description,
+        array $addressData = null,
+        $rateByCode = null
+    ) {
         $address = $this->getMockBuilder(Address::class)
             ->disableOriginalConstructor()
-            ->onlyMethods(['getShippingMethod', 'getAllShippingRates', 'setShippingAmount', 'setBaseShippingAmount', 'getData'])
+            ->onlyMethods([
+                'getShippingMethod', 'getAllShippingRates', 'getShippingRateByCode', 'addShippingRate',
+                'setShippingAmount', 'setBaseShippingAmount', 'getData',
+            ])
             ->addMethods(['setShippingMethod', 'getShippingAmount', 'getBaseShippingAmount', 'getShippingDescription', 'setShippingDescription'])
             ->getMock();
         $address->method('getShippingMethod')->willReturn($method);
         $address->method('getShippingAmount')->willReturn($amount);
         $address->method('getBaseShippingAmount')->willReturn($amount);
         $address->method('getShippingDescription')->willReturn($description);
+        $address->method('getShippingRateByCode')->willReturn($rateByCode);
 
         // Complete address unless a scenario overrides it.
         $data = $addressData ?? [

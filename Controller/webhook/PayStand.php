@@ -1015,8 +1015,6 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 $this->preserveCaptureStatus($quote, $quoteId);
             }
 
-            // No collectTotals() here: placeOrder collects them itself, and ours could
-            // clear the shipping method on the paid quote we are rescuing.
             try {
                 CloudLogger::ship(CloudLogger::EVENT_QUOTE_SHIPPING_STATE, [
                     'quote_id'      => (string)$quoteId,
@@ -1026,6 +1024,12 @@ class Paystand extends \Magento\Framework\App\Action\Action
             } catch (\Throwable $e) {
                 // CloudLogger failure — silently ignored to protect payment flow
             }
+
+            // Persist the shipping selection through the guard before placing: placeOrder
+            // reloads the quote and recollects, and a bare recollect on this rescued
+            // quote drops the method + rate and fails with "shipping method is missing".
+            // Saving the restored method + rate row makes the reloaded quote place cleanly.
+            $this->quoteShipping->recollectPreservingShipping($quote, 'webhook-createorder');
 
             $this->cartRepository->save($quote);
 
