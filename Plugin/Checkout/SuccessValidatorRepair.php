@@ -146,7 +146,9 @@ class SuccessValidatorRepair
 
             $reason = 'no order for session quote';
             if ($order && $order->getId()) {
-                $reason = 'order ' . $order->getIncrementId() . ' too old to restore';
+                $reason = 'order ' . $order->getIncrementId() . ($order->getCreatedAt()
+                    ? ' too old to restore'
+                    : ' has no created_at');
             }
 
             CloudLogger::ship(CloudLogger::EVENT_SUCCESS_PAGE_BOUNCED, [

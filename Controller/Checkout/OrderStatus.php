@@ -103,21 +103,22 @@ class OrderStatus extends Action
             $quoteIdIncoming = is_array($data) ? ($data['quote'] ?? null) : null;
         }
 
+        // Resolve + authorize against the current session. Unknown and
+        // unauthorized quotes get the identical generic response (fail closed,
+        // no information leak) — which also preserves the poller's own timeout
+        // semantics on the legitimate path.
+        $quote = $quoteIdIncoming ? $this->quoteAccess->getAuthorizedQuote($quoteIdIncoming) : null;
+
+        // Nothing below this point reads or writes the session. Released before
+        // the early returns so a malformed poll cannot hold it either.
+        $this->releaseSession();
+
         if (!$quoteIdIncoming) {
             return $result->setData([
                 'success' => false,
                 'error'   => 'Missing quote id'
             ]);
         }
-
-        // Resolve + authorize against the current session. Unknown and
-        // unauthorized quotes get the identical generic response (fail closed,
-        // no information leak) — which also preserves the poller's own timeout
-        // semantics on the legitimate path.
-        $quote = $this->quoteAccess->getAuthorizedQuote($quoteIdIncoming);
-
-        // Nothing below this point reads or writes the session.
-        $this->releaseSession();
 
         if (!$quote) {
             return $result->setData([
