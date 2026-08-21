@@ -10,8 +10,12 @@
     <type name="Magento\Framework\App\Request\CsrfValidator">
         <plugin name="csrf_validator_skip" type="PayStand\PayStandMagento\Plugin\CsrfValidatorSkip" />
     </type>
+    <type name="Magento\Checkout\Model\Session">
+        <plugin name="paystand_quote_id_memo"
+                type="PayStand\PayStandMagento\Plugin\Checkout\QuoteIdMemo" />
+    </type>
     <type name="Magento\Checkout\Model\Session\SuccessValidator">
-        <plugin name="paystand_success_validator_logger"
-                type="PayStand\PayStandMagento\Plugin\Checkout\SuccessValidatorLogger" />
+        <plugin name="paystand_success_validator_repair"
+                type="PayStand\PayStandMagento\Plugin\Checkout\SuccessValidatorRepair" />
     </type>
 </config>

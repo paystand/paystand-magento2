@@ -50,6 +50,9 @@ class CloudLogger
     // The order confirmation page refused to render and redirected to the cart.
     // Names the checkout-session values it found missing.
     const EVENT_SUCCESS_PAGE_BOUNCED = 'success_page_bounced';
+    // The confirmation page was about to redirect, but the order for the
+    // session's own quote was found and the missing session values restored.
+    const EVENT_SUCCESS_PAGE_REPAIRED = 'success_page_repaired';
 
     /**
      * Resolve the merchant's customer ID from store config.
