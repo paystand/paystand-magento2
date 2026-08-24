@@ -74,9 +74,10 @@ class SuccessValidatorRepair
      */
     private function restoreLastOrder(): bool
     {
-        // The session's own id is gone by now if the quote went inactive during
-        // this request, so fall back to what was captured before that happened.
-        $quoteId = (int)$this->checkoutSession->getQuoteId() ?: $this->quoteMemo->get();
+        // Prefer the memo: by the time the validator runs the session either has
+        // no quote id, or for a logged-in shopper already holds the replacement
+        // cart Magento created when the ordered quote stopped being active.
+        $quoteId = $this->quoteMemo->get() ?: (int)$this->checkoutSession->getQuoteId();
         $order = $quoteId ? $this->quoteAccess->findOrderByQuoteId($quoteId) : null;
 
         if (!$order || !$order->getId() || !$this->isRecent($order)) {
@@ -90,11 +91,16 @@ class SuccessValidatorRepair
             ->setLastRealOrderId($order->getIncrementId())
             ->setLastOrderStatus($order->getStatus());
 
-        CloudLogger::ship(CloudLogger::EVENT_SUCCESS_PAGE_REPAIRED, [
-            'quote_id'      => (string)$quoteId,
-            'error_message' => 'restored last-order session values from order '
-                . $order->getIncrementId(),
-        ]);
+        // Reported separately: a failed ship must not undo a completed restore.
+        try {
+            CloudLogger::ship(CloudLogger::EVENT_SUCCESS_PAGE_REPAIRED, [
+                'quote_id'      => (string)$quoteId,
+                'error_message' => 'restored last-order session values from order '
+                    . $order->getIncrementId(),
+            ]);
+        } catch (\Throwable $e) {
+            // Telemetry must never disturb the checkout flow.
+        }
 
         return true;
     }

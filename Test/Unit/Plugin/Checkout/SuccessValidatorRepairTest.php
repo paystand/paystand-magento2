@@ -109,7 +109,7 @@ class SuccessValidatorRepairTest extends TestCase
      * By the time the validator runs, getQuote() has usually already nulled the
      * session's own id — the memo is the only thing left that names the quote.
      */
-    public function testFallsBackToTheMemoWhenTheSessionQuoteIdIsGone(): void
+    public function testUsesTheMemoWhenTheSessionQuoteIdIsGone(): void
     {
         $this->checkoutSessionMock->method('getQuoteId')->willReturn(null);
         $this->memo->remember(116);
@@ -118,6 +118,26 @@ class SuccessValidatorRepairTest extends TestCase
 
         $this->assertTrue($this->build()->afterIsValid($this->subjectMock, false));
         $this->assertSame(116, $this->restored['LastQuoteId']);
+    }
+
+    /**
+     * For a logged-in shopper getQuote() does not leave the id empty: it assigns
+     * the replacement cart it just created. Repairing from that id would look up
+     * an order that does not exist, so the memo has to win.
+     */
+    public function testPrefersTheMemoOverAReplacementCartIdInTheSession(): void
+    {
+        $this->checkoutSessionMock->method('getQuoteId')->willReturn(117);
+        $this->memo->remember(116);
+
+        $this->quoteAccessMock->expects($this->once())
+            ->method('findOrderByQuoteId')
+            ->with(116)
+            ->willReturn($this->buildOrderMock(99, '000000099', 'pending', $this->agedBySeconds(5)));
+
+        $this->assertTrue($this->build()->afterIsValid($this->subjectMock, false));
+        $this->assertSame(116, $this->restored['LastQuoteId']);
+        $this->assertSame(116, $this->restored['LastSuccessQuoteId']);
     }
 
     public function testRefusesWhenNoOrderExistsForTheQuote(): void
@@ -163,11 +183,15 @@ class SuccessValidatorRepairTest extends TestCase
         $this->assertSame([], $this->restored);
     }
 
-    public function testRefusesAnOrderJustPastTheRepairWindow(): void
+    /**
+     * One second past the window. Ages only grow while the test runs, so this
+     * stays outside it.
+     */
+    public function testRefusesAnOrderOneSecondPastTheRepairWindow(): void
     {
         $this->checkoutSessionMock->method('getQuoteId')->willReturn(116);
         $this->quoteAccessMock->method('findOrderByQuoteId')->willReturn(
-            $this->buildOrderMock(99, '000000099', 'pending', $this->agedBySeconds(960))
+            $this->buildOrderMock(99, '000000099', 'pending', $this->agedBySeconds(901))
         );
 
         $this->assertFalse($this->build()->afterIsValid($this->subjectMock, false));
@@ -175,13 +199,14 @@ class SuccessValidatorRepairTest extends TestCase
     }
 
     /**
-     * A shopper who takes a few minutes on the widget is still inside the window.
+     * One second inside the window. A tick during the test lands exactly on the
+     * boundary, which the guard still accepts.
      */
-    public function testAcceptsAnOrderJustInsideTheRepairWindow(): void
+    public function testAcceptsAnOrderOneSecondInsideTheRepairWindow(): void
     {
         $this->checkoutSessionMock->method('getQuoteId')->willReturn(116);
         $this->quoteAccessMock->method('findOrderByQuoteId')->willReturn(
-            $this->buildOrderMock(99, '000000099', 'pending', $this->agedBySeconds(840))
+            $this->buildOrderMock(99, '000000099', 'pending', $this->agedBySeconds(899))
         );
 
         $this->assertTrue($this->build()->afterIsValid($this->subjectMock, false));
@@ -197,13 +222,15 @@ class SuccessValidatorRepairTest extends TestCase
     }
 
     /**
-     * Order timestamps are stored in UTC. Reading them in the process timezone
-     * would age a fresh order by the UTC offset and refuse a valid repair.
+     * Order timestamps are stored in UTC. The process timezone is set ahead of
+     * UTC on purpose: parsing a UTC stamp naively there ages the order past the
+     * window, so a dropped timezone fails here instead of passing by luck. A
+     * zone behind UTC would read as a future timestamp and still look recent.
      */
     public function testCreatedAtIsReadAsUtcRegardlessOfProcessTimezone(): void
     {
         $originalTimezone = date_default_timezone_get();
-        date_default_timezone_set('America/Los_Angeles');
+        date_default_timezone_set('Asia/Tokyo');
 
         try {
             $this->checkoutSessionMock->method('getQuoteId')->willReturn(116);

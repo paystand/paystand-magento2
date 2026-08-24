@@ -13,6 +13,8 @@ use Magento\Quote\Api\CartRepositoryInterface;
 use Magento\Quote\Model\Quote;
 use Magento\Quote\Model\QuoteIdMask;
 use Magento\Quote\Model\QuoteIdMaskFactory;
+use Magento\Sales\Model\Order;
+use Magento\Sales\Model\ResourceModel\Order\Collection as OrderCollection;
 use Magento\Sales\Model\ResourceModel\Order\CollectionFactory as OrderCollectionFactory;
 
 /**
@@ -185,7 +187,85 @@ class QuoteAccessTest extends TestCase
         $this->assertNull($this->helper->getAuthorizedQuote(''));
     }
 
+    // ── findOrderByQuoteId ────────────────────────────────────────────────────
+
+    public function testFindOrderByQuoteIdReturnsNullWhenTheQuoteHasNoOrder(): void
+    {
+        $this->setupOrderCollection(0, null);
+
+        $this->assertNull($this->helper->findOrderByQuoteId(4189563));
+    }
+
+    public function testFindOrderByQuoteIdReturnsTheOrderForTheQuote(): void
+    {
+        $orderMock = $this->buildOrderMock(42, 'W001369548');
+        $this->setupOrderCollection(1, $orderMock);
+
+        $this->assertSame($orderMock, $this->helper->findOrderByQuoteId(4189563));
+    }
+
+    /**
+     * A quote can end up with more than one order when the webhook and the
+     * browser both place it. The newest row is the one the shopper just paid for.
+     */
+    public function testFindOrderByQuoteIdReturnsTheNewestOfDuplicateOrders(): void
+    {
+        $newest = $this->buildOrderMock(43, 'W001369549');
+        $collectionMock = $this->setupOrderCollection(2, $newest);
+
+        $collectionMock->expects($this->once())->method('setOrder')->with('entity_id', 'DESC');
+        $collectionMock->expects($this->once())->method('setPageSize')->with(1);
+
+        $this->assertSame($newest, $this->helper->findOrderByQuoteId(4189563));
+    }
+
+    public function testFindOrderByQuoteIdReturnsNullWhenTheLookupFails(): void
+    {
+        $this->orderCollectionFactoryMock->method('create')
+            ->willThrowException(new \RuntimeException('db gone'));
+
+        $this->assertNull($this->helper->findOrderByQuoteId(4189563));
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────
+
+    /**
+     * @param int $size
+     * @param Order|MockObject|null $firstItem
+     * @return OrderCollection|MockObject
+     */
+    private function setupOrderCollection(int $size, $firstItem)
+    {
+        $collectionMock = $this->getMockBuilder(OrderCollection::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['addFieldToFilter', 'setOrder', 'setPageSize', 'getSize', 'getFirstItem'])
+            ->getMock();
+        $collectionMock->method('addFieldToFilter')->willReturnSelf();
+        $collectionMock->method('setOrder')->willReturnSelf();
+        $collectionMock->method('setPageSize')->willReturnSelf();
+        $collectionMock->method('getSize')->willReturn($size);
+        $collectionMock->method('getFirstItem')->willReturn($firstItem);
+
+        $this->orderCollectionFactoryMock->method('create')->willReturn($collectionMock);
+
+        return $collectionMock;
+    }
+
+    /**
+     * @param int $id
+     * @param string $incrementId
+     * @return Order|MockObject
+     */
+    private function buildOrderMock(int $id, string $incrementId)
+    {
+        $orderMock = $this->getMockBuilder(Order::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['getId', 'getIncrementId'])
+            ->getMock();
+        $orderMock->method('getId')->willReturn($id);
+        $orderMock->method('getIncrementId')->willReturn($incrementId);
+        return $orderMock;
+    }
 
     private function setupMask(?int $realQuoteId): void
     {
