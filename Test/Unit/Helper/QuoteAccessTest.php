@@ -191,7 +191,7 @@ class QuoteAccessTest extends TestCase
 
     public function testFindOrderByQuoteIdReturnsNullWhenTheQuoteHasNoOrder(): void
     {
-        $this->setupOrderCollection(0, null);
+        $this->setupOrderCollection(4189563, 0, null);
 
         $this->assertNull($this->helper->findOrderByQuoteId(4189563));
     }
@@ -199,7 +199,7 @@ class QuoteAccessTest extends TestCase
     public function testFindOrderByQuoteIdReturnsTheOrderForTheQuote(): void
     {
         $orderMock = $this->buildOrderMock(42, 'W001369548');
-        $this->setupOrderCollection(1, $orderMock);
+        $this->setupOrderCollection(4189563, 1, $orderMock);
 
         $this->assertSame($orderMock, $this->helper->findOrderByQuoteId(4189563));
     }
@@ -211,10 +211,7 @@ class QuoteAccessTest extends TestCase
     public function testFindOrderByQuoteIdReturnsTheNewestOfDuplicateOrders(): void
     {
         $newest = $this->buildOrderMock(43, 'W001369549');
-        $collectionMock = $this->setupOrderCollection(2, $newest);
-
-        $collectionMock->expects($this->once())->method('setOrder')->with('entity_id', 'DESC');
-        $collectionMock->expects($this->once())->method('setPageSize')->with(1);
+        $this->setupOrderCollection(4189563, 2, $newest);
 
         $this->assertSame($newest, $this->helper->findOrderByQuoteId(4189563));
     }
@@ -230,19 +227,32 @@ class QuoteAccessTest extends TestCase
     // ── helpers ──────────────────────────────────────────────────────────────
 
     /**
+     * The query is pinned, not just stubbed: the lookup exists to scope orders to
+     * one quote, so a dropped filter or a reversed sort has to fail here.
+     *
+     * @param int $expectedQuoteId
      * @param int $size
      * @param Order|MockObject|null $firstItem
      * @return OrderCollection|MockObject
      */
-    private function setupOrderCollection(int $size, $firstItem)
+    private function setupOrderCollection(int $expectedQuoteId, int $size, $firstItem)
     {
         $collectionMock = $this->getMockBuilder(OrderCollection::class)
             ->disableOriginalConstructor()
             ->onlyMethods(['addFieldToFilter', 'setOrder', 'setPageSize', 'getSize', 'getFirstItem'])
             ->getMock();
-        $collectionMock->method('addFieldToFilter')->willReturnSelf();
-        $collectionMock->method('setOrder')->willReturnSelf();
-        $collectionMock->method('setPageSize')->willReturnSelf();
+        $collectionMock->expects($this->once())
+            ->method('addFieldToFilter')
+            ->with('quote_id', $expectedQuoteId)
+            ->willReturnSelf();
+        $collectionMock->expects($this->once())
+            ->method('setOrder')
+            ->with('entity_id', 'DESC')
+            ->willReturnSelf();
+        $collectionMock->expects($this->once())
+            ->method('setPageSize')
+            ->with(1)
+            ->willReturnSelf();
         $collectionMock->method('getSize')->willReturn($size);
         $collectionMock->method('getFirstItem')->willReturn($firstItem);
 
