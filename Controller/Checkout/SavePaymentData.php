@@ -276,6 +276,12 @@ class SavePaymentData extends Action
                 // CloudLogger failure — silently ignored to protect payment flow
             }
 
+            // Saving recollects totals, which can clear the shipping method + rate on
+            // this paid quote and later fail placeOrder with "shipping method is
+            // missing". Recollect through the guard so the persisted quote keeps the
+            // selection the shopper paid for.
+            $this->quoteShipping->recollectPreservingShipping($quote, 'savepaymentdata');
+
             $this->cartRepository->save($quote);
 
             if ($isAdjustmentEnabled) {

@@ -19,6 +19,9 @@
             <file>Test/Unit/Plugin/CapturedQuoteTotalsTest.php</file>
             <file>Test/Unit/Observer/InvoiceSaveAfterObserverTest.php</file>
             <file>Test/Unit/Controller/Checkout/SavePaymentDataTest.php</file>
+            <file>Test/Unit/Model/CheckoutQuoteMemoTest.php</file>
+            <file>Test/Unit/Plugin/Checkout/QuoteIdMemoTest.php</file>
+            <file>Test/Unit/Plugin/Checkout/SuccessValidatorRepairTest.php</file>
         </testsuite>
     </testsuites>
 </phpunit>

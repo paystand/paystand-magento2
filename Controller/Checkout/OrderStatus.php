@@ -6,6 +6,7 @@ use Magento\Framework\App\Action\Action;
 use Magento\Framework\App\Action\Context;
 use Psr\Log\LoggerInterface;
 use Magento\Framework\Controller\Result\JsonFactory;
+use Magento\Framework\Session\SessionManagerInterface;
 use PayStand\PayStandMagento\Helper\QuoteAccess;
 
 /**
@@ -41,22 +42,47 @@ class OrderStatus extends Action
     /** @var QuoteAccess */
     protected $quoteAccess;
 
+    /** @var SessionManagerInterface */
+    protected $sessionManager;
+
     /**
      * @param Context $context
      * @param LoggerInterface $logger
      * @param JsonFactory $resultJsonFactory
      * @param QuoteAccess $quoteAccess
+     * @param SessionManagerInterface $sessionManager
      */
     public function __construct(
         Context $context,
         LoggerInterface $logger,
         JsonFactory $resultJsonFactory,
-        QuoteAccess $quoteAccess
+        QuoteAccess $quoteAccess,
+        SessionManagerInterface $sessionManager
     ) {
         $this->logger = $logger;
         $this->resultJsonFactory = $resultJsonFactory;
         $this->quoteAccess = $quoteAccess;
+        $this->sessionManager = $sessionManager;
         parent::__construct($context);
+    }
+
+    /**
+     * Persist and close the session as soon as it has been read.
+     *
+     * This endpoint is polled while placeOrder is still running. Holding the
+     * session open until the response would let this request write its own
+     * pre-order copy back over the values placeOrder writes at the end, which is
+     * what strands a paid order on an empty cart.
+     *
+     * @return void
+     */
+    private function releaseSession(): void
+    {
+        try {
+            $this->sessionManager->writeClose();
+        } catch (\Throwable $e) {
+            $this->logger->error('ORDERSTATUS >>>>>> Could not close session: ' . $e->getMessage());
+        }
     }
 
     /**
@@ -77,6 +103,16 @@ class OrderStatus extends Action
             $quoteIdIncoming = is_array($data) ? ($data['quote'] ?? null) : null;
         }
 
+        // Resolve + authorize against the current session. Unknown and
+        // unauthorized quotes get the identical generic response (fail closed,
+        // no information leak) — which also preserves the poller's own timeout
+        // semantics on the legitimate path.
+        $quote = $quoteIdIncoming ? $this->quoteAccess->getAuthorizedQuote($quoteIdIncoming) : null;
+
+        // Nothing below this point reads or writes the session. Released before
+        // the early returns so a malformed poll cannot hold it either.
+        $this->releaseSession();
+
         if (!$quoteIdIncoming) {
             return $result->setData([
                 'success' => false,
@@ -84,11 +120,6 @@ class OrderStatus extends Action
             ]);
         }
 
-        // Resolve + authorize against the current session. Unknown and
-        // unauthorized quotes get the identical generic response (fail closed,
-        // no information leak) — which also preserves the poller's own timeout
-        // semantics on the legitimate path.
-        $quote = $this->quoteAccess->getAuthorizedQuote($quoteIdIncoming);
         if (!$quote) {
             return $result->setData([
                 'success'     => true,

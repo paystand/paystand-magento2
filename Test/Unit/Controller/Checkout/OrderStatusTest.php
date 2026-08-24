@@ -10,6 +10,7 @@ use Psr\Log\LoggerInterface;
 use Magento\Framework\App\Request\Http as HttpRequest;
 use Magento\Framework\Controller\Result\JsonFactory;
 use Magento\Framework\Controller\Result\Json as JsonResult;
+use Magento\Framework\Session\SessionManagerInterface;
 use Magento\Quote\Model\Quote;
 use Magento\Sales\Model\Order;
 
@@ -35,12 +36,22 @@ class OrderStatusTest extends TestCase
     /** @var QuoteAccess|MockObject */
     private $quoteAccessMock;
 
+    /** @var SessionManagerInterface|MockObject */
+    private $sessionManagerMock;
+
+    /** @var LoggerInterface|MockObject */
+    private $loggerMock;
+
     /** @var array|null Last payload passed to the JSON result's setData(). */
     private $captured;
+
+    /** @var string[] Order in which the session read, close and order lookup ran. */
+    private $sequence;
 
     protected function setUp(): void
     {
         $this->captured = null;
+        $this->sequence = [];
 
         $this->requestMock = $this->getMockBuilder(HttpRequest::class)
             ->disableOriginalConstructor()
@@ -64,16 +75,23 @@ class OrderStatusTest extends TestCase
             ->disableOriginalConstructor()
             ->getMock();
 
-        $loggerMock = $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass();
+        $this->loggerMock = $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass();
+
+        $this->sessionManagerMock = $this->getMockBuilder(SessionManagerInterface::class)
+            ->getMockForAbstractClass();
+        $this->sessionManagerMock->method('writeClose')->willReturnCallback(function () {
+            $this->sequence[] = 'writeClose';
+        });
 
         $this->controller = $this->getMockBuilder(OrderStatus::class)
             ->disableOriginalConstructor()
             ->onlyMethods([])
             ->getMock();
 
-        $this->set('logger',            $loggerMock);
+        $this->set('logger',            $this->loggerMock);
         $this->set('resultJsonFactory', $jsonResultFactoryMock);
         $this->set('quoteAccess',       $this->quoteAccessMock);
+        $this->set('sessionManager',    $this->sessionManagerMock);
         $this->set('_request',          $this->requestMock);
     }
 
@@ -161,6 +179,95 @@ class OrderStatusTest extends TestCase
 
         $this->assertTrue($this->captured['success']);
         $this->assertFalse($this->captured['orderExists']);
+    }
+
+    // ── Session release ──────────────────────────────────────────────────────
+
+    /**
+     * The endpoint is polled while placeOrder is still running, so it must hand
+     * the session back instead of holding it open until the response.
+     */
+    public function testClosesTheSessionOnTheAuthorizedPath(): void
+    {
+        $this->requestMock->method('getParam')->with('quote')->willReturn('4189563');
+        $this->quoteAccessMock->method('getAuthorizedQuote')->willReturn($this->buildQuoteMock(4189563));
+        $this->quoteAccessMock->method('findOrderByQuoteId')->willReturn(null);
+
+        $this->controller->execute();
+
+        $this->assertSame(1, $this->countWriteCloses());
+    }
+
+    /**
+     * A malformed poll returns early, and must not keep the session either.
+     */
+    public function testClosesTheSessionWhenQuoteIdIsMissing(): void
+    {
+        $this->requestMock->method('getParam')->with('quote')->willReturn(null);
+
+        $this->controller->execute();
+
+        $this->assertSame(1, $this->countWriteCloses());
+        $this->assertSame('Missing quote id', $this->captured['error']);
+    }
+
+    /**
+     * The close has to land after the session has been read for authorization
+     * and before the order lookup, which is the slow part of the request.
+     */
+    public function testClosesTheSessionAfterAuthorizingAndBeforeTheOrderLookup(): void
+    {
+        $this->requestMock->method('getParam')->with('quote')->willReturn('4189563');
+
+        $quoteMock = $this->buildQuoteMock(4189563);
+        $this->quoteAccessMock->method('getAuthorizedQuote')->willReturnCallback(function () use ($quoteMock) {
+            $this->sequence[] = 'authorize';
+            return $quoteMock;
+        });
+        $this->quoteAccessMock->method('findOrderByQuoteId')->willReturnCallback(function () {
+            $this->sequence[] = 'findOrder';
+            return null;
+        });
+
+        $this->controller->execute();
+
+        $this->assertSame(['authorize', 'writeClose', 'findOrder'], $this->sequence);
+    }
+
+    /**
+     * A session that refuses to close is logged, never fatal — the poller still
+     * gets its answer.
+     */
+    public function testAFailedSessionCloseIsLoggedAndStillAnswers(): void
+    {
+        $this->sessionManagerMock = $this->getMockBuilder(SessionManagerInterface::class)
+            ->getMockForAbstractClass();
+        $this->sessionManagerMock->method('writeClose')
+            ->willThrowException(new \RuntimeException('redis gone'));
+        $this->set('sessionManager', $this->sessionManagerMock);
+
+        $this->loggerMock->expects($this->once())
+            ->method('error')
+            ->with($this->stringContains('Could not close session'));
+
+        $this->requestMock->method('getParam')->with('quote')->willReturn('4189563');
+        $this->quoteAccessMock->method('getAuthorizedQuote')->willReturn($this->buildQuoteMock(4189563));
+        $this->quoteAccessMock->method('findOrderByQuoteId')->willReturn(null);
+
+        $this->controller->execute();
+
+        $this->assertTrue($this->captured['success']);
+        $this->assertFalse($this->captured['orderExists']);
+    }
+
+    /**
+     * @return int
+     */
+    private function countWriteCloses(): int
+    {
+        return count(array_filter($this->sequence, function ($event) {
+            return $event === 'writeClose';
+        }));
     }
 
     /**
