@@ -6,6 +6,7 @@ use Magento\Framework\App\Action\Action;
 use Magento\Framework\App\Action\Context;
 use Psr\Log\LoggerInterface;
 use Magento\Framework\Controller\Result\JsonFactory;
+use Magento\Framework\Session\SessionManagerInterface;
 use PayStand\PayStandMagento\Helper\QuoteAccess;
 
 /**
@@ -47,22 +48,46 @@ class QuotePaymentStatus extends Action
     /** @var QuoteAccess */
     protected $quoteAccess;
 
+    /** @var SessionManagerInterface */
+    protected $sessionManager;
+
     /**
      * @param Context $context
      * @param LoggerInterface $logger
      * @param JsonFactory $resultJsonFactory
      * @param QuoteAccess $quoteAccess
+     * @param SessionManagerInterface $sessionManager
      */
     public function __construct(
         Context $context,
         LoggerInterface $logger,
         JsonFactory $resultJsonFactory,
-        QuoteAccess $quoteAccess
+        QuoteAccess $quoteAccess,
+        SessionManagerInterface $sessionManager
     ) {
         $this->logger = $logger;
         $this->resultJsonFactory = $resultJsonFactory;
         $this->quoteAccess = $quoteAccess;
+        $this->sessionManager = $sessionManager;
         parent::__construct($context);
+    }
+
+    /**
+     * Persist and close the session as soon as it has been read.
+     *
+     * This endpoint runs while a payment is being taken. Holding the session open
+     * until the response would let this request write its own stale copy back
+     * over values another request writes in the meantime.
+     *
+     * @return void
+     */
+    private function releaseSession(): void
+    {
+        try {
+            $this->sessionManager->writeClose();
+        } catch (\Throwable $e) {
+            $this->logger->error('QUOTEPAYMENTSTATUS >>>>>> Could not close session: ' . $e->getMessage());
+        }
     }
 
     /**
@@ -85,6 +110,10 @@ class QuotePaymentStatus extends Action
         // unauthorized quotes all get the identical generic response: fail closed
         // for information disclosure, fail open for the legitimate first payment.
         $quote = $quoteIdIncoming ? $this->quoteAccess->getAuthorizedQuote($quoteIdIncoming) : null;
+
+        // Nothing below this point reads or writes the session.
+        $this->releaseSession();
+
         if (!$quote) {
             return $result->setData($this->notPaid());
         }

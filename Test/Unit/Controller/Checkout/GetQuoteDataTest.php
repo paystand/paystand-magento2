@@ -14,6 +14,8 @@ use Magento\Framework\Controller\Result\JsonFactory;
 use Magento\Framework\Controller\Result\Json as JsonResult;
 use Magento\Quote\Model\Quote;
 use Magento\Quote\Model\Quote\Address;
+use Magento\Quote\Model\Quote\Address\Rate;
+use Magento\Quote\Model\Quote\Address\RateFactory;
 
 /**
  * Unit tests for Controller\Checkout\GetQuoteData::execute().
@@ -74,8 +76,44 @@ class GetQuoteDataTest extends TestCase
             ->getMockForAbstractClass());
         $this->set('logger', $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass());
         $this->set('quoteShipping', new QuoteShipping(
-            $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass()
+            $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass(),
+            $this->buildRateFactory()
         ));
+    }
+
+    /**
+     * Builds rates the helper can write a restored selection onto. The setters are
+     * magic data accessors on Rate, so they need addMethods().
+     *
+     * @return RateFactory|MockObject
+     */
+    private function buildRateFactory()
+    {
+        $factory = $this->getMockBuilder(RateFactory::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['create'])
+            ->getMock();
+        $factory->method('create')->willReturnCallback(function () {
+            $rate = $this->getMockBuilder(Rate::class)
+                ->disableOriginalConstructor()
+                ->addMethods([
+                    'setCode', 'setCarrier', 'setCarrierTitle', 'setMethod', 'setMethodTitle', 'setPrice', 'getCode',
+                ])
+                ->getMock();
+            $code = null;
+            $rate->method('setCode')->willReturnCallback(function ($value) use ($rate, &$code) {
+                $code = $value;
+                return $rate;
+            });
+            foreach (['setCarrier', 'setCarrierTitle', 'setMethod', 'setMethodTitle', 'setPrice'] as $setter) {
+                $rate->method($setter)->willReturnSelf();
+            }
+            $rate->method('getCode')->willReturnCallback(function () use (&$code) {
+                return $code;
+            });
+            return $rate;
+        });
+        return $factory;
     }
 
     public function testRejectsRequestWithoutAnActiveQuote(): void
@@ -222,12 +260,35 @@ class GetQuoteDataTest extends TestCase
      * @param array|null $methodSequence getShippingMethod() per consecutive call
      * @return Address|MockObject
      */
+    /**
+     * The rate row the snapshot captures. Its getters are magic data accessors on
+     * Rate, so they need addMethods().
+     *
+     * @param string $method
+     * @param float $amount
+     * @return Rate|MockObject
+     */
+    private function buildSelectedRate(string $method, float $amount)
+    {
+        $rate = $this->getMockBuilder(Rate::class)
+            ->disableOriginalConstructor()
+            ->addMethods(['getCode', 'getCarrier', 'getCarrierTitle', 'getMethod', 'getMethodTitle', 'getPrice'])
+            ->getMock();
+        $rate->method('getCode')->willReturn($method);
+        $rate->method('getCarrier')->willReturn('flatrate');
+        $rate->method('getCarrierTitle')->willReturn('Flat Rate');
+        $rate->method('getMethod')->willReturn('flatrate');
+        $rate->method('getMethodTitle')->willReturn('Fixed');
+        $rate->method('getPrice')->willReturn($amount);
+        return $rate;
+    }
+
     private function buildAddress(string $method, float $amount, array $methodSequence = null)
     {
         $address = $this->getMockBuilder(Address::class)
             ->disableOriginalConstructor()
             ->onlyMethods([
-                'getShippingMethod', 'getAllShippingRates',
+                'getShippingMethod', 'getAllShippingRates', 'getShippingRateByCode', 'addShippingRate',
                 'setShippingAmount', 'setBaseShippingAmount', 'getData',
             ])
             ->addMethods([
@@ -245,6 +306,10 @@ class GetQuoteDataTest extends TestCase
         $address->method('getBaseShippingAmount')->willReturn($amount);
         $address->method('getShippingDescription')->willReturn('Flat Rate - Fixed');
         $address->method('getAllShippingRates')->willReturn([]);
+        // The selected rate row survives here; these cases cover a cleared method,
+        // and the dropped-rate cases live in QuoteShippingTest.
+        $address->method('getShippingRateByCode')->willReturn($this->buildSelectedRate($method, $amount));
+        $address->method('addShippingRate')->willReturnSelf();
         $address->method('getData')->willReturnCallback(function ($key = null) {
             $data = [
                 'street'     => ['123 Main St'],
