@@ -1,0 +1,99 @@
+<?xml version="1.0"?>
+<schema xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="urn:magento:framework:Setup/Declaration/Schema/etc/schema.xsd">
+    <table name="paystand_checkout_attempt" resource="default" engine="innodb"
+           comment="Paystand Checkout Attempt">
+        <column xsi:type="bigint" name="attempt_id" unsigned="true" nullable="false" identity="true"
+                comment="Attempt ID"/>
+        <column xsi:type="bigint" name="quote_id" unsigned="true" nullable="false" comment="Quote ID"/>
+        <column xsi:type="smallint" name="store_id" unsigned="true" nullable="false" comment="Store ID"/>
+        <column xsi:type="int" name="customer_id" unsigned="true" nullable="true" comment="Customer ID"/>
+        <column xsi:type="varchar" name="attempt_token_hash" nullable="false" length="64"
+                comment="SHA-256 Attempt Token Hash"/>
+        <column xsi:type="varchar" name="session_hash" nullable="false" length="64"
+                comment="SHA-256 Session Binding"/>
+        <column xsi:type="varchar" name="merchant_id" nullable="false" length="64" comment="Paystand Customer ID"/>
+        <column xsi:type="varchar" name="checkout_id" nullable="false" length="80" comment="Canonical Checkout ID"/>
+        <column xsi:type="varchar" name="reserved_order_id" nullable="false" length="64"
+                comment="Reserved Magento Order ID"/>
+        <column xsi:type="decimal" name="amount" scale="4" precision="20" unsigned="true" nullable="false"
+                comment="Quote Grand Total"/>
+        <column xsi:type="varchar" name="currency" nullable="false" length="3" comment="Quote Currency"/>
+        <column xsi:type="varchar" name="snapshot_version" nullable="false" length="64"
+                comment="SHA-256 Authoritative Quote Snapshot"/>
+        <column xsi:type="varchar" name="state" nullable="false" length="32" default="prepared"
+                comment="Attempt State"/>
+        <column xsi:type="boolean" name="payment_may_be_started" nullable="false" default="0"
+                comment="Provider Initiation Permission"/>
+        <column xsi:type="varchar" name="provider_payment_id" nullable="true" length="160"
+                comment="Provider Payment ID"/>
+        <column xsi:type="varchar" name="provider_status" nullable="true" length="32"
+                comment="Provider Payment Status"/>
+        <column xsi:type="varchar" name="order_increment_id" nullable="true" length="64"
+                comment="Magento Order Increment ID"/>
+        <column xsi:type="varchar" name="last_error_code" nullable="true" length="64"
+                comment="Bounded Recovery Error Code"/>
+        <column xsi:type="int" name="version" unsigned="true" nullable="false" default="1"
+                comment="Optimistic Version"/>
+        <column xsi:type="timestamp" name="expires_at" nullable="false" comment="Preparation Expiry"/>
+        <column xsi:type="timestamp" name="provider_started_at" nullable="true" comment="Provider Start Claim Time"/>
+        <column xsi:type="timestamp" name="created_at" nullable="false" default="CURRENT_TIMESTAMP"
+                comment="Created At"/>
+        <column xsi:type="timestamp" name="updated_at" nullable="false" default="CURRENT_TIMESTAMP"
+                on_update="true" comment="Updated At"/>
+        <constraint xsi:type="primary" referenceId="PRIMARY">
+            <column name="attempt_id"/>
+        </constraint>
+        <constraint xsi:type="unique" referenceId="PAYSTAND_CHECKOUT_ATTEMPT_QUOTE_UNQ">
+            <column name="quote_id"/>
+        </constraint>
+        <constraint xsi:type="unique" referenceId="PAYSTAND_CHECKOUT_ATTEMPT_TOKEN_UNQ">
+            <column name="attempt_token_hash"/>
+        </constraint>
+        <index referenceId="PAYSTAND_CHECKOUT_ATTEMPT_STATE_EXPIRY" indexType="btree">
+            <column name="state"/>
+            <column name="expires_at"/>
+        </index>
+        <index referenceId="PAYSTAND_CHECKOUT_ATTEMPT_PAYMENT" indexType="btree">
+            <column name="provider_payment_id"/>
+        </index>
+    </table>
+    <table name="paystand_checkout_outbox" resource="default" engine="innodb"
+           comment="Paystand Checkout Lifecycle Outbox">
+        <column xsi:type="bigint" name="outbox_id" unsigned="true" nullable="false" identity="true"
+                comment="Outbox ID"/>
+        <column xsi:type="bigint" name="attempt_id" unsigned="true" nullable="false" comment="Attempt ID"/>
+        <column xsi:type="varchar" name="event_key" nullable="false" length="160"
+                comment="Idempotent Event Key"/>
+        <column xsi:type="varchar" name="event_type" nullable="false" length="64" comment="Event Type"/>
+        <column xsi:type="text" name="payload_json" nullable="false" comment="Canonical JSON Payload"/>
+        <column xsi:type="varchar" name="state" nullable="false" length="16" default="pending"
+                comment="Dispatch State"/>
+        <column xsi:type="int" name="delivery_attempts" unsigned="true" nullable="false" default="0"
+                comment="Delivery Attempts"/>
+        <column xsi:type="varchar" name="lease_token_hash" nullable="true" length="64"
+                comment="SHA-256 Lease Token Hash"/>
+        <column xsi:type="timestamp" name="lease_expires_at" nullable="true" comment="Lease Expiry"/>
+        <column xsi:type="timestamp" name="available_at" nullable="false" comment="Next Delivery Time"/>
+        <column xsi:type="varchar" name="last_error_code" nullable="true" length="64"
+                comment="Bounded Delivery Error"/>
+        <column xsi:type="timestamp" name="created_at" nullable="false" default="CURRENT_TIMESTAMP"
+                comment="Created At"/>
+        <column xsi:type="timestamp" name="updated_at" nullable="false" default="CURRENT_TIMESTAMP"
+                on_update="true" comment="Updated At"/>
+        <constraint xsi:type="primary" referenceId="PRIMARY">
+            <column name="outbox_id"/>
+        </constraint>
+        <constraint xsi:type="unique" referenceId="PAYSTAND_CHECKOUT_OUTBOX_EVENT_KEY_UNQ">
+            <column name="event_key"/>
+        </constraint>
+        <index referenceId="PAYSTAND_CHECKOUT_OUTBOX_DELIVERY" indexType="btree">
+            <column name="state"/>
+            <column name="available_at"/>
+            <column name="lease_expires_at"/>
+        </index>
+        <index referenceId="PAYSTAND_CHECKOUT_OUTBOX_ATTEMPT" indexType="btree">
+            <column name="attempt_id"/>
+        </index>
+    </table>
+</schema>

@@ -3,7 +3,7 @@
  */
 (function() {
     'use strict';
-    
+
     const scriptTag = document.currentScript || document.querySelector('script[data-paystand-config]');
     
     if (scriptTag && scriptTag.dataset.paystandConfig) {
@@ -27,6 +27,7 @@
     let paystandCallbacksRegistered = false;
     let placeOrderButtonObserver = null;
     let shouldDisablePlaceOrder = false;
+    let activeAttempt = null;
     
     const useSandbox = window.paystandConfig.useSandbox;
     const env = window.paystandConfig.environment || (useSandbox ? 'sandbox' : 'live');
@@ -51,37 +52,29 @@
         return url + (url.includes('?') ? '&' : '?')
             + 'form_key=' + encodeURIComponent(requireFormKey());
     }
-    
-    /** Fetch quote data from server */
-    async function getQuoteData() {
+
+    async function postMagento(url, body) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 8000);
         try {
-            const response = await fetch(urls.getQuoteData, {
-                method: 'GET',
+            const response = await fetch(mutationUrl(url), {
+                method: 'POST',
+                credentials: 'same-origin',
                 headers: {
                     'Content-Type': 'application/json',
                     'X-Requested-With': 'XMLHttpRequest'
-                }
+                },
+                body: JSON.stringify(body || {}),
+                signal: controller.signal
             });
-            
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
+            const payload = await readJsonResponse(response);
+            if (!response.ok || !payload.success) {
+                throw new Error(payload?.error?.code || 'magento-preflight-refused');
             }
-            const result = await readJsonResponse(response);
-            
-            if (result.success && result.quote) {
-                return {
-                    totals: result.quote.totals || {},
-                    quoteId: result.quote.id || null,
-                    grandTotal: result.quote.grand_total || 0,
-                    currency: result.quote.currency_code || 'USD'
-                };
-            }
-            
-        } catch (error) {
-            console.error('[Paystand Hyva] Failed to fetch quote data:', error);
+            return payload;
+        } finally {
+            clearTimeout(timeoutId);
         }
-        
-        return { totals: {}, quoteId: null, grandTotal: 0, currency: 'USD' };
     }
 
     /** JSON from a response */
@@ -160,6 +153,17 @@
         const statusText = document.querySelector('.paystand-status-text');
         
         if (!button) return;
+
+        if (activeAttempt) {
+            button.disabled = true;
+            button.style.backgroundColor = '#9CA3AF';
+            button.textContent = 'Payment in progress';
+            if (statusText) {
+                statusText.style.display = 'block';
+                statusText.textContent = 'Do not start another payment for this cart';
+            }
+            return;
+        }
         
         const validation = isCheckoutComplete();
         
@@ -261,6 +265,11 @@
                 await comp.call('$refresh');
             }
         }
+
+        const prepared = await postMagento(urls.preparePayment, {});
+        if (!prepared.attempt || prepared.attempt.paymentMayBeStarted !== false) {
+            throw new Error('magento-preflight-contract-invalid');
+        }
         
         const response = await fetch(urls.getQuoteData, {
             method: 'GET',
@@ -290,6 +299,16 @@
         
         const billing = serverData.billing || {};
         const customer = serverData.customer || { isLoggedIn: false, email: null, id: null, payerId: null };
+
+        const started = await postMagento(urls.startPayment, {
+            attemptToken: prepared.attempt.attemptToken
+        });
+        if (!started.attempt || started.attempt.paymentMayBeStarted !== true
+            || started.attempt.state !== 'provider_started'
+        ) {
+            throw new Error('magento-payment-start-contract-invalid');
+        }
+        activeAttempt = started.attempt;
         
         const payerEmail = customer.isLoggedIn ? customer.email : (billing.email || '');
         const payerName = (billing.firstname || '') + ' ' + (billing.lastname || '');
@@ -300,13 +319,13 @@
         }
         
         const config = {
-            "publishableKey": window.paystandConfig.publishableKey,
-            "presetCustom": window.paystandConfig.presetCustom,
-            "paymentAmount": quote.grandTotal.toString(),
+            "publishableKey": activeAttempt.publishableKey,
+            "presetCustom": activeAttempt.presetCustom,
+            "paymentAmount": activeAttempt.amount,
             "fixedAmount": true,
             "viewReceipt": "close",
             "viewCheckout": "mobile",
-            "paymentCurrency": quote.currency,
+            "paymentCurrency": activeAttempt.currency,
             "mode": "modal",
             "env": env,
             "payerName": payerName.trim() || "Guest",
@@ -316,7 +335,10 @@
             "paymentMeta": {
                 "source": "magento 2",
                 "checkout": "hyva",
-                "quote": quote.quoteId,
+                "quote": activeAttempt.quoteId,
+                "checkoutId": activeAttempt.checkoutId,
+                "reservedOrderId": activeAttempt.reservedOrderId,
+                "snapshotVersion": activeAttempt.snapshotVersion,
                 "quoteDetails": (function(t) {
                     if (!t) return {};
                     // Strip large arrays not needed by the webhook controller
@@ -425,13 +447,17 @@
         window.psCheckout.onComplete(async function(paymentData) {
             
             const data = paymentData.response?.data || paymentData;
+            const feeSplit = data.feeSplit || {};
             
             const response = {
                 payerId: data.payerId,
-                quote: data.meta.quote,
-                payerDiscount: data.feeSplit.payerDiscount,
-                payerTotalFees: data.feeSplit.payerTotalFees,
-                initPayer: data.meta.initPayer
+                quote: activeAttempt && activeAttempt.quoteId,
+                payerDiscount: feeSplit.payerDiscount || 0,
+                payerTotalFees: feeSplit.payerTotalFees || 0,
+                initPayer: data.meta && data.meta.initPayer,
+                paymentId: data.id || '',
+                paymentStatus: data.status || '',
+                attemptToken: activeAttempt && activeAttempt.attemptToken
             };
             
             try {
@@ -474,7 +500,7 @@
                         await mainComponent.call('placeOrder');
                     } catch (orderError) {
                         console.error('[Paystand Hyva] Order placement failed:', orderError);
-                        setPaystandError('Order placement failed. Please try again or contact support.');
+                        setPaystandError('Payment received, but the order was not confirmed. Do not pay again; contact support.');
                     }
                 } else {
                     console.error('[Paystand Hyva] Could not find hyva-checkout-main Livewire component');
@@ -482,7 +508,7 @@
                 
             } catch (error) {
                 console.error('[Paystand Hyva] Error during payment completion:', error);
-                setPaystandError('An error occurred while processing your order. Please try again.');
+                setPaystandError('Payment received, but Magento could not finalize the order. Do not pay again; contact support.');
             }
         });
         
@@ -527,7 +553,9 @@
             
         } catch (error) {
             console.error('[Paystand Hyva] Error opening checkout modal:', error);
-            setPaystandError('Error opening Paystand checkout. Please try again.');
+            setPaystandError(activeAttempt
+                ? 'Paystand may have started. Do not retry payment for this cart; contact support.'
+                : 'Magento could not authorize payment. Review the checkout details and try again.');
             throw error;
         }
     }
@@ -585,11 +613,13 @@
                 }
                 
                 openPaystandModal().finally(() => {
-                    setTimeout(() => {
-                        button.disabled = false;
-                        button.style.backgroundColor = '#00ACEE';
-                        button.textContent = 'Pay with Paystand';
-                    }, 1000);
+                    if (!activeAttempt) {
+                        setTimeout(() => {
+                            button.disabled = false;
+                            button.style.backgroundColor = '#00ACEE';
+                            button.textContent = 'Pay with Paystand';
+                        }, 1000);
+                    }
                 });
             }
         });
@@ -739,7 +769,9 @@
     /** Cleanup when method is deselected */
     function onMethodDeselect() {
         stopValidationWatch();
-        togglePlaceOrderButton(false);
+        // Once a provider-start claim is consumed, changing methods must not
+        // expose a second order/payment path for the same cart.
+        togglePlaceOrderButton(Boolean(activeAttempt));
         
         const existingButton = document.querySelector('.paystand-button-container');
         if (existingButton) {

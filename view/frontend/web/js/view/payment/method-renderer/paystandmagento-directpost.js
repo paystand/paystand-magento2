@@ -32,6 +32,7 @@ define(
         const psButtonSel = '.ps-payment-method .ps-button';
         const submitTrigger = '.submit-trigger';
         let countryISO3 = null;
+        let activeAttempt = null;
 
         function mutationUrl(path) {
             const formKey = $.mage.cookies.get('form_key') || window.FORM_KEY || '';
@@ -41,6 +42,33 @@ define(
             const url = urlBuilder.build(path);
             return url + (url.includes('?') ? '&' : '?')
                 + 'form_key=' + encodeURIComponent(formKey);
+        }
+
+        function postMagento(path, body) {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(function () { controller.abort(); }, 8000);
+            return fetch(mutationUrl(path), {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest'
+                },
+                body: JSON.stringify(body || {}),
+                signal: controller.signal
+            }).then(function (response) {
+                return response.json().catch(function () { return {}; }).then(function (payload) {
+                    if (!response.ok || !payload.success) {
+                        const code = payload && payload.error && payload.error.code
+                            ? payload.error.code
+                            : 'magento-preflight-refused';
+                        throw new Error(code);
+                    }
+                    return payload;
+                });
+            }).finally(function () {
+                clearTimeout(timeoutId);
+            });
         }
 
         // ── Cloudflare log helper ────────────────────────────────────────────
@@ -109,8 +137,8 @@ define(
         // amount shown in the widget matches what will actually be charged.
         //
         // A short timeout via AbortController prevents a hung backend request from
-        // leaving checkout stuck indefinitely — on timeout or any other failure we
-        // fall back to the client snapshot (see loadCheckout()'s .catch()).
+        // leaving checkout stuck indefinitely. Failure is terminal: payment never
+        // opens from a browser-only quote snapshot.
         const GET_QUOTE_DATA_TIMEOUT_MS = 8000;
 
         function fetchServerQuoteData() {
@@ -145,10 +173,8 @@ define(
                 });
         }
 
-        // Merge a server-side field (preferred, when present and non-null) with a
-        // client-side fallback field. Shared by both the top-level total resolution
-        // and the quoteDetails payload builder below, so the "prefer server, else
-        // client" precedence rule only lives in one place.
+        // Merge diagnostic metadata only. Payment amount and currency always come
+        // from the claimed Magento attempt below.
         function preferValue(serverValue, clientValue) {
             return (serverValue !== undefined && serverValue !== null) ? serverValue : clientValue;
         }
@@ -195,12 +221,8 @@ define(
             return details;
         }
 
-        // Builds the full Paystand widget config (payment amount, currency, payer
-        // details, address, paymentMeta) given an optional fresh server-side quote
-        // snapshot. Named for what it produces (the widget config), not just the
-        // totals sub-piece — serverQuote may be null, in which case every field
-        // falls back to the client-side quote.totals()/billingAddress() snapshot.
-        function buildPaystandCheckoutConfig(serverQuote) {
+        // Builds the widget config from an already-consumed Magento start claim.
+        function buildPaystandCheckoutConfig(serverQuote, attempt) {
             const billing = quote.billingAddress();
             const clientTotals = quote.totals() || {};
 
@@ -214,32 +236,21 @@ define(
                 }
             }
 
-            // Prefer the fresh server-side grand total (authoritative, tax-inclusive) over
-            // the client-side knockout snapshot, which may be stale/pre-tax at button-click
-            // time. Fall back to the client snapshot only if the server call failed, so a
-            // transient network error doesn't block checkout entirely.
-            const baseGrandTotal = preferValue(
-                serverQuote && serverQuote.base_grand_total,
-                clientTotals.base_grand_total
-            );
-            const currencyCode = preferValue(
-                serverQuote && serverQuote.currency_code,
-                clientTotals.quote_currency_code
-            );
+            // The claimed server-side values are the only payment authority.
+            const grandTotal = attempt && attempt.amount;
+            const currencyCode = attempt && attempt.currency;
 
-            // Neither source had a usable grand total (e.g. server call failed AND
-            // the client snapshot was never populated) — surface a clear error
-            // instead of throwing an unhandled TypeError on .toString() below.
-            if (baseGrandTotal === undefined || baseGrandTotal === null) {
-                const message = 'Unable to resolve a payment amount from either server or client quote totals';
+            // Surface a clear refusal instead of initializing an unbound payment.
+            if (!grandTotal || !currencyCode || !attempt || !attempt.attemptToken) {
+                const message = 'Magento did not authorize this payment attempt';
                 cfLog('quote_totals_unavailable', quote.getQuoteId() || '', '', message);
                 throw new Error('[Paystand] ' + message);
             }
 
             const config = {
-                "publishableKey": window.checkoutConfig.payment.paystandmagento.publishable_key,
-                "presetCustom": window.checkoutConfig.payment.paystandmagento.presetCustom,
-                "paymentAmount": baseGrandTotal.toString(),
+                "publishableKey": attempt.publishableKey,
+                "presetCustom": attempt.presetCustom,
+                "paymentAmount": grandTotal.toString(),
                 "fixedAmount": true,
                 "viewReceipt": "close",
                 "viewCheckout": "mobile",
@@ -253,8 +264,11 @@ define(
                 "paymentMeta": {
                     "source": "magento 2",
                     "checkout": "luma",
-                    "quote": quote.getQuoteId(),
-                    "quoteDetails": buildQuoteDetails(serverQuote, clientTotals, baseGrandTotal)
+                    "quote": attempt.quoteId,
+                    "checkoutId": attempt.checkoutId,
+                    "reservedOrderId": attempt.reservedOrderId,
+                    "snapshotVersion": attempt.snapshotVersion,
+                    "quoteDetails": buildQuoteDetails(serverQuote, clientTotals, grandTotal)
                 }
             };
 
@@ -401,10 +415,10 @@ define(
             }, 500);
         }
         
-        // ── Re-charge guard ─────────────────────────────────────────────────
-        // The widget captures payment before the order exists, so re-opening it on an
-        // already-paid cart would charge twice. Fails open on any check failure.
-        function showAlreadyPaidModal(status) {
+        // Blocks a second click while the first open is still in flight.
+        let loadCheckoutInFlight = false;
+
+        function showStartAmbiguityModal() {
             const supportEmail = (window.checkoutConfig.payment.paystandmagento.support_email) || '';
             const storeName = (window.checkoutConfig.payment.paystandmagento.store_name) || '';
             const supportContact = supportEmail
@@ -412,69 +426,12 @@ define(
                 : (storeName ? storeName + ' support' : 'support');
             require(['Magento_Ui/js/modal/alert'], function (alert) {
                 alert({
-                    title: 'Payment Already Received',
-                    content: 'This cart has already been paid, so we did not charge you again. ' +
-                        'If you have not received an order confirmation, please contact ' + supportContact + '.' +
-                        (status && status.paymentId ? '<br><br><strong>Payment ID:</strong> ' + status.paymentId : '') +
-                        (status && status.incrementId ? '<br><strong>Order:</strong> ' + status.incrementId : ''),
+                    title: 'Payment Start Needs Review',
+                    content: 'Paystand may have started, but checkout could not be opened safely. ' +
+                        'Do not retry payment for this cart. Contact ' + supportContact + '.',
                     actions: { always: function () {} }
                 });
             });
-        }
-
-        // Blocks a second click while the first open is still in flight.
-        let loadCheckoutInFlight = false;
-
-        // Bounded like fetchServerQuoteData(); this gates every widget-open, so an
-        // unbounded hang here would be worse than the bug it guards.
-        const QUOTE_PAYMENT_STATUS_TIMEOUT_MS = 8000;
-
-        // Terminal fallback so checkout is never left without a config.
-        // isServerFetchFailure separates a network failure from a config-build bug.
-        function fallbackToClientSnapshot(error, isServerFetchFailure) {
-            console.error('[Paystand] Falling back to client snapshot:', error);
-            cfLog(
-                isServerFetchFailure ? 'getquotedata_fallback' : 'build_config_error',
-                quote.getQuoteId() || '',
-                '',
-                error && (error.message || String(error))
-            );
-            try {
-                initCheckout(buildPaystandCheckoutConfig(null));
-            } catch (fallbackError) {
-                console.error('[Paystand] Client snapshot fallback also failed:', fallbackError);
-            }
-        }
-
-        // Already-paid status, or null when not paid or the check failed (fails open).
-        async function fetchQuotePaymentStatus(qid) {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(function () { controller.abort(); }, QUOTE_PAYMENT_STATUS_TIMEOUT_MS);
-            try {
-                const resp = await fetch(
-                    urlBuilder.build('paystandmagento/checkout/quotepaymentstatus') + '?quote=' + encodeURIComponent(qid),
-                    {
-                        method: 'GET',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'X-Requested-With': 'XMLHttpRequest'
-                        },
-                        signal: controller.signal
-                    }
-                );
-                if (!resp.ok) {
-                    return null;
-                }
-                // Parsed inside the armed window so a stalled body cannot hang.
-                const status = await resp.json();
-                return (status && status.alreadyPaid) ? status : null;
-            } catch (error) {
-                // Includes an abort once the timeout above fires.
-                cfLog('recharge_guard_error', qid, '', error && (error.message || String(error)));
-                return null;
-            } finally {
-                clearTimeout(timeoutId);
-            }
         }
 
         async function loadCheckout() {
@@ -488,43 +445,35 @@ define(
             // permanently disabled — hence the try/finally around the whole body.
             let blocked = false;
             try {
-                const qid = quote.getQuoteId();
-
-                // Re-charge guard: refuse to open the widget for a cart already paid.
-                const alreadyPaid = await fetchQuotePaymentStatus(qid);
-                if (alreadyPaid) {
-                    cfLog('recharge_blocked', qid, (alreadyPaid.paymentId || ''),
-                        'Quote already has a posted Paystand payment; blocking re-charge'
-                    );
-                    showAlreadyPaidModal(alreadyPaid);
-                    blocked = true;
-                    return;
+                const prepared = await postMagento('paystandmagento/checkout/preparepayment', {});
+                if (!prepared.attempt || prepared.attempt.paymentMayBeStarted !== false) {
+                    throw new Error('magento-preflight-contract-invalid');
                 }
-
-                // Not already paid — resolve a fresh, tax-inclusive server-side
-                // total before building the widget config.
-                let serverQuote = null;
-                try {
-                    serverQuote = await fetchServerQuoteData();
-                } catch (fetchError) {
-                    fallbackToClientSnapshot(fetchError, true);
-                    return;
+                const serverQuote = await fetchServerQuoteData();
+                const started = await postMagento('paystandmagento/checkout/startpayment', {
+                    attemptToken: prepared.attempt.attemptToken
+                });
+                if (!started.attempt || started.attempt.paymentMayBeStarted !== true
+                    || started.attempt.state !== 'provider_started'
+                ) {
+                    throw new Error('magento-payment-start-contract-invalid');
                 }
-                try {
-                    initCheckout(buildPaystandCheckoutConfig(serverQuote));
-                } catch (buildError) {
-                    fallbackToClientSnapshot(buildError, false);
-                }
+                activeAttempt = started.attempt;
+                blocked = true;
+                initCheckout(buildPaystandCheckoutConfig(serverQuote, activeAttempt));
             } catch (error) {
                 // Nothing above should reach here, but an unexpected throw must
                 // not wedge checkout with the button stuck disabled.
                 console.error('[Paystand] loadCheckout failed:', error);
                 cfLog('load_checkout_error', quote.getQuoteId() || '', '', error && (error.message || String(error)));
+                if (activeAttempt) {
+                    showStartAmbiguityModal();
+                }
             } finally {
                 loadCheckoutInFlight = false;
                 if (!blocked) {
                     // Single source of truth for "should the button be enabled".
-                    // A blocked (already-paid) cart deliberately stays disabled.
+                    // A claimed provider start deliberately stays disabled.
                     resolveButton();
                 }
             }
@@ -536,37 +485,31 @@ define(
         const ORDER_CONFIRM_MAX_ATTEMPTS = 15;
         const ORDER_CONFIRM_INTERVAL_MS = 2000;
 
-        async function confirmOrderPlaced(quoteId, paymentId, onFailure) {
+        async function confirmOrderPlaced(quoteId, paymentId, attemptToken, onFailure) {
             for (let attempt = 1; attempt <= ORDER_CONFIRM_MAX_ATTEMPTS; attempt++) {
                 await new Promise(function (resolve) {
                     setTimeout(resolve, ORDER_CONFIRM_INTERVAL_MS);
                 });
 
-                let orderExists = false;
+                let lifecycleState = null;
                 try {
-                    const resp = await fetch(
-                        urlBuilder.build('paystandmagento/checkout/orderstatus') + '?quote=' + encodeURIComponent(quoteId),
-                        {
-                            method: 'GET',
-                            headers: {
-                                'Content-Type': 'application/json',
-                                'X-Requested-With': 'XMLHttpRequest'
-                            }
-                        }
-                    );
-                    if (resp.ok) {
-                        const result = await resp.json();
-                        orderExists = !!(result && result.orderExists);
-                    }
+                    const result = await postMagento('paystandmagento/checkout/attemptstatus', {
+                        attemptToken: attemptToken
+                    });
+                    lifecycleState = result && result.attempt && result.attempt.state;
                 } catch (error) {
                     // Transient network error — treat as "not confirmed yet" and
                     // keep polling until we either find the order or time out.
                 }
 
-                if (orderExists) {
+                if (lifecycleState === 'order_placed') {
                     cfLog('order_confirmed', quoteId, paymentId,
                         'Order confirmed present after placeOrder (attempt ' + attempt + ')'
                     );
+                    return;
+                }
+                if (lifecycleState === 'held') {
+                    onFailure();
                     return;
                 }
             }
@@ -584,8 +527,9 @@ define(
         function onCompleteCheckout() {
             psCheckout.onComplete( async function (paymentData) {
                 const data = paymentData.response?.data || paymentData;
-                const qid = data.meta && data.meta.quote ? data.meta.quote : '';
+                const qid = activeAttempt ? activeAttempt.quoteId : '';
                 const pid = data.id || '';
+                const feeSplit = data.feeSplit || {};
                 const supportEmail = (window.checkoutConfig.payment.paystandmagento.support_email) || '';
                 const storeName = (window.checkoutConfig.payment.paystandmagento.store_name) || '';
                 const supportContact = supportEmail
@@ -626,21 +570,22 @@ define(
                 cfLog('checkout_complete_fired', qid, pid,
                     'paymentStatus=' + (data.status || '') +
                     ' payerId=' + (data.payerId || '') +
-                    ' fees=' + (data.feeSplit && data.feeSplit.payerTotalFees || 0)
+                    ' fees=' + (feeSplit.payerTotalFees || 0)
                 );
 
                 const response = {
                     payerId: data.payerId,
-                    quote: data.meta.quote,
-                    payerDiscount: data.feeSplit.payerDiscount,
-                    payerTotalFees: data.feeSplit.payerTotalFees,
-                    initPayer: data.meta.initPayer,
+                    quote: qid,
+                    payerDiscount: feeSplit.payerDiscount || 0,
+                    payerTotalFees: feeSplit.payerTotalFees || 0,
+                    initPayer: data.meta && data.meta.initPayer,
                     // Recorded on the quote so the re-charge guard can detect an
                     // already-paid cart even if placeOrder fails to create the order.
                     paymentId: pid,
                     // Gates the totals freeze: only a confirmed capture stops the
                     // quote recollecting and re-adjudicating its cart price rules.
-                    paymentStatus: data.status
+                    paymentStatus: data.status,
+                    attemptToken: activeAttempt && activeAttempt.attemptToken
                 };
 
                 try {
@@ -695,7 +640,12 @@ define(
                 // quote and, if it never appears within the window, reassure the
                 // shopper their order is being finalized (and not to pay again).
                 // On success Magento redirects and this is aborted.
-                confirmOrderPlaced(qid, pid, showFinalizingModal);
+                confirmOrderPlaced(
+                    qid,
+                    pid,
+                    activeAttempt && activeAttempt.attemptToken,
+                    showFinalizingModal
+                );
             });
         }
 

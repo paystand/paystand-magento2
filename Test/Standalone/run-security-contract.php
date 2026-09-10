@@ -76,6 +76,10 @@ namespace Magento\Framework\Setup\Patch {
 }
 
 namespace {
+    set_error_handler(static function (int $severity, string $message, string $file, int $line): bool {
+        throw new \ErrorException($message, 0, $severity, $file, $line);
+    });
+
     $root = dirname(__DIR__, 2);
 
     require $root . '/Model/PayStandConfigProvider.php';
@@ -269,6 +273,8 @@ namespace {
     expect(strpos($frontendDi, 'name="paystand_webhook_csrf_exemption"') !== false, 'unique CSRF plugin name missing');
     expect(strpos($defaultConfig, '<report_only>') === false, 'module weakens the merchant CSP mode');
     expect($composer['version'] === '3.7.3', 'composer version was not incremented');
+    expect(($composer['require']['magento/framework'] ?? null) === '^103.0', 'Magento framework support is unbounded');
+    expect(($composer['require']['magento/module-cron'] ?? null) === '^100.4', 'Lifecycle repair cron dependency missing');
     expect((string)$moduleXml->module['setup_version'] === '3.7.3', 'setup version was not incremented');
     expect(strpos($cloudLogger, "PLUGIN_VERSION = '3.7.3'") !== false, 'server telemetry version was not incremented');
     expect(strpos($navigation, "PLUGIN_VERSION = '3.7.3'") !== false, 'browser telemetry version was not incremented');

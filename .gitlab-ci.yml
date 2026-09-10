@@ -1,6 +1,12 @@
 stages:
   - test
 
+composer-metadata:
+  stage: test
+  image: composer:2
+  script:
+    - composer validate --no-check-publish
+
 php-security-contract:
   stage: test
   image: php:${PHP_VERSION}-cli
@@ -10,6 +16,9 @@ php-security-contract:
   script:
     - find . -name '*.php' -type f -print0 | xargs -0 -n1 php -l
     - php Test/Standalone/run-security-contract.php
+    - php Test/Standalone/run-orderability-contract.php
+    - php Test/Standalone/run-attempt-repository-contract.php
+    - php Test/Standalone/run-attempt-service-contract.php
 
 javascript-syntax:
   stage: test

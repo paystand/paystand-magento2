@@ -33,9 +33,9 @@ $config = [
     'logoUrl' => $block->getViewFileUrl('PayStand_PayStandMagento::images/logo_paystand_small.png'),
     'urls' => [
         'getQuoteData' => $block->getUrl('paystandmagento/checkout/getquotedata', ['_secure' => true]),
-        'quotePaymentStatus' => $block->getUrl('paystandmagento/checkout/quotepaymentstatus', ['_secure' => true]),
-        'savePaymentData' => $block->getUrl('paystandmagento/checkout/savepaymentdata', ['_secure' => true]),
-        'orderStatus' => $block->getUrl('paystandmagento/checkout/orderstatus', ['_secure' => true])
+        'preparePayment' => $block->getUrl('paystandmagento/checkout/preparepayment', ['_secure' => true]),
+        'startPayment' => $block->getUrl('paystandmagento/checkout/startpayment', ['_secure' => true]),
+        'savePaymentData' => $block->getUrl('paystandmagento/checkout/savepaymentdata', ['_secure' => true])
     ]
 ];
 

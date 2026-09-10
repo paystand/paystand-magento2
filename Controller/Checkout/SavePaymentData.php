@@ -14,7 +14,8 @@ use PayStand\PayStandMagento\Model\Config\Source\PaymentStatus;
 use Magento\Quote\Api\CartRepositoryInterface;
 use Magento\Framework\App\Config\ScopeConfigInterface;
 use Magento\Store\Model\ScopeInterface;
-use Magento\Framework\Webapi\Response;
+use Magento\Framework\Webapi\Exception as WebapiException;
+use PayStand\PayStandMagento\Model\Checkout\AttemptService;
 
 /**
  * SavePaymentData Controller
@@ -39,6 +40,8 @@ use Magento\Framework\Webapi\Response;
  */
 class SavePaymentData extends Action
 {
+    private const HTTP_CONFLICT = 409;
+
     /** @var LoggerInterface */
     protected $logger;
 
@@ -60,6 +63,9 @@ class SavePaymentData extends Action
     /** @var ScopeConfigInterface */
     protected $scopeConfig;
 
+    /** @var AttemptService */
+    private $attempts;
+
     /**
      * PayStand configuration path
      */
@@ -71,7 +77,7 @@ class SavePaymentData extends Action
      * the flow, but reject anything that clearly isn't a payment id before it
      * is persisted onto the quote.
      */
-    const PAYMENT_ID_PATTERN = '/^[a-z0-9]{16,64}$/i';
+    const PAYMENT_ID_PATTERN = '/^[a-z0-9_-]{16,160}$/i';
 
     /**
      * Statuses that freeze a quote's totals. Shared with the webhook rescue path
@@ -87,6 +93,7 @@ class SavePaymentData extends Action
      * @param CartRepositoryInterface $cartRepository
      * @param QuoteAccess $quoteAccess
      * @param ScopeConfigInterface $scopeConfig
+     * @param AttemptService $attempts
      */
     public function __construct(
         Context $context,
@@ -96,7 +103,8 @@ class SavePaymentData extends Action
         CartRepositoryInterface $cartRepository,
         QuoteAccess $quoteAccess,
         QuoteShipping $quoteShipping,
-        ScopeConfigInterface $scopeConfig
+        ScopeConfigInterface $scopeConfig,
+        AttemptService $attempts
     ) {
         $this->logger = $logger;
         $this->resultJsonFactory = $resultJsonFactory;
@@ -105,6 +113,7 @@ class SavePaymentData extends Action
         $this->quoteAccess = $quoteAccess;
         $this->quoteShipping = $quoteShipping;
         $this->scopeConfig = $scopeConfig;
+        $this->attempts = $attempts;
         parent::__construct($context);
     }
 
@@ -125,7 +134,7 @@ class SavePaymentData extends Action
 
         if (!$data) {
             $this->logger->error('SAVEPAYMENTDATA >>>>>> Invalid JSON received');
-            return $result->setHttpResponseCode(Response::HTTP_BAD_REQUEST)->setData([
+            return $result->setHttpResponseCode(WebapiException::HTTP_BAD_REQUEST)->setData([
                 'success' => false,
                 'error' => [
                     'code' => 'INVALID_JSON',
@@ -144,10 +153,11 @@ class SavePaymentData extends Action
         $paymentId       = $data['paymentId'] ?? null;
         // Narrower than the payment id above: only a confirmed capture freezes totals.
         $paymentStatus   = $data['paymentStatus'] ?? null;
+        $attemptToken    = $data['attemptToken'] ?? null;
 
-        if (!$payerId || !$quoteIdIncoming) {
-            $this->logger->error('SAVEPAYMENTDATA >>>>>> Missing payerId or quote');
-            return $result->setHttpResponseCode(Response::HTTP_BAD_REQUEST)->setData([
+        if (!$quoteIdIncoming || !$paymentId || !$paymentStatus || !$attemptToken) {
+            $this->logger->error('SAVEPAYMENTDATA >>>>>> Missing required payment-attempt data');
+            return $result->setHttpResponseCode(WebapiException::HTTP_BAD_REQUEST)->setData([
                 'success' => false,
                 'error' => [
                     'code' => 'MISSING_REQUIRED_DATA',
@@ -174,7 +184,7 @@ class SavePaymentData extends Action
                 } catch (\Exception $e) {
                     // CloudLogger failure — silently ignored to protect payment flow
                 }
-                return $result->setHttpResponseCode(Response::HTTP_FORBIDDEN)->setData([
+                return $result->setHttpResponseCode(WebapiException::HTTP_FORBIDDEN)->setData([
                     'success' => false,
                     'error' => [
                         'code' => 'QUOTE_ACCESS_DENIED',
@@ -183,6 +193,40 @@ class SavePaymentData extends Action
                 ]);
             }
             $realQuoteId = (int)$quote->getId();
+
+            try {
+                $attempt = $this->attempts->recordBrowserPayment(
+                    (string)$attemptToken,
+                    $realQuoteId,
+                    (string)$paymentId,
+                    (string)$paymentStatus
+                );
+            } catch (\DomainException $error) {
+                $this->logger->warning('SAVEPAYMENTDATA >>>>>> Payment attempt refused', [
+                    'quote_id' => $realQuoteId,
+                    'reason' => $error->getMessage()
+                ]);
+                return $result->setHttpResponseCode(self::HTTP_CONFLICT)->setData([
+                    'success' => false,
+                    'error' => [
+                        'code' => 'PAYMENT_ATTEMPT_REFUSED',
+                        'message' => 'Payment received; order finalization is held for review'
+                    ]
+                ]);
+            }
+            if (($attempt['state'] ?? '') !== \PayStand\PayStandMagento\Model\Checkout\AttemptRepository::STATE_BROWSER_REPORTED) {
+                $this->logger->critical('SAVEPAYMENTDATA >>>>>> Provider payment held before quote mutation', [
+                    'quote_id' => $realQuoteId,
+                    'state' => $attempt['state'] ?? 'unknown'
+                ]);
+                return $result->setHttpResponseCode(self::HTTP_CONFLICT)->setData([
+                    'success' => false,
+                    'error' => [
+                        'code' => 'PAYMENT_ORDERABILITY_CHANGED',
+                        'message' => 'Payment received; Magento could not safely create this order. Do not pay again; contact support.'
+                    ]
+                ]);
+            }
 
             // 3) Check if paystand adjustment is enabled
             $isAdjustmentEnabled = $this->scopeConfig->isSetFlag(
@@ -371,7 +415,7 @@ class SavePaymentData extends Action
             } catch (\Exception $e) {
                 // CloudLogger failure — silently ignored to protect payment flow
             }
-            return $result->setHttpResponseCode(Response::HTTP_INTERNAL_ERROR)->setData([
+            return $result->setHttpResponseCode(WebapiException::HTTP_INTERNAL_ERROR)->setData([
                 'success' => false,
                 'error' => [
                     'code' => 'QUOTE_SAVE_ERROR',

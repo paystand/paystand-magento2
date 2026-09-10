@@ -6,7 +6,7 @@ Use of the extension requires a PayStand account offering fully-featured plans. 
 
 ##  Create a PayStand Account
 
-1.  Contact PayStand at support@paysand.com to set up a Merchant account and be issued a publishable_key.
+1.  Contact PayStand at support@paystand.com to set up a Merchant account and be issued a publishable_key.
 2.  If you have a test server and would like to enable Sandbox Mode, request to also be issued a Sandbox publishable_key.
 3.  Provide PayStand with your magento website address so you can be registered to receive webhooks, providing you with timely order status updates when payments clear.
 
@@ -30,6 +30,31 @@ the Paystand client secret because earlier versions could expose it in Hyva chec
 
 The extension no longer changes the merchant's global CSP mode. Test the checkout with the merchant's
 normal CSP restrict-mode policy before enabling it in production.
+
+### Checkout safety in 3.7.3
+
+Luma and the bundled Hyva integration now use the same Magento-owned payment-start contract:
+
+1. Magento reloads the active cart, selects the Paystand method, collects totals, applies Magento's
+   `validateBeforeSubmit` rules, reserves the order number, and stores a short-lived snapshot.
+2. A separate request atomically consumes that snapshot immediately before the Paystand checkout is
+   opened. A stale, changed, expired, reused, foreign-session, already-paid, or already-ordered cart is
+   refused.
+3. The browser-reported Paystand reference is written to durable attempt memory before the quote is
+   changed. Magento validates the cart again; if it changed or became unorderable, the attempt is held
+   and the shopper is told not to pay again.
+4. A Paystand order records `magento.order_placed` in a local transactional outbox. Magento cron repairs
+   a rare order-commit/outbox gap every five minutes. Version 3.7.3 does not dispatch that outbox to a
+   remote service and does not automatically issue refunds.
+
+Attempt states are `prepared`, `provider_started`, `browser_reported`, `order_placed`, and `held`.
+`held` and an old `provider_started` row require reconciliation before the cart can initiate another
+payment. Keep Magento cron enabled and monitor `PAYSTAND_CHECKOUT_LIFECYCLE_*` log events. Do not delete
+`paystand_checkout_attempt` or `paystand_checkout_outbox` rows as part of routine quote cleanup.
+
+The checkout endpoints that prepare, start, report, and read an attempt are same-origin POST requests
+protected by Magento's form key. Only the exact Paystand webhook route is exempt. The browser receives
+the publishable key but never the OAuth client id, client secret, or webhook bearer token.
 
 ##  Configuring the PayStand Payment Gateway
 1.  Go to Stores/Configuration/Sales/Payment Methods/PayStand in your Magento admin interface.

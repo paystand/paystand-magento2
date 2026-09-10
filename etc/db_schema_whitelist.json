@@ -1,0 +1,63 @@
+{
+    "paystand_checkout_attempt": {
+        "column": {
+            "attempt_id": true,
+            "quote_id": true,
+            "store_id": true,
+            "customer_id": true,
+            "attempt_token_hash": true,
+            "session_hash": true,
+            "merchant_id": true,
+            "checkout_id": true,
+            "reserved_order_id": true,
+            "amount": true,
+            "currency": true,
+            "snapshot_version": true,
+            "state": true,
+            "payment_may_be_started": true,
+            "provider_payment_id": true,
+            "provider_status": true,
+            "order_increment_id": true,
+            "last_error_code": true,
+            "version": true,
+            "expires_at": true,
+            "provider_started_at": true,
+            "created_at": true,
+            "updated_at": true
+        },
+        "constraint": {
+            "PRIMARY": true,
+            "PAYSTAND_CHECKOUT_ATTEMPT_QUOTE_UNQ": true,
+            "PAYSTAND_CHECKOUT_ATTEMPT_TOKEN_UNQ": true
+        },
+        "index": {
+            "PAYSTAND_CHECKOUT_ATTEMPT_STATE_EXPIRY": true,
+            "PAYSTAND_CHECKOUT_ATTEMPT_PAYMENT": true
+        }
+    },
+    "paystand_checkout_outbox": {
+        "column": {
+            "outbox_id": true,
+            "attempt_id": true,
+            "event_key": true,
+            "event_type": true,
+            "payload_json": true,
+            "state": true,
+            "delivery_attempts": true,
+            "lease_token_hash": true,
+            "lease_expires_at": true,
+            "available_at": true,
+            "last_error_code": true,
+            "created_at": true,
+            "updated_at": true
+        },
+        "constraint": {
+            "PRIMARY": true,
+            "PAYSTAND_CHECKOUT_OUTBOX_EVENT_KEY_UNQ": true
+        },
+        "index": {
+            "PAYSTAND_CHECKOUT_OUTBOX_DELIVERY": true,
+            "PAYSTAND_CHECKOUT_OUTBOX_ATTEMPT": true
+        }
+    }
+}
