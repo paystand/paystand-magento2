@@ -22,18 +22,9 @@
                 <!--<currency>USD</currency>-->
                 <create_order_before>1</create_order_before>
                 <enable_paystand_adjustment>1</enable_paystand_adjustment>
+                <client_secret backend_model="PayStand\PayStandMagento\Model\Config\Backend\ClientSecret" />
                 <!--<date_delim>/</date_delim>-->
             </paystandmagento>
         </payment>
-        <csp>
-            <mode>
-                <storefront>
-                    <report_only>1</report_only>
-                </storefront>
-                <admin>
-                    <report_only>1</report_only>
-                </admin>
-            </mode>
-        </csp>
     </default>
 </config>

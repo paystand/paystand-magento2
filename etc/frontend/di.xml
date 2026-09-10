@@ -8,7 +8,7 @@
         </arguments>
     </type>
     <type name="Magento\Framework\App\Request\CsrfValidator">
-        <plugin name="csrf_validator_skip" type="PayStand\PayStandMagento\Plugin\CsrfValidatorSkip" />
+        <plugin name="paystand_webhook_csrf_exemption" type="PayStand\PayStandMagento\Plugin\CsrfValidatorSkip" />
     </type>
     <type name="Magento\Checkout\Model\Session">
         <plugin name="paystand_quote_id_memo"

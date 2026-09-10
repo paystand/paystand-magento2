@@ -30,12 +30,32 @@
     
     const useSandbox = window.paystandConfig.useSandbox;
     const env = window.paystandConfig.environment || (useSandbox ? 'sandbox' : 'live');
-    const apiDomain = useSandbox ? 'api.paystand.co' : 'api.paystand.com';
+    const urls = window.paystandConfig.urls || {};
+
+    function requireFormKey() {
+        const hyvaKey = window.hyva && typeof window.hyva.getFormKey === 'function'
+            ? window.hyva.getFormKey()
+            : '';
+        const cookieMatch = document.cookie.match(/(?:^|;\s*)form_key=([^;]+)/);
+        const formKey = hyvaKey || (cookieMatch ? decodeURIComponent(cookieMatch[1]) : '');
+        if (!formKey) {
+            throw new Error('Magento form key is unavailable; payment data was not submitted');
+        }
+        return formKey;
+    }
+
+    function mutationUrl(url) {
+        if (!url) {
+            throw new Error('Magento payment endpoint is unavailable');
+        }
+        return url + (url.includes('?') ? '&' : '?')
+            + 'form_key=' + encodeURIComponent(requireFormKey());
+    }
     
     /** Fetch quote data from server */
     async function getQuoteData() {
         try {
-            const response = await fetch('/paystandmagento/checkout/getquotedata', {
+            const response = await fetch(urls.getQuoteData, {
                 method: 'GET',
                 headers: {
                     'Content-Type': 'application/json',
@@ -242,7 +262,7 @@
             }
         }
         
-        const response = await fetch('/paystandmagento/checkout/getquotedata', {
+        const response = await fetch(urls.getQuoteData, {
             method: 'GET',
             headers: {
                 'Content-Type': 'application/json',
@@ -314,10 +334,6 @@
             }
         };
         
-        if (window.paystandConfig.accessToken) {
-            config.accessToken = window.paystandConfig.accessToken;
-        }
-        
         if (billing.street && billing.street.length > 0) {
             config.payerAddressStreet = billing.street[0];
         }
@@ -331,11 +347,7 @@
             config.payerAddressState = billing.region_code;
         }
         
-        if (customer.isLoggedIn && config.accessToken) {
-            delete config.presetCustom;
-            delete config.publishableKey;
-            config.checkoutType = 'checkout_magento2';
-            config.customerId = window.paystandConfig.customerId;
+        if (customer.isLoggedIn) {
             config.paymentMeta.extCustomerId = customer.id;
         }
         
@@ -423,7 +435,7 @@
             };
             
             try {
-                const fetchResponse = await fetch('/paystandmagento/checkout/savepaymentdata', {
+                const fetchResponse = await fetch(mutationUrl(urls.savePaymentData), {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(response)

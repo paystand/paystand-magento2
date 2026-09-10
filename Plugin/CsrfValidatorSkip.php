@@ -3,6 +3,10 @@ namespace PayStand\PayStandMagento\Plugin;
 
 class CsrfValidatorSkip
 {
+    private const WEBHOOK_MODULE = 'paystandmagento';
+    private const WEBHOOK_CONTROLLER = 'webhook';
+    private const WEBHOOK_ACTION = 'paystand';
+
     /**
      * @param \Magento\Framework\App\Request\CsrfValidator $subject
      * @param \Closure $proceed
@@ -15,9 +19,14 @@ class CsrfValidatorSkip
         $request,
         $action
     ) {
-        if ($request->getModuleName() == 'paystandmagento') {
-            return; // Skip CSRF check
+        if (
+            $request->getModuleName() === self::WEBHOOK_MODULE
+            && $request->getControllerName() === self::WEBHOOK_CONTROLLER
+            && $request->getActionName() === self::WEBHOOK_ACTION
+        ) {
+            return;
         }
-        $proceed($request, $action); // Proceed Magento 2 core functionalities
+
+        return $proceed($request, $action);
     }
 }

@@ -15,7 +15,6 @@ use Magento\Store\Model\ScopeInterface;
 
 $objectManager = \Magento\Framework\App\ObjectManager::getInstance();
 $scopeConfig = $objectManager->get(\Magento\Framework\App\Config\ScopeConfigInterface::class);
-$customerSession = $objectManager->get(\Magento\Customer\Model\Session::class);
 
 // Read Paystand configuration from system settings
 $publishableKey = $scopeConfig->getValue('payment/paystandmagento/publishable_key', ScopeInterface::SCOPE_STORE);
@@ -31,36 +30,14 @@ $config = [
     'customerId' => $customerId,
     'useSandbox' => (bool)$useSandbox,
     'updateOrderOn' => $updateOrderOn,
-    'logoUrl' => $block->getViewFileUrl('PayStand_PayStandMagento::images/logo_paystand_small.png')
+    'logoUrl' => $block->getViewFileUrl('PayStand_PayStandMagento::images/logo_paystand_small.png'),
+    'urls' => [
+        'getQuoteData' => $block->getUrl('paystandmagento/checkout/getquotedata', ['_secure' => true]),
+        'quotePaymentStatus' => $block->getUrl('paystandmagento/checkout/quotepaymentstatus', ['_secure' => true]),
+        'savePaymentData' => $block->getUrl('paystandmagento/checkout/savepaymentdata', ['_secure' => true]),
+        'orderStatus' => $block->getUrl('paystandmagento/checkout/orderstatus', ['_secure' => true])
+    ]
 ];
-
-// Add OAuth credentials and access token for logged-in users (if configured)
-if ($customerSession->isLoggedIn()) {
-    $clientId = $scopeConfig->getValue('payment/paystandmagento/client_id', ScopeInterface::SCOPE_STORE);
-    $clientSecret = $scopeConfig->getValue('payment/paystandmagento/client_secret', ScopeInterface::SCOPE_STORE);
-    
-    if ($clientId && $clientSecret) {
-        $config['clientId'] = $clientId;
-        $config['clientSecret'] = $clientSecret;
-        
-        // Get access token for tokenized payments (same logic as PayStandConfigProvider)
-        $configProvider = $objectManager->get(\PayStand\PayStandMagento\Model\PayStandConfigProvider::class);
-        $paystandConfig = $configProvider->getConfig();
-        
-        if (isset($paystandConfig['payment']['paystandmagento']['access_token'])) {
-            $config['accessToken'] = $paystandConfig['payment']['paystandmagento']['access_token'];
-        }
-    }
-    
-    // Get PayStand Payer ID from customer (for tokenized payments)
-    $customer = $customerSession->getCustomer();
-    if ($customer && $customer->getId()) {
-        $payerIdAttribute = $customer->getCustomAttribute('paystand_payer_id');
-        if ($payerIdAttribute && $payerIdAttribute->getValue()) {
-            $config['payerId'] = $payerIdAttribute->getValue();
-        }
-    }
-}
 
 /**
  * Paystand Environment Configuration

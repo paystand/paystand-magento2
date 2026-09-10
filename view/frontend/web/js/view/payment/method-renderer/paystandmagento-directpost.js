@@ -21,15 +21,27 @@ define(
         'Magento_Checkout/js/model/payment/additional-validators',
         'Magento_Customer/js/model/customer',
         'Magento_Checkout/js/checkout-data',
+        'mage/cookies',
+        'mage/url',
         checkoutjs_module,
     ],
 
-    function ($, Component, quote, agreementValidator, additionalValidators, customer) {
+    function ($, Component, quote, agreementValidator, additionalValidators, customer, checkoutData, cookies, urlBuilder) {
         'use strict';
         const termsSel = '.ps-payment-method div.checkout-agreements input[type="checkbox"]';
         const psButtonSel = '.ps-payment-method .ps-button';
         const submitTrigger = '.submit-trigger';
         let countryISO3 = null;
+
+        function mutationUrl(path) {
+            const formKey = $.mage.cookies.get('form_key') || window.FORM_KEY || '';
+            if (!formKey) {
+                throw new Error('Magento form key is unavailable; payment data was not submitted');
+            }
+            const url = urlBuilder.build(path);
+            return url + (url.includes('?') ? '&' : '?')
+                + 'form_key=' + encodeURIComponent(formKey);
+        }
 
         // ── Cloudflare log helper ────────────────────────────────────────────
         const CF_INGEST_URL = 'https://magento-plugin-logs.paystand-core-services.workers.dev/ingest';
@@ -48,7 +60,7 @@ define(
                     customer_id:     CF_CUSTOMER_ID,
                     publishable_key: CF_PUBLISHABLE_KEY,
                     event_type:      eventType,
-                    plugin_version:  '3.7.2',
+                    plugin_version:  '3.7.3',
                     quote_id:        quoteId  || '',
                     payment_id:      paymentId || '',
                     error_message:   message  || '',
@@ -108,7 +120,7 @@ define(
             const controller = new AbortController();
             const timeoutId = setTimeout(function () { controller.abort(); }, GET_QUOTE_DATA_TIMEOUT_MS);
 
-            return fetch('/paystandmagento/checkout/getquotedata', {
+            return fetch(urlBuilder.build('paystandmagento/checkout/getquotedata'), {
                 method: 'GET',
                 headers: {
                     'Content-Type': 'application/json',
@@ -246,11 +258,6 @@ define(
                 }
             };
 
-            // Add access token if available (when user is logged in)
-            if (window.checkoutConfig.payment.paystandmagento.access_token) {
-                config.accessToken = window.checkoutConfig.payment.paystandmagento.access_token;
-            }
-
             if (billing.street && billing.street.length > 0) {
                 config.payerAddressStreet = billing.street[0];
             }
@@ -264,12 +271,7 @@ define(
                 config.payerAddressState = billing.regionCode;
             }
 
-            // Apply preset flow in config if customer is logged in
-            if (customer.isLoggedIn() && config.accessToken){
-                delete config.presetCustom;
-                delete config.publishableKey;
-                config.checkoutType = 'checkout_magento2';
-                config.customerId = window.checkoutConfig.payment.paystandmagento.customer_id;
+            if (customer.isLoggedIn()) {
                 config.paymentMeta.extCustomerId = customer.customerData.id
             }
 
@@ -450,7 +452,7 @@ define(
             const timeoutId = setTimeout(function () { controller.abort(); }, QUOTE_PAYMENT_STATUS_TIMEOUT_MS);
             try {
                 const resp = await fetch(
-                    '/paystandmagento/checkout/quotepaymentstatus?quote=' + encodeURIComponent(qid),
+                    urlBuilder.build('paystandmagento/checkout/quotepaymentstatus') + '?quote=' + encodeURIComponent(qid),
                     {
                         method: 'GET',
                         headers: {
@@ -543,7 +545,7 @@ define(
                 let orderExists = false;
                 try {
                     const resp = await fetch(
-                        '/paystandmagento/checkout/orderstatus?quote=' + encodeURIComponent(quoteId),
+                        urlBuilder.build('paystandmagento/checkout/orderstatus') + '?quote=' + encodeURIComponent(quoteId),
                         {
                             method: 'GET',
                             headers: {
@@ -642,7 +644,7 @@ define(
                 };
 
                 try {
-                    const fetchResponse = await fetch('/paystandmagento/checkout/savepaymentdata', {
+                    const fetchResponse = await fetch(mutationUrl('paystandmagento/checkout/savepaymentdata'), {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(response)

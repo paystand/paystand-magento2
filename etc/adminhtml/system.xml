@@ -8,7 +8,7 @@
                     <![CDATA[
                     <a href="https://www.paystand.com" target="_blank">Click here for information about PayStand</a><br/>
                     Note: Before you enable PayStand as a payment method, you need to register with PayStand to receive webhooks so that your Magento system can be updated when payments clear.<br/>
-                    The url you need to register is http://{your magento base url}/paystandmagento/webhook/paystand
+                    The URL you need to register is https://{your Magento base URL}/paystandmagento/webhook/paystand
                     <br>
                     Please note that if the Checkout Preset Key is misspelled or doesn't exist, the checkout will show an error.
                     ]]>
@@ -29,8 +29,9 @@
                 <field id="client_id" translate="label" type="text" sortOrder="5" showInDefault="1" showInWebsite="1" showInStore="1">
                     <label>Client Id</label>
                 </field>
-                <field id="client_secret" translate="label" type="text" sortOrder="6" showInDefault="1" showInWebsite="1" showInStore="1">
+                <field id="client_secret" translate="label" type="obscure" sortOrder="6" showInDefault="1" showInWebsite="1" showInStore="1">
                     <label>Client Secret</label>
+                    <backend_model>PayStand\PayStandMagento\Model\Config\Backend\ClientSecret</backend_model>
                 </field>
                 <field id="update_order_on" translate="label" type="select" sortOrder="7" showInDefault="1" showInWebsite="1" showInStore="0">
                     <label>Update Order On</label>

@@ -1,4 +1,4 @@
-#  PayStand Payment Gateway Magento 2.x Extension
+# PayStand Payment Gateway Magento 2.x Extension
 
 Accept Credit Card, eCheck, and ACH payments using PayStand Payment Gateway's robust and modern checkout.
 
@@ -10,16 +10,26 @@ Use of the extension requires a PayStand account offering fully-featured plans. 
 2.  If you have a test server and would like to enable Sandbox Mode, request to also be issued a Sandbox publishable_key.
 3.  Provide PayStand with your magento website address so you can be registered to receive webhooks, providing you with timely order status updates when payments clear.
 
-##  Module Installation:
+## Module installation
 
 1.  Go to your Magento 2 root folder
 2.  `composer config repositories.paystand-magento2 git https://github.com/paystand/paystand-magento2.git`
-3.  `composer require paystand/paystandmagento:3.6.2`
+3.  `composer require paystand/paystandmagento:3.7.3`
 4.  `composer update`
 5.  `php bin/magento setup:upgrade`  
 **Note**: The above command updates database schema, so in order to preserve previously generated static files run the above command with the flag `--keep-generated`
 
 For Magento Installation best practices please refer to the [Magento Installation Guide](https://devdocs.magento.com/guides/v2.4/install-gde/install-flow-diagram.html)
+
+### Upgrading from 3.7.2 or earlier
+
+Run `php bin/magento setup:upgrade` before reopening the storefront. Version 3.7.3 encrypts every
+stored Paystand client-secret scope and removes OAuth client credentials and bearer tokens from
+checkout responses. After the upgrade, clear Magento configuration and full-page caches and rotate
+the Paystand client secret because earlier versions could expose it in Hyva checkout HTML.
+
+The extension no longer changes the merchant's global CSP mode. Test the checkout with the merchant's
+normal CSP restrict-mode policy before enabling it in production.
 
 ##  Configuring the PayStand Payment Gateway
 1.  Go to Stores/Configuration/Sales/Payment Methods/PayStand in your Magento admin interface.
