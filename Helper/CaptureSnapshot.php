@@ -111,12 +111,24 @@ class CaptureSnapshot
             return;
         }
 
+        $shipping = $this->quoteShipping->snapshot($quote);
+        if ($shipping
+            && !empty($shipping['method'])
+            && empty($shipping['rate'])
+        ) {
+            $this->logger->warning(
+                'PAYSTAND-CAPTURE-SNAPSHOT: shipping method has no rate row on quote '
+                . $quote->getId()
+                . ' method=' . $shipping['method']
+            );
+        }
+
         $payload = [
             'hash' => $this->hash($quote),
             'grand_total' => (string)$quote->getGrandTotal(),
             'base_grand_total' => (string)$quote->getBaseGrandTotal(),
             'discount_amount' => $this->discountAmount($quote),
-            'shipping' => $this->quoteShipping->snapshot($quote),
+            'shipping' => $shipping,
         ];
 
         $quote->setData(self::QUOTE_FIELD, json_encode($payload, JSON_UNESCAPED_SLASHES));

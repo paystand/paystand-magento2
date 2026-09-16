@@ -241,6 +241,34 @@ class CaptureSnapshotTest extends TestCase
         $this->assertSame($first, $stored);
     }
 
+    public function testStampWarnsWhenMethodHasNoRateRow(): void
+    {
+        $logger = $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass();
+        $logger->expects($this->once())->method('warning');
+
+        $quoteShipping = $this->getMockBuilder(QuoteShipping::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['snapshot'])
+            ->getMock();
+        $quoteShipping->method('snapshot')->willReturn([
+            'method' => 'fedex_FEDEX_GROUND',
+            'amount' => 55.0,
+            'baseAmount' => 55.0,
+            'description' => 'FedEx Ground',
+            'rate' => null,
+        ]);
+
+        $quote = $this->quoteWith('pay1', 'posted');
+        $quote->method('getAllVisibleItems')->willReturn([]);
+        $quote->method('isVirtual')->willReturn(false);
+        $quote->method('getGrandTotal')->willReturn(343.83);
+        $quote->method('getBaseGrandTotal')->willReturn(343.83);
+        $quote->method('getShippingAddress')->willReturn($this->address());
+        $quote->method('setData')->willReturnSelf();
+
+        (new CaptureSnapshot($quoteShipping, $logger))->stamp($quote);
+    }
+
     public function testEnsureStampedSkipsUncapturedQuotes(): void
     {
         $quote = $this->quoteWith('pay1', null);
@@ -284,10 +312,11 @@ class CaptureSnapshotTest extends TestCase
             ->disableOriginalConstructor()
             ->onlyMethods([
                 'getData', 'setData', 'getAllVisibleItems', 'isVirtual',
-                'getShippingAddress', 'getBillingAddress',
+                'getShippingAddress', 'getBillingAddress', 'getId',
             ])
             ->addMethods(['getGrandTotal', 'getBaseGrandTotal'])
             ->getMock();
+        $quote->method('getId')->willReturn(4490737);
         $quote->method('getData')->willReturnCallback(function ($key) use ($paymentId, $captureStatus) {
             if ($key === 'paystand_payment_id') {
                 return $paymentId;
