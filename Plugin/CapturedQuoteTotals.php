@@ -2,6 +2,8 @@
 
 namespace PayStand\PayStandMagento\Plugin;
 
+use PayStand\PayStandMagento\Helper\CaptureFingerprint;
+use PayStand\PayStandMagento\Helper\CloudLogger;
 use Psr\Log\LoggerInterface;
 
 /**
@@ -15,9 +17,13 @@ class CapturedQuoteTotals
     /** @var LoggerInterface */
     private $logger;
 
-    public function __construct(LoggerInterface $logger)
+    /** @var CaptureFingerprint */
+    private $fingerprint;
+
+    public function __construct(LoggerInterface $logger, CaptureFingerprint $fingerprint)
     {
         $this->logger = $logger;
+        $this->fingerprint = $fingerprint;
     }
 
     /**
@@ -31,6 +37,14 @@ class CapturedQuoteTotals
     {
         try {
             if (!$this->isCaptured($subject)) {
+                return;
+            }
+
+            // The freeze covers the cart that was paid for. Once the shopper changes
+            // that cart, holding it would keep stale shipping rates on the quote and
+            // Magento could never price the new one.
+            if (!$this->fingerprint->matchesCapture($subject)) {
+                $this->releaseFreeze($subject);
                 return;
             }
 
@@ -72,5 +86,46 @@ class CapturedQuoteTotals
 
         return !empty($subject->getData('paystand_payment_id'))
             && !empty($subject->getData('paystand_capture_status'));
+    }
+
+    /**
+     * Leaves the markers in place: the money was taken and the payment id is still
+     * the reconciliation anchor. Only the totals go live again, and the release is
+     * reported because it means a capture no order will ever carry.
+     *
+     * @param \Magento\Quote\Model\Quote $subject
+     * @return void
+     */
+    private function releaseFreeze($subject)
+    {
+        $quoteId = (string)$subject->getId();
+        $paymentId = (string)$subject->getData('paystand_payment_id');
+
+        $this->logger->warning(
+            'PAYSTAND-CAPTURED-TOTALS: cart changed since capture, totals stay live for quote '
+            . $quoteId . ' payment=' . $paymentId
+        );
+
+        $this->shipReleaseEvent($quoteId, $paymentId);
+    }
+
+    /**
+     * Its own method so the release can be observed without shipping anything.
+     *
+     * @param string $quoteId
+     * @param string $paymentId
+     * @return void
+     */
+    protected function shipReleaseEvent($quoteId, $paymentId)
+    {
+        try {
+            CloudLogger::ship(CloudLogger::EVENT_CAPTURE_FREEZE_RELEASED, [
+                'quote_id'      => $quoteId,
+                'payment_id'    => $paymentId,
+                'error_message' => 'cart no longer matches the capture fingerprint, totals released',
+            ]);
+        } catch (\Throwable $e) {
+            // CloudLogger failure — silently ignored to protect checkout
+        }
     }
 }

@@ -19,6 +19,7 @@ php-security-contract:
     - php Test/Standalone/run-orderability-contract.php
     - php Test/Standalone/run-attempt-repository-contract.php
     - php Test/Standalone/run-attempt-service-contract.php
+    - php Test/Standalone/run-capture-freeze-contract.php
 
 javascript-syntax:
   stage: test

@@ -10,6 +10,7 @@ use PayStand\PayStandMagento\Helper\CustomerPayerId;
 use PayStand\PayStandMagento\Helper\CloudLogger;
 use PayStand\PayStandMagento\Helper\QuoteAccess;
 use PayStand\PayStandMagento\Helper\QuoteShipping;
+use PayStand\PayStandMagento\Helper\CaptureFingerprint;
 use PayStand\PayStandMagento\Model\Config\Source\PaymentStatus;
 use Magento\Quote\Api\CartRepositoryInterface;
 use Magento\Framework\App\Config\ScopeConfigInterface;
@@ -60,6 +61,9 @@ class SavePaymentData extends Action
     /** @var QuoteShipping */
     protected $quoteShipping;
 
+    /** @var CaptureFingerprint */
+    protected $captureFingerprint;
+
     /** @var ScopeConfigInterface */
     protected $scopeConfig;
 
@@ -94,6 +98,7 @@ class SavePaymentData extends Action
      * @param QuoteAccess $quoteAccess
      * @param ScopeConfigInterface $scopeConfig
      * @param AttemptService $attempts
+     * @param CaptureFingerprint $captureFingerprint
      */
     public function __construct(
         Context $context,
@@ -104,7 +109,8 @@ class SavePaymentData extends Action
         QuoteAccess $quoteAccess,
         QuoteShipping $quoteShipping,
         ScopeConfigInterface $scopeConfig,
-        AttemptService $attempts
+        AttemptService $attempts,
+        CaptureFingerprint $captureFingerprint
     ) {
         $this->logger = $logger;
         $this->resultJsonFactory = $resultJsonFactory;
@@ -114,6 +120,7 @@ class SavePaymentData extends Action
         $this->quoteShipping = $quoteShipping;
         $this->scopeConfig = $scopeConfig;
         $this->attempts = $attempts;
+        $this->captureFingerprint = $captureFingerprint;
         parent::__construct($context);
     }
 
@@ -298,6 +305,9 @@ class SavePaymentData extends Action
             $captureStatus = $this->captureStatusFor($paymentId, $paymentStatus);
             if ($captureStatus !== null) {
                 $quote->setData('paystand_capture_status', $captureStatus);
+                // Records which cart the money was taken for. The freeze holds only
+                // while the quote still matches it.
+                $this->captureFingerprint->stamp($quote);
             } else {
                 if (!empty($paymentId) && !empty($paymentStatus)) {
                     $this->logger->info('SAVEPAYMENTDATA >>>>>> Payment status is not a capture, totals stay live', [
@@ -471,6 +481,7 @@ class SavePaymentData extends Action
 
             if (!empty($persisted)) {
                 $quote->setData('paystand_capture_status', $persisted);
+                $this->preserveCaptureFingerprint($quote, $quoteId);
                 $this->logger->info('SAVEPAYMENTDATA >>>>>> Kept capture status recorded since load', [
                     'quote_id'       => $quoteId,
                     'capture_status' => $persisted
@@ -480,6 +491,38 @@ class SavePaymentData extends Action
             // A failed read must not break the payment flow; the worst case is the
             // status this request already held being saved as it was loaded.
             $this->logger->error('SAVEPAYMENTDATA >>>>>> Could not re-read capture status: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Brings the capture's cart fingerprint back with the status it belongs to. Read
+     * separately so a missing column cannot cost the status its preservation.
+     *
+     * @param \Magento\Quote\Model\Quote $quote
+     * @param int|string $quoteId
+     * @return void
+     */
+    private function preserveCaptureFingerprint($quote, $quoteId)
+    {
+        try {
+            if (!empty($quote->getData(CaptureFingerprint::QUOTE_FIELD))) {
+                return;
+            }
+
+            $resource = $quote->getResource();
+            $connection = $resource->getConnection();
+            $select = $connection->select()
+                ->from($resource->getMainTable(), CaptureFingerprint::QUOTE_FIELD)
+                ->where('entity_id = ?', $quoteId);
+            $persisted = $connection->fetchOne($select);
+
+            if (!empty($persisted)) {
+                $quote->setData(CaptureFingerprint::QUOTE_FIELD, $persisted);
+            }
+        } catch (\Throwable $e) {
+            // Worst case the quote carries no fingerprint, which only lets its totals
+            // collect as Magento normally would.
+            $this->logger->error('SAVEPAYMENTDATA >>>>>> Could not re-read capture fingerprint: ' . $e->getMessage());
         }
     }
 }

@@ -53,6 +53,10 @@ class CloudLogger
     // The confirmation page was about to redirect, but the order for the
     // session's own quote was found and the missing session values restored.
     const EVENT_SUCCESS_PAGE_REPAIRED = 'success_page_repaired';
+    // A captured quote no longer holds the cart it was paid for, so its totals
+    // were let go live again. The capture is now orphaned: money was taken for a
+    // cart that no longer exists, and no order carries it.
+    const EVENT_CAPTURE_FREEZE_RELEASED = 'capture_freeze_released';
 
     /**
      * Resolve the merchant's customer ID from store config.

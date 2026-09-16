@@ -15,6 +15,7 @@
             <file>Test/Unit/Controller/Checkout/QuotePaymentStatusTest.php</file>
             <file>Test/Unit/Helper/QuoteAccessTest.php</file>
             <file>Test/Unit/Helper/QuoteShippingTest.php</file>
+            <file>Test/Unit/Helper/CaptureFingerprintTest.php</file>
             <file>Test/Unit/Plugin/QuoteSubmitLoggerPluginTest.php</file>
             <file>Test/Unit/Plugin/CapturedQuoteTotalsTest.php</file>
             <file>Test/Unit/Observer/InvoiceSaveAfterObserverTest.php</file>

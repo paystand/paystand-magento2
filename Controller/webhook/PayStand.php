@@ -11,6 +11,7 @@ use \stdClass;
 use Magento\Sales\Model\Order\Payment\Transaction\BuilderInterface as BuilderInterface;
 use Magento\Sales\Model\Order;
 use PayStand\PayStandMagento\Helper\CloudLogger;
+use PayStand\PayStandMagento\Helper\CaptureFingerprint;
 use PayStand\PayStandMagento\Model\Config\Source\PaymentStatus;
 
 /**
@@ -100,6 +101,9 @@ class Paystand extends \Magento\Framework\App\Action\Action
     /** @var \PayStand\PayStandMagento\Helper\QuoteShipping */
     private $quoteShipping;
 
+    /** @var CaptureFingerprint */
+    private $captureFingerprint;
+
     /**
      * Why the last createOrderFromQuote() failed. 'terminal' means Magento rejected
      * the cart itself, so retrying the same cart fails the same way.
@@ -129,7 +133,8 @@ class Paystand extends \Magento\Framework\App\Action\Action
         CartRepositoryInterface $cartRepository,
         CartManagementInterface $cartManagement,
         LockManagerInterface $lockManager,
-        \PayStand\PayStandMagento\Helper\QuoteShipping $quoteShipping
+        \PayStand\PayStandMagento\Helper\QuoteShipping $quoteShipping,
+        CaptureFingerprint $captureFingerprint
     ) {
         $this->_logger = $logger;
         $this->_request = $request;
@@ -147,6 +152,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
         $this->cartManagement = $cartManagement;
         $this->lockManager = $lockManager;
         $this->quoteShipping = $quoteShipping;
+        $this->captureFingerprint = $captureFingerprint;
         $this->updateOrderOn = $this->scopeConfig->getValue(self::UPDATE_ORDER_ON, self::STORE_SCOPE);
         parent::__construct($context);
     }
@@ -1007,6 +1013,9 @@ class Paystand extends \Magento\Framework\App\Action\Action
             if ($captureId && in_array($captureStatus, PaymentStatus::CAPTURED_STATUSES, true)) {
                 $quote->setData('paystand_payment_id', $captureId);
                 $quote->setData('paystand_capture_status', $captureStatus);
+                // Records which cart the money was taken for. The freeze holds only
+                // while the quote still matches it.
+                $this->captureFingerprint->stamp($quote);
                 $this->_logger->debug(
                     '>>>>> PAYSTAND-WEBHOOK: Recorded capture markers on quote ' . $quoteId
                     . ' status=' . $captureStatus . ' before server-side placeOrder'
@@ -1120,6 +1129,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
 
             if (!empty($persisted)) {
                 $quote->setData('paystand_capture_status', $persisted);
+                $this->preserveCaptureFingerprint($quote, $quoteId);
                 $this->_logger->debug(
                     '>>>>> PAYSTAND-WEBHOOK: Kept capture status ' . $persisted
                     . ' recorded for quote ' . $quoteId . ' since it was loaded'
@@ -1129,6 +1139,38 @@ class Paystand extends \Magento\Framework\App\Action\Action
             // A failed read must not stop the rescue; the worst case is the status
             // this delivery already held being saved as it was loaded.
             $this->_logger->error('>>>>> PAYSTAND-WEBHOOK: Could not re-read capture status: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Brings the capture's cart fingerprint back with the status it belongs to. Read
+     * separately so a missing column cannot cost the status its preservation.
+     *
+     * @param \Magento\Quote\Model\Quote $quote
+     * @param int|string $quoteId
+     * @return void
+     */
+    protected function preserveCaptureFingerprint($quote, $quoteId)
+    {
+        try {
+            if (!empty($quote->getData(CaptureFingerprint::QUOTE_FIELD))) {
+                return;
+            }
+
+            $resource = $quote->getResource();
+            $connection = $resource->getConnection();
+            $select = $connection->select()
+                ->from($resource->getMainTable(), CaptureFingerprint::QUOTE_FIELD)
+                ->where('entity_id = ?', $quoteId);
+            $persisted = $connection->fetchOne($select);
+
+            if (!empty($persisted)) {
+                $quote->setData(CaptureFingerprint::QUOTE_FIELD, $persisted);
+            }
+        } catch (\Throwable $e) {
+            // Worst case the quote carries no fingerprint, which only lets its totals
+            // collect as Magento normally would.
+            $this->_logger->error('>>>>> PAYSTAND-WEBHOOK: Could not re-read capture fingerprint: ' . $e->getMessage());
         }
     }
 

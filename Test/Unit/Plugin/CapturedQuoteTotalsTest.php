@@ -2,6 +2,7 @@
 
 namespace PayStand\PayStandMagento\Test\Unit\Plugin;
 
+use PayStand\PayStandMagento\Helper\CaptureFingerprint;
 use PayStand\PayStandMagento\Plugin\CapturedQuoteTotals;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\LoggerInterface;
@@ -22,9 +23,34 @@ class CapturedQuoteTotalsTest extends TestCase
 
     protected function setUp(): void
     {
-        $this->plugin = new CapturedQuoteTotals(
-            $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass()
-        );
+        $this->plugin = $this->pluginWithMatch(true);
+    }
+
+    /**
+     * The fingerprint check is stubbed: whether a quote still holds the cart it was
+     * paid for is the helper's business, tested in CaptureFingerprintTest.
+     */
+    private function pluginWithMatch(bool $matches): CapturedQuoteTotals
+    {
+        $fingerprint = $this->getMockBuilder(CaptureFingerprint::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['matchesCapture'])
+            ->getMock();
+        $fingerprint->method('matchesCapture')->willReturn($matches);
+
+        // Anonymous subclass: the release is observed, never shipped.
+        return new class (
+            $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass(),
+            $fingerprint
+        ) extends CapturedQuoteTotals {
+            /** @var array<int, array<string, string>> */
+            public $shipped = [];
+
+            protected function shipReleaseEvent($quoteId, $paymentId)
+            {
+                $this->shipped[] = ['quote_id' => $quoteId, 'payment_id' => $paymentId];
+            }
+        };
     }
 
     /**
@@ -120,5 +146,49 @@ class CapturedQuoteTotalsTest extends TestCase
         $this->plugin->beforeCollectTotals($quote);
 
         $this->assertTrue(true, 'A failed check must not propagate out of the plugin');
+    }
+
+    /**
+     * The regression this release exists for: a captured quote whose cart the shopper
+     * then changed. Holding the freeze there keeps the paid cart's shipping rates on
+     * a cart that no longer has them, and Magento can never price the new one.
+     */
+    public function testChangedCartCollectsAgain(): void
+    {
+        $plugin = $this->pluginWithMatch(false);
+        $quote = $this->quoteWith('nlvsnvr0ska9i7ugvoab9917', 'posted');
+
+        $quote->expects($this->never())->method('setTotalsCollectedFlag');
+
+        $plugin->beforeCollectTotals($quote);
+    }
+
+    /**
+     * Releasing means a capture no order will carry, so it has to be reported.
+     */
+    public function testReleaseIsReported(): void
+    {
+        $plugin = $this->pluginWithMatch(false);
+        $quote = $this->quoteWith('nlvsnvr0ska9i7ugvoab9917', 'posted');
+
+        $plugin->beforeCollectTotals($quote);
+
+        $this->assertSame(
+            [['quote_id' => '4267713', 'payment_id' => 'nlvsnvr0ska9i7ugvoab9917']],
+            $plugin->shipped
+        );
+    }
+
+    /**
+     * A quote that was never captured is not reported: there is no capture to orphan.
+     */
+    public function testUncapturedQuoteIsNotReported(): void
+    {
+        $plugin = $this->pluginWithMatch(false);
+        $quote = $this->quoteWith(null, null);
+
+        $plugin->beforeCollectTotals($quote);
+
+        $this->assertSame([], $plugin->shipped);
     }
 }
