@@ -89,6 +89,29 @@ class CapturedQuoteSubmitTest extends TestCase
         }
     }
 
+    public function testMismatchLogsStampedAndCurrentHash(): void
+    {
+        $logger = $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass();
+        $logger->expects($this->once())->method('error')->with($this->callback(function ($message) {
+            return is_string($message)
+                && str_contains($message, 'stamped=')
+                && str_contains($message, 'current=');
+        }));
+
+        $plugin = new CapturedQuoteSubmit(
+            $logger,
+            new CaptureSnapshot(
+                $this->getMockBuilder(QuoteShipping::class)->disableOriginalConstructor()->getMock()
+            )
+        );
+        $quote = $this->capturedQuote('2');
+
+        $this->expectException(LocalizedException::class);
+        $plugin->aroundSubmit($this->subject, function () {
+            return 'order';
+        }, $quote);
+    }
+
     public function testBrokenCheckFailsOpen(): void
     {
         $quote = $this->getMockBuilder(Quote::class)

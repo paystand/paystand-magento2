@@ -52,6 +52,8 @@ class CapturedQuoteSubmit
     private function refuseIfCartChanged($quote): void
     {
         $mismatch = false;
+        $stamped = '';
+        $current = '';
         try {
             if (!$this->snapshot->isCaptured($quote)) {
                 return;
@@ -67,6 +69,8 @@ class CapturedQuoteSubmit
             }
 
             $mismatch = true;
+            $stamped = (string)$payload['hash'];
+            $current = $this->snapshot->hash($quote);
         } catch (\Throwable $e) {
             $quoteId = 'unknown';
             try {
@@ -93,7 +97,10 @@ class CapturedQuoteSubmit
         }
 
         $this->logger->error(
-            'PAYSTAND-CAPTURED-SUBMIT: cart changed after capture; refusing placeOrder for quote ' . $quoteId
+            'PAYSTAND-CAPTURED-SUBMIT: cart changed after capture; refusing placeOrder for quote '
+            . $quoteId
+            . ' stamped=' . $stamped
+            . ' current=' . $current
         );
 
         throw new LocalizedException(
