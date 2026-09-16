@@ -40,20 +40,35 @@ class CaptureSnapshot
     }
 
     /**
-     * Hash of visible items and destination. Region is omitted: Magento can fill
-     * region_id from region text without the shopper changing the cart.
+     * Hash of visible items and destination. Street, item id, and region are
+     * omitted: Magento can rewrite those on save/load without the shopper
+     * changing the cart.
      *
-     * @param array<int, array{id:string,sku:string,qty:string}> $items
-     * @param array{street:array,city:string,postcode:string,country:string} $address
+     * @param array<int, array{sku:string,qty:string}> $items
+     * @param array{city:string,postcode:string,country:string} $address
      */
     public static function hashParts(array $items, array $address): string
     {
-        usort($items, static function (array $left, array $right): int {
-            return strcmp($left['id'], $right['id']);
+        $normalized = [];
+        foreach ($items as $item) {
+            $normalized[] = [
+                'sku' => strtolower(trim((string)($item['sku'] ?? ''))),
+                'qty' => (string)(float)($item['qty'] ?? 0),
+            ];
+        }
+        usort($normalized, static function (array $left, array $right): int {
+            $sku = strcmp($left['sku'], $right['sku']);
+            return $sku !== 0 ? $sku : strcmp($left['qty'], $right['qty']);
         });
 
+        $dest = [
+            'city' => strtolower(trim((string)($address['city'] ?? ''))),
+            'postcode' => strtolower(trim((string)($address['postcode'] ?? ''))),
+            'country' => strtoupper(trim((string)($address['country'] ?? ''))),
+        ];
+
         return hash('sha256', json_encode(
-            ['items' => $items, 'address' => $address],
+            ['items' => $normalized, 'address' => $dest],
             JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES
         ));
     }
@@ -66,7 +81,6 @@ class CaptureSnapshot
         $items = [];
         foreach ($quote->getAllVisibleItems() as $item) {
             $items[] = [
-                'id' => (string)$item->getId(),
                 'sku' => (string)$item->getSku(),
                 'qty' => (string)(float)$item->getQty(),
             ];
@@ -74,10 +88,9 @@ class CaptureSnapshot
 
         $shipping = $quote->isVirtual() ? null : $quote->getShippingAddress();
         $address = [
-            'street' => $shipping ? array_values(array_map('strval', (array)$shipping->getStreet())) : [],
-            'city' => $shipping ? trim((string)$shipping->getCity()) : '',
-            'postcode' => $shipping ? trim((string)$shipping->getPostcode()) : '',
-            'country' => $shipping ? strtoupper(trim((string)$shipping->getCountryId())) : '',
+            'city' => $shipping ? (string)$shipping->getCity() : '',
+            'postcode' => $shipping ? (string)$shipping->getPostcode() : '',
+            'country' => $shipping ? (string)$shipping->getCountryId() : '',
         ];
 
         return self::hashParts($items, $address);

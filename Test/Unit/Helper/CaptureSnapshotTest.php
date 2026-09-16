@@ -19,11 +19,10 @@ class CaptureSnapshotTest extends TestCase
     public function testHashPartsIsStableForTheSameCart(): void
     {
         $items = [
-            ['id' => '2', 'sku' => 'B', 'qty' => '1'],
-            ['id' => '1', 'sku' => 'A', 'qty' => '2'],
+            ['sku' => 'B', 'qty' => '1'],
+            ['sku' => 'A', 'qty' => '2'],
         ];
         $address = [
-            'street' => ['123 Main'],
             'city' => 'Santa Cruz',
             'postcode' => '95060',
             'country' => 'US',
@@ -35,24 +34,86 @@ class CaptureSnapshotTest extends TestCase
         );
     }
 
-    public function testHashPartsChangesWhenQtyChanges(): void
+    public function testHashIgnoresItemIdAndStreet(): void
+    {
+        $left = CaptureSnapshot::hashParts(
+            [['sku' => 'A', 'qty' => '1', 'id' => '9']],
+            [
+                'city' => 'Santa Cruz',
+                'postcode' => '95060',
+                'country' => 'US',
+                'street' => ['123 Main'],
+            ]
+        );
+        $right = CaptureSnapshot::hashParts(
+            [['sku' => 'A', 'qty' => '1', 'id' => '99']],
+            [
+                'city' => 'Santa Cruz',
+                'postcode' => '95060',
+                'country' => 'US',
+                'street' => ['123 Main', ''],
+            ]
+        );
+        $this->assertSame($left, $right);
+    }
+
+    public function testHashChangesWhenQtyChanges(): void
     {
         $address = [
-            'street' => ['123 Main'],
             'city' => 'Santa Cruz',
             'postcode' => '95060',
             'country' => 'US',
         ];
-        $one = CaptureSnapshot::hashParts(
-            [['id' => '1', 'sku' => 'A', 'qty' => '1']],
-            $address
+        $this->assertNotSame(
+            CaptureSnapshot::hashParts([['sku' => 'A', 'qty' => '1']], $address),
+            CaptureSnapshot::hashParts([['sku' => 'A', 'qty' => '2']], $address)
         );
-        $two = CaptureSnapshot::hashParts(
-            [['id' => '1', 'sku' => 'A', 'qty' => '2']],
-            $address
-        );
+    }
 
-        $this->assertNotSame($one, $two);
+    public function testHashChangesWhenCityChanges(): void
+    {
+        $items = [['sku' => 'A', 'qty' => '1']];
+        $this->assertNotSame(
+            CaptureSnapshot::hashParts($items, [
+                'city' => 'Santa Cruz',
+                'postcode' => '95060',
+                'country' => 'US',
+            ]),
+            CaptureSnapshot::hashParts($items, [
+                'city' => 'San Jose',
+                'postcode' => '95060',
+                'country' => 'US',
+            ])
+        );
+    }
+
+    public function testHashNormalizesSkuCaseAndQtyFloat(): void
+    {
+        $address = [
+            'city' => 'Santa Cruz',
+            'postcode' => '95060',
+            'country' => 'us',
+        ];
+        $this->assertSame(
+            CaptureSnapshot::hashParts([['sku' => 'Abc', 'qty' => '1']], $address),
+            CaptureSnapshot::hashParts([['sku' => 'abc', 'qty' => '1.0']], $address)
+        );
+    }
+
+    public function testMatchesIgnoresItemIdAndStreetOnTheQuote(): void
+    {
+        $snapshot = $this->makeSnapshot();
+        $a = $this->quoteWith('pay1', 'posted');
+        $a->method('getAllVisibleItems')->willReturn([$this->item('9', 'SKU', '1')]);
+        $a->method('isVirtual')->willReturn(false);
+        $a->method('getShippingAddress')->willReturn($this->address(['123 Main']));
+
+        $b = $this->quoteWith('pay1', 'posted');
+        $b->method('getAllVisibleItems')->willReturn([$this->item('99', 'SKU', '1')]);
+        $b->method('isVirtual')->willReturn(false);
+        $b->method('getShippingAddress')->willReturn($this->address(['123 Main', '']));
+
+        $this->assertTrue($snapshot->matches($b, ['hash' => $snapshot->hash($a)]));
     }
 
     public function testIsCapturedRequiresBothFields(): void
@@ -222,14 +283,17 @@ class CaptureSnapshotTest extends TestCase
         return $item;
     }
 
-    private function address(): Address
+    /**
+     * @param array<int, string> $street
+     */
+    private function address(array $street = ['123 Main']): Address
     {
         $address = $this->getMockBuilder(Address::class)
             ->disableOriginalConstructor()
             ->onlyMethods(['getStreet', 'getCity', 'getPostcode', 'getCountryId'])
             ->addMethods(['getDiscountAmount'])
             ->getMock();
-        $address->method('getStreet')->willReturn(['123 Main']);
+        $address->method('getStreet')->willReturn($street);
         $address->method('getCity')->willReturn('Santa Cruz');
         $address->method('getPostcode')->willReturn('95060');
         $address->method('getCountryId')->willReturn('US');

@@ -169,9 +169,8 @@ class CapturedQuoteSubmitTest extends TestCase
         $address->method('getCountryId')->willReturn('US');
 
         $hash = CaptureSnapshot::hashParts(
-            [['id' => '9', 'sku' => 'SKU', 'qty' => '1']],
+            [['sku' => 'SKU', 'qty' => '1']],
             [
-                'street' => ['123 Main'],
                 'city' => 'Santa Cruz',
                 'postcode' => '95060',
                 'country' => 'US',

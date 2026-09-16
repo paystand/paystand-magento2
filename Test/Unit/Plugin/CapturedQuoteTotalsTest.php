@@ -193,9 +193,8 @@ class CapturedQuoteTotalsTest extends TestCase
         $address->method('setShippingDescription')->willReturnSelf();
 
         $stampedHash = CaptureSnapshot::hashParts(
-            [['id' => '9', 'sku' => 'SKU', 'qty' => '1']],
+            [['sku' => 'SKU', 'qty' => '1']],
             [
-                'street' => ['123 Main'],
                 'city' => 'Santa Cruz',
                 'postcode' => '95060',
                 'country' => 'US',
