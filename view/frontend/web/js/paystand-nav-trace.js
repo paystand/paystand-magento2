@@ -9,7 +9,7 @@
 
     var KEY = 'ps_nav_trace';
     var CF_INGEST_URL = 'https://magento-plugin-logs.paystand-core-services.workers.dev/ingest';
-    var PLUGIN_VERSION = '3.7.2';
+    var PLUGIN_VERSION = '3.7.3';
     // Ignore a marker left by an abandoned session rather than reporting an
     // unrelated page as the landing page.
     var MAX_AGE_MS = 15 * 60 * 1000;

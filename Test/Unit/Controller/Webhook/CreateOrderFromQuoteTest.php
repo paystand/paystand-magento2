@@ -3,6 +3,7 @@
 namespace PayStand\PayStandMagento\Test\Unit\Controller\Webhook;
 
 use PayStand\PayStandMagento\Controller\Webhook\Paystand;
+use PayStand\PayStandMagento\Helper\CaptureSnapshot;
 use PayStand\PayStandMagento\Helper\QuoteShipping;
 use PayStand\PayStandMagento\Model\Directpost;
 use PHPUnit\Framework\TestCase;
@@ -45,6 +46,9 @@ class CreateOrderFromQuoteTest extends TestCase
     /** @var OrderRepositoryInterface|MockObject */
     private $orderRepositoryMock;
 
+    /** @var CaptureSnapshot|MockObject */
+    private $captureSnapshotMock;
+
     protected function setUp(): void
     {
         $this->lockManagerMock = $this->getMockBuilder(LockManagerInterface::class)
@@ -66,9 +70,13 @@ class CreateOrderFromQuoteTest extends TestCase
             ->getMock();
 
         $this->set('_logger',          $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass());
+        $this->captureSnapshotMock = $this->getMockBuilder(CaptureSnapshot::class)
+            ->disableOriginalConstructor()
+            ->getMock();
         $this->set('quoteShipping',    $this->getMockBuilder(QuoteShipping::class)
             ->disableOriginalConstructor()
             ->getMock());
+        $this->set('captureSnapshot',  $this->captureSnapshotMock);
         $this->set('lockManager',      $this->lockManagerMock);
         $this->set('cartRepository',   $this->cartRepositoryMock);
         $this->set('cartManagement',   $this->cartManagementMock);
@@ -587,6 +595,23 @@ class CreateOrderFromQuoteTest extends TestCase
         $this->invoke($quote, 'posted', 'pay-webhook-999');
 
         $this->assertSame(['stamp', 'save', 'placeOrder'], $sequence);
+    }
+
+    public function testCaptureSnapshotIsRecordedBeforePlaceOrder(): void
+    {
+        $quote = $this->buildInitialQuote(42);
+        $this->lockManagerMock->method('lock')->willReturn(true);
+
+        $reloaded = $this->buildReloadedQuote([]);
+        $this->cartRepositoryMock->method('get')->willReturn($reloaded);
+        $this->controller->method('findOrder')->willReturn(null);
+        $this->captureSnapshotMock->expects($this->once())->method('ensureStamped')->with($reloaded);
+
+        $this->cartRepositoryMock->method('save')->willReturn(null);
+        $this->cartManagementMock->method('placeOrder')->willReturn(77);
+        $this->orderRepositoryMock->method('get')->willReturn($this->buildOrder(77, 'W000000077'));
+
+        $this->invoke($quote, 'posted', 'pay-webhook-999');
     }
 
     /**

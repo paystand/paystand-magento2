@@ -2,47 +2,61 @@
 
 namespace PayStand\PayStandMagento\Plugin;
 
+use PayStand\PayStandMagento\Helper\CaptureSnapshot;
+use PayStand\PayStandMagento\Helper\QuoteShipping;
 use Psr\Log\LoggerInterface;
 
 /**
- * Stops totals being recollected on a quote Paystand has already captured.
- * Cart price rules are re-adjudicated on every collection, so a rule that stops
- * qualifying after capture would drop a discount the shopper already paid on and
- * leave the order billing higher than the amount taken.
+ * After Paystand captures a quote, Magento must still collectTotals(). Skipping
+ * collection (the 3.7.2 freeze) left placeOrder with no shipping rate after it
+ * reloaded the quote — "The shipping method is missing" — even when the cart
+ * had not changed (PROD-16503 / Rowley quote 4490737).
+ *
+ * This plugin lets Magento collect, then puts back the paid shipping row and
+ * grand total when the cart still matches the capture snapshot.
  */
 class CapturedQuoteTotals
 {
     /** @var LoggerInterface */
     private $logger;
 
-    public function __construct(LoggerInterface $logger)
-    {
+    /** @var QuoteShipping */
+    private $quoteShipping;
+
+    /** @var CaptureSnapshot */
+    private $snapshot;
+
+    public function __construct(
+        LoggerInterface $logger,
+        QuoteShipping $quoteShipping,
+        CaptureSnapshot $snapshot
+    ) {
         $this->logger = $logger;
+        $this->quoteShipping = $quoteShipping;
+        $this->snapshot = $snapshot;
     }
 
     /**
-     * Quote::collectTotals() returns early when the totals-collected flag is set,
-     * so setting it here is all that is needed to skip the collection.
+     * Do not setTotalsCollectedFlag. Quote::collectTotals() must run so Magento
+     * can rebuild rate rows after a reload.
      *
      * @param \Magento\Quote\Model\Quote $subject
      * @return void
      */
     public function beforeCollectTotals($subject)
     {
-        try {
-            if (!$this->isCaptured($subject)) {
-                return;
-            }
+    }
 
-            // Totals were final when the card was charged.
-            $subject->setTotalsCollectedFlag(true);
-            $this->logger->debug(
-                'PAYSTAND-CAPTURED-TOTALS: skipped collection for captured quote ' . $subject->getId()
-                . ' status=' . $subject->getData('paystand_capture_status')
-            );
+    /**
+     * @param \Magento\Quote\Model\Quote $subject
+     * @param \Magento\Quote\Model\Quote $result
+     * @return \Magento\Quote\Model\Quote
+     */
+    public function afterCollectTotals($subject, $result)
+    {
+        try {
+            $this->pinPaidTotals($subject ?: $result);
         } catch (\Throwable $e) {
-            // Fail open: leaving the flag alone collects totals as normal, so a broken
-            // check cannot block checkout. The quote id is logged because that drifts.
             $quoteId = null;
             try {
                 $quoteId = $subject ? $subject->getId() : null;
@@ -50,27 +64,100 @@ class CapturedQuoteTotals
                 $quoteId = null;
             }
             $this->logger->error(
-                'PAYSTAND-CAPTURED-TOTALS: check failed for quote ' . ($quoteId ?: 'unknown')
-                . ', totals will collect normally: ' . $e->getMessage()
+                'PAYSTAND-CAPTURED-TOTALS: pin failed for quote ' . ($quoteId ?: 'unknown')
+                . ', Magento totals left in place: ' . $e->getMessage()
             );
         }
+
+        return $result;
     }
 
     /**
-     * Frozen only for a confirmed capture. The payment id alone is a broader
-     * signal — it locks the widget against any reported payment, completed or
-     * not — so freezing on it would strand a cart whose payment never landed.
-     *
-     * @param \Magento\Quote\Model\Quote $subject
-     * @return bool
+     * @param \Magento\Quote\Model\Quote $quote
+     * @return void
      */
-    private function isCaptured($subject)
+    private function pinPaidTotals($quote)
     {
-        if (!$subject) {
-            return false;
+        if (!$quote || !$this->snapshot->isCaptured($quote)) {
+            return;
         }
 
-        return !empty($subject->getData('paystand_payment_id'))
-            && !empty($subject->getData('paystand_capture_status'));
+        $payload = $this->snapshot->read($quote);
+        if (!$payload) {
+            return;
+        }
+
+        if (!$this->snapshot->matches($quote, $payload)) {
+            $this->logger->warning(
+                'PAYSTAND-CAPTURED-TOTALS: cart changed after capture, leaving Magento totals on quote '
+                . $quote->getId()
+            );
+            return;
+        }
+
+        $shipping = isset($payload['shipping']) && is_array($payload['shipping'])
+            ? $payload['shipping']
+            : null;
+        if ($shipping) {
+            $this->quoteShipping->restore($quote, $shipping, 'captured-collect');
+            $this->pinShippingAmounts($quote, $shipping);
+        }
+
+        if (!isset($payload['grand_total']) || $payload['grand_total'] === '') {
+            return;
+        }
+
+        $grandTotal = (float)$payload['grand_total'];
+        $baseGrandTotal = isset($payload['base_grand_total']) && $payload['base_grand_total'] !== ''
+            ? (float)$payload['base_grand_total']
+            : $grandTotal;
+
+        $quote->setGrandTotal($grandTotal);
+        $quote->setBaseGrandTotal($baseGrandTotal);
+
+        $address = $quote->isVirtual() ? $quote->getBillingAddress() : $quote->getShippingAddress();
+        if ($address) {
+            $address->setGrandTotal($grandTotal);
+            $address->setBaseGrandTotal($baseGrandTotal);
+            if (array_key_exists('discount_amount', $payload)) {
+                $address->setDiscountAmount($payload['discount_amount']);
+            }
+        }
+
+        $this->logger->debug(
+            'PAYSTAND-CAPTURED-TOTALS: pinned paid totals for quote ' . $quote->getId()
+            . ' grand_total=' . $grandTotal
+        );
+    }
+
+    /**
+     * restore() only writes amounts when the method or rate row was missing.
+     * Pin them whenever the cart still matches, so a live re-quote cannot
+     * replace the shipping the shopper already paid.
+     *
+     * @param \Magento\Quote\Model\Quote $quote
+     * @param array<string, mixed> $shipping
+     * @return void
+     */
+    private function pinShippingAmounts($quote, array $shipping)
+    {
+        if ($quote->isVirtual() || empty($shipping['method'])) {
+            return;
+        }
+
+        $address = $quote->getShippingAddress();
+        if (!$address) {
+            return;
+        }
+
+        if (array_key_exists('amount', $shipping)) {
+            $address->setShippingAmount($shipping['amount']);
+        }
+        if (array_key_exists('baseAmount', $shipping)) {
+            $address->setBaseShippingAmount($shipping['baseAmount']);
+        }
+        if (!empty($shipping['description'])) {
+            $address->setShippingDescription($shipping['description']);
+        }
     }
 }

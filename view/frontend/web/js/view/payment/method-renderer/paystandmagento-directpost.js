@@ -48,7 +48,7 @@ define(
                     customer_id:     CF_CUSTOMER_ID,
                     publishable_key: CF_PUBLISHABLE_KEY,
                     event_type:      eventType,
-                    plugin_version:  '3.7.2',
+                    plugin_version:  '3.7.3',
                     quote_id:        quoteId  || '',
                     payment_id:      paymentId || '',
                     error_message:   message  || '',
@@ -636,8 +636,8 @@ define(
                     // Recorded on the quote so the re-charge guard can detect an
                     // already-paid cart even if placeOrder fails to create the order.
                     paymentId: pid,
-                    // Gates the totals freeze: only a confirmed capture stops the
-                    // quote recollecting and re-adjudicating its cart price rules.
+                    // Gates the capture snapshot: only a confirmed capture pins
+                    // paid totals after Magento collects on placeOrder.
                     paymentStatus: data.status
                 };
 
