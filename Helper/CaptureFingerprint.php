@@ -17,9 +17,39 @@ class CaptureFingerprint
     /** @var LoggerInterface */
     private $logger;
 
+    /** @var bool|null Whether the quote table can carry a fingerprint, per request. */
+    private $columnAvailable = null;
+
     public function __construct(LoggerInterface $logger)
     {
         $this->logger = $logger;
+    }
+
+    /**
+     * Whether the schema patch has run. Without the column no quote can carry a
+     * fingerprint, so every capture would look changed and callers must not read
+     * a missing stamp as a changed cart.
+     *
+     * @param \Magento\Quote\Model\Quote $quote
+     * @return bool
+     */
+    public function isAvailable($quote): bool
+    {
+        if ($this->columnAvailable !== null) {
+            return $this->columnAvailable;
+        }
+
+        try {
+            $resource = $quote->getResource();
+            $this->columnAvailable = (bool)$resource->getConnection()
+                ->tableColumnExists($resource->getMainTable(), self::QUOTE_FIELD);
+        } catch (\Throwable $e) {
+            // Cannot tell, so report unavailable and let the caller keep the
+            // behaviour it had before the fingerprint existed.
+            $this->columnAvailable = false;
+        }
+
+        return $this->columnAvailable;
     }
 
     /**
@@ -112,9 +142,11 @@ class CaptureFingerprint
             return '';
         }
 
+        // Region is left out: Magento can resolve a region_id onto an address that
+        // only had region text, which would read as a shopper change it is not.
+        // Country, postcode and city already move whenever a destination does.
         $parts = [
             (string)$address->getCountryId(),
-            (string)($address->getRegionId() ?: $address->getRegion()),
             (string)$address->getPostcode(),
             (string)$address->getCity(),
         ];

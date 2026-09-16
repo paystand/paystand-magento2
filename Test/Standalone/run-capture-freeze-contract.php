@@ -245,6 +245,23 @@ namespace {
     $legacy = captureFreezeQuote(['SKU-1' => 2.0]);
     expectCaptureFreeze(!$helper->matchesCapture($legacy), 'Unstamped capture must not hold a freeze');
 
+    // Magento can resolve a region_id onto an address that only carried region text.
+    // The shopper changed nothing, so the fingerprint must not move.
+    $textRegion = captureFreezeQuote(['SKU-1' => 2.0], ['US', 'California', '95060', 'Santa Cruz']);
+    $idRegion = captureFreezeQuote(['SKU-1' => 2.0], ['US', '12', '95060', 'Santa Cruz']);
+    expectCaptureFreeze($helper->forQuote($textRegion) === $helper->forQuote($idRegion),
+        'A region normalised by Magento must not release the freeze');
+
+    // A quote whose table has no fingerprint column cannot be told apart from a
+    // changed cart, so the caller is told the column is missing instead.
+    $noResource = new class {
+        public function getResource()
+        {
+            throw new \Error('no such column');
+        }
+    };
+    expectCaptureFreeze(!$helper->isAvailable($noResource), 'A missing column must report unavailable');
+
     // Stamping runs inside the capture write, so its failure must not stop a capture
     // from being recorded.
     $broken = new class {
@@ -271,6 +288,114 @@ namespace {
         && strpos($plugin, "setData('paystand_capture_status'") === false,
         'Plugin must never clear the capture markers');
 
+    // The plugin itself is exercised below rather than grepped: the reporting bound
+    // and the missing-column fallback are behaviour, and a source check passes even
+    // when the behaviour is broken.
+    require_once $root . '/Plugin/CapturedQuoteTotals.php';
+
+    /** Answers the two questions the plugin asks, without a database. */
+    $freezeHelper = static function (bool $matches, bool $available) {
+        return new class (new \Psr\Log\CaptureFreezeNullLogger(), $matches, $available)
+            extends CaptureFingerprint {
+            private $matches;
+            private $available;
+
+            public function __construct($logger, $matches, $available)
+            {
+                parent::__construct($logger);
+                $this->matches = $matches;
+                $this->available = $available;
+            }
+
+            public function isAvailable($quote): bool
+            {
+                return $this->available;
+            }
+
+            public function matchesCapture($quote): bool
+            {
+                return $this->matches;
+            }
+        };
+    };
+
+    /** Records the release instead of shipping it, and counts flag writes. */
+    $freezePlugin = static function ($fingerprint) {
+        return new class (new \Psr\Log\CaptureFreezeNullLogger(), $fingerprint)
+            extends \PayStand\PayStandMagento\Plugin\CapturedQuoteTotals {
+            /** @var int */
+            public $shipped = 0;
+
+            protected function shipReleaseEvent($quoteId, $paymentId)
+            {
+                $this->shipped++;
+            }
+        };
+    };
+
+    $capturedQuote = static function (int $id = 4267713) {
+        return new class ($id) {
+            public $frozen = 0;
+            private $id;
+
+            public function __construct($id)
+            {
+                $this->id = $id;
+            }
+
+            public function getId()
+            {
+                return $this->id;
+            }
+
+            public function getData($key)
+            {
+                $map = [
+                    'paystand_payment_id'     => 'nlvsnvr0ska9i7ugvoab9917',
+                    'paystand_capture_status' => 'posted',
+                ];
+                return $map[$key] ?? null;
+            }
+
+            public function setTotalsCollectedFlag($flag)
+            {
+                $this->frozen++;
+                return $this;
+            }
+        };
+    };
+
+    // collectTotals runs several times per request and QuoteShipping clears the flag
+    // to force more. The release event blocks, so it must be reported once only.
+    $released = $freezePlugin($freezeHelper(false, true));
+    $changedQuote = $capturedQuote();
+    $released->beforeCollectTotals($changedQuote);
+    $released->beforeCollectTotals($changedQuote);
+    $released->beforeCollectTotals($changedQuote);
+    expectCaptureFreeze($released->shipped === 1,
+        'A released freeze must report once per request, got ' . $released->shipped);
+    expectCaptureFreeze($changedQuote->frozen === 0, 'A changed cart must never be frozen');
+
+    // Two carts in one request are two orphaned captures, so each is still reported.
+    $released->beforeCollectTotals($capturedQuote(998877));
+    expectCaptureFreeze($released->shipped === 2, 'Each quote must be reported on its own');
+
+    // Files deployed without setup:upgrade leave no column, so no quote can carry a
+    // stamp and every capture would read as changed. Holding the freeze keeps the
+    // behaviour that protected the discount before the fingerprint existed.
+    $noColumn = $freezePlugin($freezeHelper(false, false));
+    $legacyQuote = $capturedQuote();
+    $noColumn->beforeCollectTotals($legacyQuote);
+    expectCaptureFreeze($legacyQuote->frozen === 1, 'A missing column must hold the freeze');
+    expectCaptureFreeze($noColumn->shipped === 0, 'Holding that freeze is not a release');
+
+    // The unchanged cart the freeze exists for.
+    $held = $freezePlugin($freezeHelper(true, true));
+    $sameQuote = $capturedQuote();
+    $held->beforeCollectTotals($sameQuote);
+    expectCaptureFreeze($sameQuote->frozen === 1, 'An unchanged cart must stay frozen');
+    expectCaptureFreeze($held->shipped === 0, 'An unchanged cart is not a release');
+
     // Both writers of the markers must stamp the cart alongside them, or the capture
     // they record can never be matched to a cart again.
     foreach (['Controller/Checkout/SavePaymentData.php', 'Controller/webhook/PayStand.php'] as $writer) {
@@ -287,6 +412,9 @@ namespace {
         'unstampedCaptureCollects' => true,
         'markersNeverCleared' => true,
         'bothWritersStamp' => true,
+        'releaseReportedOnce' => true,
+        'missingColumnHoldsFreeze' => true,
+        'regionNormalisationIgnored' => true,
         'remoteWrites' => 0
     ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL;
 }

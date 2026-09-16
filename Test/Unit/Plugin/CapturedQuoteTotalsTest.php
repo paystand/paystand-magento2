@@ -30,13 +30,14 @@ class CapturedQuoteTotalsTest extends TestCase
      * The fingerprint check is stubbed: whether a quote still holds the cart it was
      * paid for is the helper's business, tested in CaptureFingerprintTest.
      */
-    private function pluginWithMatch(bool $matches): CapturedQuoteTotals
+    private function pluginWithMatch(bool $matches, bool $available = true): CapturedQuoteTotals
     {
         $fingerprint = $this->getMockBuilder(CaptureFingerprint::class)
             ->disableOriginalConstructor()
-            ->onlyMethods(['matchesCapture'])
+            ->onlyMethods(['matchesCapture', 'isAvailable'])
             ->getMock();
         $fingerprint->method('matchesCapture')->willReturn($matches);
+        $fingerprint->method('isAvailable')->willReturn($available);
 
         // Anonymous subclass: the release is observed, never shipped.
         return new class (
@@ -57,14 +58,14 @@ class CapturedQuoteTotalsTest extends TestCase
      * @param string|null $paymentId
      * @param string|null $captureStatus
      */
-    private function quoteWith($paymentId, $captureStatus): Quote
+    private function quoteWith($paymentId, $captureStatus, int $quoteId = 4267713): Quote
     {
         $quote = $this->getMockBuilder(Quote::class)
             ->disableOriginalConstructor()
             ->onlyMethods(['getData', 'getId'])
             ->addMethods(['setTotalsCollectedFlag'])
             ->getMock();
-        $quote->method('getId')->willReturn(4267713);
+        $quote->method('getId')->willReturn($quoteId);
         $quote->method('getData')->willReturnMap([
             ['paystand_payment_id', null, $paymentId],
             ['paystand_capture_status', null, $captureStatus],
@@ -188,6 +189,63 @@ class CapturedQuoteTotalsTest extends TestCase
         $quote = $this->quoteWith(null, null);
 
         $plugin->beforeCollectTotals($quote);
+
+        $this->assertSame([], $plugin->shipped);
+    }
+
+    /**
+     * The release event is a blocking call. collectTotals() runs several times in a
+     * request and QuoteShipping clears the flag to force more, so reporting every
+     * one would put seconds of blocking calls in checkout's path.
+     */
+    public function testReleaseIsReportedOncePerRequest(): void
+    {
+        $plugin = $this->pluginWithMatch(false);
+        $quote = $this->quoteWith('nlvsnvr0ska9i7ugvoab9917', 'posted');
+
+        $plugin->beforeCollectTotals($quote);
+        $plugin->beforeCollectTotals($quote);
+        $plugin->beforeCollectTotals($quote);
+
+        $this->assertCount(1, $plugin->shipped, 'A released freeze must report once, not per collection');
+    }
+
+    /**
+     * Two carts in one request are two orphaned captures, so each is still reported.
+     */
+    public function testEachQuoteIsReportedOnItsOwn(): void
+    {
+        $plugin = $this->pluginWithMatch(false);
+
+        $plugin->beforeCollectTotals($this->quoteWith('pay-a', 'posted'));
+        $plugin->beforeCollectTotals($this->quoteWith('pay-b', 'posted', 998877));
+
+        $this->assertCount(2, $plugin->shipped);
+    }
+
+    /**
+     * The deployment hazard: files deployed without setup:upgrade leave no column, so
+     * no quote can carry a stamp and every capture would read as changed. That would
+     * drop the discount protection across the whole site, so the freeze has to hold.
+     */
+    public function testMissingColumnHoldsTheFreeze(): void
+    {
+        $plugin = $this->pluginWithMatch(false, false);
+        $quote = $this->quoteWith('nlvsnvr0ska9i7ugvoab9917', 'posted');
+
+        $quote->expects($this->once())->method('setTotalsCollectedFlag')->with(true);
+
+        $plugin->beforeCollectTotals($quote);
+    }
+
+    /**
+     * Holding that freeze is not an orphaned capture, so it must not be reported.
+     */
+    public function testMissingColumnIsNotReportedAsARelease(): void
+    {
+        $plugin = $this->pluginWithMatch(false, false);
+
+        $plugin->beforeCollectTotals($this->quoteWith('nlvsnvr0ska9i7ugvoab9917', 'posted'));
 
         $this->assertSame([], $plugin->shipped);
     }

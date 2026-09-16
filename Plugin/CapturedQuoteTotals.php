@@ -20,6 +20,12 @@ class CapturedQuoteTotals
     /** @var CaptureFingerprint */
     private $fingerprint;
 
+    /** @var array<string, bool> Quote ids whose release has been reported this request. */
+    private $reported = [];
+
+    /** @var bool Whether the missing-column warning has been logged this request. */
+    private $schemaWarned = false;
+
     public function __construct(LoggerInterface $logger, CaptureFingerprint $fingerprint)
     {
         $this->logger = $logger;
@@ -37,6 +43,15 @@ class CapturedQuoteTotals
     {
         try {
             if (!$this->isCaptured($subject)) {
+                return;
+            }
+
+            // No column means no quote can carry a fingerprint, so every capture
+            // would read as changed. Hold the freeze as it was before the
+            // fingerprint existed rather than drop the discount protection.
+            if (!$this->fingerprint->isAvailable($subject)) {
+                $this->warnSchemaMissing($subject);
+                $subject->setTotalsCollectedFlag(true);
                 return;
             }
 
@@ -99,6 +114,15 @@ class CapturedQuoteTotals
     private function releaseFreeze($subject)
     {
         $quoteId = (string)$subject->getId();
+
+        // collectTotals() runs several times in a request, and QuoteShipping clears
+        // the flag to force more of them. Reporting each one would put a blocking
+        // log call in checkout's path repeatedly, so report the first only.
+        if (isset($this->reported[$quoteId])) {
+            return;
+        }
+        $this->reported[$quoteId] = true;
+
         $paymentId = (string)$subject->getData('paystand_payment_id');
 
         $this->logger->warning(
@@ -107,6 +131,27 @@ class CapturedQuoteTotals
         );
 
         $this->shipReleaseEvent($quoteId, $paymentId);
+    }
+
+    /**
+     * Says once that the schema patch has not run, so a merchant who deployed files
+     * without setup:upgrade can see why captured carts still stick.
+     *
+     * @param \Magento\Quote\Model\Quote $subject
+     * @return void
+     */
+    private function warnSchemaMissing($subject)
+    {
+        if ($this->schemaWarned) {
+            return;
+        }
+        $this->schemaWarned = true;
+
+        $this->logger->warning(
+            'PAYSTAND-CAPTURED-TOTALS: ' . CaptureFingerprint::QUOTE_FIELD
+            . ' column is missing, run setup:upgrade. Totals stay frozen for every'
+            . ' captured quote until it exists, quote ' . $subject->getId()
+        );
     }
 
     /**
