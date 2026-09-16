@@ -104,14 +104,29 @@ class CaptureSnapshot
 
     /**
      * @param mixed $quote Magento quote
+     * @param array<string, mixed>|null $paid Paid totals copied before recollect
      */
-    public function stamp($quote): void
+    public function stamp($quote, array $paid = null): void
     {
         if (!$quote) {
             return;
         }
 
-        $shipping = $this->quoteShipping->snapshot($quote);
+        $paid = $paid ?? [];
+        $shipping = array_key_exists('shipping', $paid)
+            ? $paid['shipping']
+            : $this->quoteShipping->snapshot($quote);
+
+        if ($shipping
+            && !empty($shipping['method'])
+            && empty($shipping['rate'])
+        ) {
+            $live = $this->quoteShipping->snapshot($quote);
+            if (is_array($live) && !empty($live['rate'])) {
+                $shipping['rate'] = $live['rate'];
+            }
+        }
+
         if ($shipping
             && !empty($shipping['method'])
             && empty($shipping['rate'])
@@ -125,13 +140,35 @@ class CaptureSnapshot
 
         $payload = [
             'hash' => $this->hash($quote),
-            'grand_total' => (string)$quote->getGrandTotal(),
-            'base_grand_total' => (string)$quote->getBaseGrandTotal(),
-            'discount_amount' => $this->discountAmount($quote),
+            'grand_total' => array_key_exists('grand_total', $paid)
+                ? (string)$paid['grand_total']
+                : (string)$quote->getGrandTotal(),
+            'base_grand_total' => array_key_exists('base_grand_total', $paid)
+                ? (string)$paid['base_grand_total']
+                : (string)$quote->getBaseGrandTotal(),
+            'discount_amount' => array_key_exists('discount_amount', $paid)
+                ? (string)$paid['discount_amount']
+                : $this->discountAmount($quote),
             'shipping' => $shipping,
         ];
 
         $quote->setData(self::QUOTE_FIELD, json_encode($payload, JSON_UNESCAPED_SLASHES));
+    }
+
+    /**
+     * Copy paid money and shipping before Magento recollects.
+     *
+     * @param mixed $quote Magento quote
+     * @return array{grand_total:string,base_grand_total:string,discount_amount:string,shipping:array|null}
+     */
+    public function paidBag($quote): array
+    {
+        return [
+            'grand_total' => (string)$quote->getGrandTotal(),
+            'base_grand_total' => (string)$quote->getBaseGrandTotal(),
+            'discount_amount' => $this->discountAmount($quote),
+            'shipping' => $this->quoteShipping->snapshot($quote),
+        ];
     }
 
     /**

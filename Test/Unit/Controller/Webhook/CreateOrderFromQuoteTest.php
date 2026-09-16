@@ -49,6 +49,9 @@ class CreateOrderFromQuoteTest extends TestCase
     /** @var CaptureSnapshot|MockObject */
     private $captureSnapshotMock;
 
+    /** @var QuoteShipping|MockObject */
+    private $quoteShippingMock;
+
     protected function setUp(): void
     {
         $this->lockManagerMock = $this->getMockBuilder(LockManagerInterface::class)
@@ -73,9 +76,10 @@ class CreateOrderFromQuoteTest extends TestCase
         $this->captureSnapshotMock = $this->getMockBuilder(CaptureSnapshot::class)
             ->disableOriginalConstructor()
             ->getMock();
-        $this->set('quoteShipping',    $this->getMockBuilder(QuoteShipping::class)
+        $this->quoteShippingMock = $this->getMockBuilder(QuoteShipping::class)
             ->disableOriginalConstructor()
-            ->getMock());
+            ->getMock();
+        $this->set('quoteShipping',    $this->quoteShippingMock);
         $this->set('captureSnapshot',  $this->captureSnapshotMock);
         $this->set('lockManager',      $this->lockManagerMock);
         $this->set('cartRepository',   $this->cartRepositoryMock);
@@ -605,13 +609,62 @@ class CreateOrderFromQuoteTest extends TestCase
         $reloaded = $this->buildReloadedQuote([]);
         $this->cartRepositoryMock->method('get')->willReturn($reloaded);
         $this->controller->method('findOrder')->willReturn(null);
-        $this->captureSnapshotMock->expects($this->once())->method('ensureStamped')->with($reloaded);
+        $this->captureSnapshotMock->expects($this->once())->method('ensureStamped')
+            ->with($reloaded, $this->anything());
 
         $this->cartRepositoryMock->method('save')->willReturn(null);
         $this->cartManagementMock->method('placeOrder')->willReturn(77);
         $this->orderRepositoryMock->method('get')->willReturn($this->buildOrder(77, 'W000000077'));
 
         $this->invoke($quote, 'posted', 'pay-webhook-999');
+    }
+
+    public function testRecollectThenStampThenSaveThenPlaceOrder(): void
+    {
+        $quote = $this->buildInitialQuote(42);
+        $this->lockManagerMock->method('lock')->willReturn(true);
+        $reloaded = $this->buildReloadedQuote([]);
+        $this->cartRepositoryMock->method('get')->willReturn($reloaded);
+        $this->controller->method('findOrder')->willReturn(null);
+
+        $this->captureSnapshotMock->method('paidBag')->willReturn([
+            'grand_total' => '343.83',
+            'base_grand_total' => '343.83',
+            'discount_amount' => '-14.31',
+            'shipping' => [
+                'method' => 'fedex_FEDEX_GROUND',
+                'rate' => null,
+            ],
+        ]);
+
+        $sequence = [];
+        $this->quoteShippingMock->expects($this->once())->method('recollectPreservingShipping')
+            ->willReturnCallback(function () use (&$sequence) {
+                $sequence[] = 'recollect';
+                return ['before' => '', 'restored' => false, 'retryFailed' => false];
+            });
+        $this->captureSnapshotMock->expects($this->once())->method('ensureStamped')
+            ->with(
+                $reloaded,
+                $this->callback(function ($paid) use (&$sequence) {
+                    $sequence[] = 'stamp';
+                    return is_array($paid)
+                        && array_key_exists('grand_total', $paid)
+                        && array_key_exists('shipping', $paid);
+                })
+            );
+        $this->cartRepositoryMock->method('save')->willReturnCallback(function () use (&$sequence) {
+            $sequence[] = 'save';
+        });
+        $this->cartManagementMock->method('placeOrder')->willReturnCallback(function () use (&$sequence) {
+            $sequence[] = 'placeOrder';
+            return 77;
+        });
+        $this->orderRepositoryMock->method('get')->willReturn($this->buildOrder(77, 'W000000077'));
+
+        $this->invoke($quote, 'posted', 'pay-webhook-999');
+
+        $this->assertSame(['recollect', 'stamp', 'save', 'placeOrder'], $sequence);
     }
 
     /**

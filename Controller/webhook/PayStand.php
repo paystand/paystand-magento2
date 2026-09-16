@@ -1019,7 +1019,6 @@ class Paystand extends \Magento\Framework\App\Action\Action
             } else {
                 $this->preserveCaptureStatus($quote, $quoteId);
             }
-            $this->captureSnapshot->ensureStamped($quote);
 
             try {
                 CloudLogger::ship(CloudLogger::EVENT_QUOTE_SHIPPING_STATE, [
@@ -1031,10 +1030,12 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 // CloudLogger failure — silently ignored to protect payment flow
             }
 
-            // Persist the shipping selection through the guard before placing: placeOrder
-            // reloads the quote and recollects. Saving the restored method + rate row
-            // plus the capture snapshot makes the reloaded quote pin paid totals.
+            // Copy paid money first. Recollect can drop shipping and rewrite
+            // grand_total; the snapshot must keep the captured amount. A restored
+            // rate row can merge in at stamp time.
+            $paid = $this->captureSnapshot->paidBag($quote);
             $this->quoteShipping->recollectPreservingShipping($quote, 'webhook-createorder');
+            $this->captureSnapshot->ensureStamped($quote, $paid);
 
             $this->cartRepository->save($quote);
 

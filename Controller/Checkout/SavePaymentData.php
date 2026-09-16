@@ -270,7 +270,6 @@ class SavePaymentData extends Action
                 }
                 $this->preserveCaptureStatus($quote, $realQuoteId);
             }
-            $this->captureSnapshot->ensureStamped($quote);
 
             // Runs between capture and placeOrder, bracketing the window where a
             // quote's shipping rate has been seen to disappear.
@@ -284,11 +283,11 @@ class SavePaymentData extends Action
                 // CloudLogger failure — silently ignored to protect payment flow
             }
 
-            // Saving recollects totals, which can clear the shipping method + rate on
-            // this paid quote and later fail placeOrder with "shipping method is
-            // missing". Recollect through the guard so the persisted quote keeps the
-            // selection the shopper paid for.
+            // Copy paid money first. Recollect can drop shipping and rewrite
+            // grand_total; the snapshot must keep the captured amount.
+            $paid = $this->captureSnapshot->paidBag($quote);
             $this->quoteShipping->recollectPreservingShipping($quote, 'savepaymentdata');
+            $this->captureSnapshot->ensureStamped($quote, $paid);
 
             $this->cartRepository->save($quote);
 
