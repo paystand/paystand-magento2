@@ -32,7 +32,10 @@ class CapturedQuoteTotalsTest extends TestCase
             ->disableOriginalConstructor()
             ->onlyMethods(['snapshot', 'restore'])
             ->getMock();
-        $this->snapshot = new CaptureSnapshot($this->quoteShipping);
+        $this->snapshot = new CaptureSnapshot(
+            $this->quoteShipping,
+            $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass()
+        );
         $this->plugin = new CapturedQuoteTotals(
             $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass(),
             $this->quoteShipping,

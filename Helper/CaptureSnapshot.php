@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace PayStand\PayStandMagento\Helper;
 
+use Psr\Log\LoggerInterface;
+
 /**
  * Records the cart Paystand captured and decides whether a later collect still
  * describes that cart.
@@ -21,9 +23,13 @@ class CaptureSnapshot
     /** @var QuoteShipping */
     private $quoteShipping;
 
-    public function __construct(QuoteShipping $quoteShipping)
+    /** @var LoggerInterface */
+    private $logger;
+
+    public function __construct(QuoteShipping $quoteShipping, LoggerInterface $logger)
     {
         $this->quoteShipping = $quoteShipping;
+        $this->logger = $logger;
     }
 
     /**
@@ -121,17 +127,27 @@ class CaptureSnapshot
      * Later saves must not overwrite it: that hash is the cart the shopper paid for.
      *
      * @param mixed $quote Magento quote
+     * @param array<string, mixed>|null $paid Paid totals copied before recollect
      */
-    public function ensureStamped($quote): void
+    public function ensureStamped($quote, array $paid = null): void
     {
         try {
             if (!$this->isCaptured($quote) || $this->read($quote)) {
                 return;
             }
 
-            $this->stamp($quote);
+            $this->stamp($quote, $paid);
         } catch (\Throwable $e) {
-            // A failed stamp must not block persisting the capture markers.
+            $quoteId = 'unknown';
+            try {
+                $quoteId = $quote ? (string)$quote->getId() : 'unknown';
+            } catch (\Throwable $ignored) {
+                $quoteId = 'unknown';
+            }
+            $this->logger->error(
+                'PAYSTAND-CAPTURE-SNAPSHOT: stamp failed for quote ' . $quoteId
+                . ': ' . $e->getMessage()
+            );
         }
     }
 

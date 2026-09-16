@@ -8,6 +8,7 @@ use PHPUnit\Framework\TestCase;
 use Magento\Quote\Model\Quote;
 use Magento\Quote\Model\Quote\Address;
 use Magento\Quote\Model\Quote\Item;
+use Psr\Log\LoggerInterface;
 
 /**
  * Unit tests for Helper\CaptureSnapshot — the paid-cart fingerprint persisted on
@@ -157,7 +158,10 @@ class CaptureSnapshotTest extends TestCase
             return $quote;
         });
 
-        $snapshot = new CaptureSnapshot($quoteShipping);
+        $snapshot = new CaptureSnapshot(
+            $quoteShipping,
+            $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass()
+        );
         $snapshot->stamp($quote);
 
         $this->assertNotNull($written);
@@ -225,7 +229,10 @@ class CaptureSnapshotTest extends TestCase
             return $quote;
         });
 
-        $snapshot = new CaptureSnapshot($quoteShipping);
+        $snapshot = new CaptureSnapshot(
+            $quoteShipping,
+            $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass()
+        );
         $snapshot->ensureStamped($quote);
         $first = $stored;
         $snapshot->ensureStamped($quote);
@@ -242,10 +249,32 @@ class CaptureSnapshotTest extends TestCase
         $this->makeSnapshot()->ensureStamped($quote);
     }
 
+    public function testEnsureStampedLogsWhenStampThrows(): void
+    {
+        $logger = $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass();
+        $logger->expects($this->once())->method('error');
+
+        $quoteShipping = $this->getMockBuilder(QuoteShipping::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['snapshot'])
+            ->getMock();
+        $quoteShipping->method('snapshot')->willThrowException(new \RuntimeException('boom'));
+
+        $quote = $this->quoteWith('pay1', 'posted');
+        $quote->method('getAllVisibleItems')->willReturn([]);
+        $quote->method('isVirtual')->willReturn(true);
+        $quote->method('getGrandTotal')->willReturn(10);
+        $quote->method('getBaseGrandTotal')->willReturn(10);
+        $quote->method('getBillingAddress')->willReturn(null);
+
+        (new CaptureSnapshot($quoteShipping, $logger))->ensureStamped($quote);
+    }
+
     private function makeSnapshot(): CaptureSnapshot
     {
         return new CaptureSnapshot(
-            $this->getMockBuilder(QuoteShipping::class)->disableOriginalConstructor()->getMock()
+            $this->getMockBuilder(QuoteShipping::class)->disableOriginalConstructor()->getMock(),
+            $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass()
         );
     }
 

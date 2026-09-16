@@ -101,7 +101,8 @@ class CapturedQuoteSubmitTest extends TestCase
         $plugin = new CapturedQuoteSubmit(
             $logger,
             new CaptureSnapshot(
-                $this->getMockBuilder(QuoteShipping::class)->disableOriginalConstructor()->getMock()
+                $this->getMockBuilder(QuoteShipping::class)->disableOriginalConstructor()->getMock(),
+                $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass()
             )
         );
         $quote = $this->capturedQuote('2');
@@ -137,7 +138,8 @@ class CapturedQuoteSubmitTest extends TestCase
         return new CapturedQuoteSubmit(
             $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass(),
             new CaptureSnapshot(
-                $this->getMockBuilder(QuoteShipping::class)->disableOriginalConstructor()->getMock()
+                $this->getMockBuilder(QuoteShipping::class)->disableOriginalConstructor()->getMock(),
+                $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass()
             )
         );
     }
