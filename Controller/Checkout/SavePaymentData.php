@@ -481,7 +481,7 @@ class SavePaymentData extends Action
 
             if (!empty($persisted)) {
                 $quote->setData('paystand_capture_status', $persisted);
-                $this->preserveCaptureFingerprint($quote, $quoteId);
+                $this->captureFingerprint->restore($quote, $quoteId);
                 $this->logger->info('SAVEPAYMENTDATA >>>>>> Kept capture status recorded since load', [
                     'quote_id'       => $quoteId,
                     'capture_status' => $persisted
@@ -491,38 +491,6 @@ class SavePaymentData extends Action
             // A failed read must not break the payment flow; the worst case is the
             // status this request already held being saved as it was loaded.
             $this->logger->error('SAVEPAYMENTDATA >>>>>> Could not re-read capture status: ' . $e->getMessage());
-        }
-    }
-
-    /**
-     * Brings the capture's cart fingerprint back with the status it belongs to. Read
-     * separately so a missing column cannot cost the status its preservation.
-     *
-     * @param \Magento\Quote\Model\Quote $quote
-     * @param int|string $quoteId
-     * @return void
-     */
-    private function preserveCaptureFingerprint($quote, $quoteId)
-    {
-        try {
-            if (!empty($quote->getData(CaptureFingerprint::QUOTE_FIELD))) {
-                return;
-            }
-
-            $resource = $quote->getResource();
-            $connection = $resource->getConnection();
-            $select = $connection->select()
-                ->from($resource->getMainTable(), CaptureFingerprint::QUOTE_FIELD)
-                ->where('entity_id = ?', $quoteId);
-            $persisted = $connection->fetchOne($select);
-
-            if (!empty($persisted)) {
-                $quote->setData(CaptureFingerprint::QUOTE_FIELD, $persisted);
-            }
-        } catch (\Throwable $e) {
-            // Worst case the quote carries no fingerprint, which only lets its totals
-            // collect as Magento normally would.
-            $this->logger->error('SAVEPAYMENTDATA >>>>>> Could not re-read capture fingerprint: ' . $e->getMessage());
         }
     }
 }

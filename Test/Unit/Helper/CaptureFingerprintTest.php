@@ -27,7 +27,8 @@ class CaptureFingerprintTest extends TestCase
 
     /**
      * @param array<string, float> $skuQty  sku => qty
-     * @param array<int, string> $destination country, region, postcode, city
+     * @param array<int, string> $destination country, region, postcode, city.
+     *        Region is carried but never fingerprinted, so the helper must not read it.
      * @param float $price Carried but never fingerprinted
      */
     private function quote(array $skuQty, array $destination = ['US', 'CA', '95060', 'Santa Cruz'], $price = 10.0)
@@ -74,16 +75,6 @@ class CaptureFingerprintTest extends TestCase
             public function getCountryId()
             {
                 return $this->parts[0] ?? '';
-            }
-
-            public function getRegionId()
-            {
-                return $this->parts[1] ?? '';
-            }
-
-            public function getRegion()
-            {
-                return $this->parts[1] ?? '';
             }
 
             public function getPostcode()

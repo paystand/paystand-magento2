@@ -107,6 +107,43 @@ class CaptureFingerprint
     }
 
     /**
+     * Brings a stamp already saved for this quote back onto it, so a quote loaded
+     * without one cannot save a null over it. Read on its own so a missing column
+     * costs the capture status nothing.
+     *
+     * @param \Magento\Quote\Model\Quote $quote
+     * @param int|string $quoteId
+     * @return void
+     */
+    public function restore($quote, $quoteId)
+    {
+        try {
+            if (!empty($quote->getData(self::QUOTE_FIELD))) {
+                return;
+            }
+
+            $resource = $quote->getResource();
+            $connection = $resource->getConnection();
+            $persisted = $connection->fetchOne(
+                $connection->select()
+                    ->from($resource->getMainTable(), self::QUOTE_FIELD)
+                    ->where('entity_id = ?', $quoteId)
+            );
+
+            if (!empty($persisted)) {
+                $quote->setData(self::QUOTE_FIELD, $persisted);
+            }
+        } catch (\Throwable $e) {
+            // Worst case the quote carries no fingerprint, which only lets its totals
+            // collect as Magento normally would.
+            $this->logger->error(
+                'PAYSTAND-CAPTURE-FINGERPRINT: could not re-read the stamp for quote '
+                . $quoteId . ': ' . $e->getMessage()
+            );
+        }
+    }
+
+    /**
      * True only when the quote still holds the cart its capture was taken on.
      * A quote with no stamp cannot prove that, so it does not match.
      *

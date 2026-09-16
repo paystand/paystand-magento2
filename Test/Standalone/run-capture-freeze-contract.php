@@ -89,7 +89,7 @@ namespace {
      * Stand-ins for the quote parts the fingerprint reads. The helper takes no Magento
      * types, so the contract exercises the real class rather than asserting on source.
      */
-    function captureFreezeQuote(array $skuQty, array $destination = ['US', 'CA', '95060', 'Santa Cruz'], float $price = 10.0)
+    function captureFreezeQuote(array $skuQty, array $destination = ['US', 'CA', '95060', 'Santa Cruz'], float $price = 10.0, int $quoteId = 4267713)
     {
         $items = [];
         foreach ($skuQty as $sku => $qty) {
@@ -156,15 +156,24 @@ namespace {
             }
         };
 
-        return new class ($items, $address) {
+        return new class ($items, $address, $quoteId) {
             public $data = [];
+            public $frozen = 0;
             private $items;
             private $address;
+            private $quoteId;
 
-            public function __construct($items, $address)
+            public function __construct($items, $address, $quoteId)
             {
                 $this->items = $items;
                 $this->address = $address;
+                $this->quoteId = $quoteId;
+            }
+
+            public function setTotalsCollectedFlag($flag)
+            {
+                $this->frozen++;
+                return $this;
             }
 
             public function getAllVisibleItems()
@@ -189,7 +198,7 @@ namespace {
 
             public function getId()
             {
-                return 4267713;
+                return $this->quoteId;
             }
 
             public function getData($key)
@@ -333,36 +342,12 @@ namespace {
         };
     };
 
+    /** The same cart stub, carrying the markers that make it a capture. */
     $capturedQuote = static function (int $id = 4267713) {
-        return new class ($id) {
-            public $frozen = 0;
-            private $id;
-
-            public function __construct($id)
-            {
-                $this->id = $id;
-            }
-
-            public function getId()
-            {
-                return $this->id;
-            }
-
-            public function getData($key)
-            {
-                $map = [
-                    'paystand_payment_id'     => 'nlvsnvr0ska9i7ugvoab9917',
-                    'paystand_capture_status' => 'posted',
-                ];
-                return $map[$key] ?? null;
-            }
-
-            public function setTotalsCollectedFlag($flag)
-            {
-                $this->frozen++;
-                return $this;
-            }
-        };
+        $quote = captureFreezeQuote(['SKU-1' => 2.0], ['US', 'CA', '95060', 'Santa Cruz'], 10.0, $id);
+        $quote->setData('paystand_payment_id', 'nlvsnvr0ska9i7ugvoab9917');
+        $quote->setData('paystand_capture_status', 'posted');
+        return $quote;
     };
 
     // collectTotals runs several times per request and QuoteShipping clears the flag
