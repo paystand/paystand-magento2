@@ -337,11 +337,15 @@ class Paystand extends \Magento\Framework\App\Action\Action
                     . ' after ' . self::RESCUE_ABANDON_AFTER_HOURS . 'h; cart cannot be placed: ' . $reason
                 );
                 try {
+                    $abandonMessage = 'Paid but unplaceable for >' . self::RESCUE_ABANDON_AFTER_HOURS
+                        . 'h; needs manual resolution. Last error: ' . $reason;
+                    if (str_contains((string)$reason, 'cart changed after payment')) {
+                        $abandonMessage = 'captured_cart_refused: ' . $abandonMessage;
+                    }
                     CloudLogger::ship(CloudLogger::EVENT_RESCUE_ABANDONED, [
                         'quote_id'      => (string)$quote->getId(),
                         'payment_id'    => $json->resource->id ?? '',
-                        'error_message' => 'Paid but unplaceable for >' . self::RESCUE_ABANDON_AFTER_HOURS
-                            . 'h; needs manual resolution. Last error: ' . $reason,
+                        'error_message' => $abandonMessage,
                     ]);
                 } catch (\Throwable $e) {
                     // CloudLogger failure — silently ignored to protect payment flow
@@ -1033,9 +1037,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
             // Copy paid money first. Recollect can drop shipping and rewrite
             // grand_total; the snapshot must keep the captured amount. A restored
             // rate row can merge in at stamp time.
-            $paid = $this->captureSnapshot->paidBag($quote);
-            $this->quoteShipping->recollectPreservingShipping($quote, 'webhook-createorder');
-            $this->captureSnapshot->ensureStamped($quote, $paid);
+            $this->captureSnapshot->copyPaidRecollectAndStamp($quote, 'webhook-createorder');
 
             $this->cartRepository->save($quote);
 
@@ -1078,10 +1080,14 @@ class Paystand extends \Magento\Framework\App\Action\Action
             }
 
             try {
+                $errorMessage = 'Server-side placeOrder failed: ' . $e->getMessage();
+                if (str_contains($e->getMessage(), 'cart changed after payment')) {
+                    $errorMessage = 'captured_cart_refused: ' . $errorMessage;
+                }
                 CloudLogger::ship(CloudLogger::EVENT_PLACEORDER_EXCEPTION, [
                     'quote_id'      => (string)$quoteId,
                     'payment_id'    => $json->resource->id ?? '',
-                    'error_message' => 'Server-side placeOrder failed: ' . $e->getMessage(),
+                    'error_message' => $errorMessage,
                 ]);
             } catch (\Throwable $inner) {
                 // CloudLogger failure — silently ignored

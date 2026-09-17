@@ -11,10 +11,11 @@ use Psr\Log\LoggerInterface;
 /**
  * Schema Patch to add the `paystand_capture_status` column to the `quote` table.
  *
- * Records the Paystand status of a confirmed capture. Totals are frozen only for a
- * quote carrying one, so a payment that never completed leaves the cart free to
- * recollect. Deliberately separate from `paystand_payment_id`, which is broader —
- * it locks the widget against any reported payment, confirmed or not.
+ * Records the Paystand status of a confirmed capture. A quote carrying one is
+ * pinned back to the totals it was charged at after Magento collects, so a
+ * payment that never completed leaves the cart free to reprice. Deliberately
+ * separate from `paystand_payment_id`, which is broader — it locks the widget
+ * against any reported payment, confirmed or not.
  */
 class AddPaystandCaptureStatusColumn implements SchemaPatchInterface
 {

@@ -105,4 +105,22 @@ class SavePaymentDataTest extends TestCase
         $this->assertNotContains('processing', PaymentStatus::CAPTURED_STATUSES);
         $this->assertContains('processing', PaymentStatus::PLACE_ORDER_STATUSES);
     }
+
+    /**
+     * SavePaymentData must stamp through the helper so paidBag, recollect, and
+     * ensureStamped stay in one order. A naive paidBag substring would also
+     * match comments; assert the live call and the three old call sites only.
+     */
+    public function testSavePaymentDataUsesCopyPaidHelper(): void
+    {
+        $source = file_get_contents(__DIR__ . '/../../../../Controller/Checkout/SavePaymentData.php');
+
+        $this->assertStringContainsString(
+            "copyPaidRecollectAndStamp(\$quote, 'savepaymentdata')",
+            $source
+        );
+        $this->assertStringNotContainsString('$this->captureSnapshot->paidBag', $source);
+        $this->assertStringNotContainsString('$this->captureSnapshot->ensureStamped', $source);
+        $this->assertStringNotContainsString('$this->quoteShipping->recollectPreservingShipping', $source);
+    }
 }

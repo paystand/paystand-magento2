@@ -610,8 +610,8 @@ class CreateOrderFromQuoteTest extends TestCase
         $reloaded = $this->buildReloadedQuote([]);
         $this->cartRepositoryMock->method('get')->willReturn($reloaded);
         $this->controller->method('findOrder')->willReturn(null);
-        $this->captureSnapshotMock->expects($this->once())->method('ensureStamped')
-            ->with($reloaded, $this->anything());
+        $this->captureSnapshotMock->expects($this->once())->method('copyPaidRecollectAndStamp')
+            ->with($reloaded, 'webhook-createorder');
 
         $this->cartRepositoryMock->method('save')->willReturn(null);
         $this->cartManagementMock->method('placeOrder')->willReturn(77);
@@ -628,32 +628,12 @@ class CreateOrderFromQuoteTest extends TestCase
         $this->cartRepositoryMock->method('get')->willReturn($reloaded);
         $this->controller->method('findOrder')->willReturn(null);
 
-        $this->captureSnapshotMock->method('paidBag')->willReturn([
-            'grand_total' => '343.83',
-            'base_grand_total' => '343.83',
-            'discount_amount' => '-14.31',
-            'shipping' => [
-                'method' => 'fedex_FEDEX_GROUND',
-                'rate' => null,
-            ],
-        ]);
-
         $sequence = [];
-        $this->quoteShippingMock->expects($this->once())->method('recollectPreservingShipping')
+        $this->captureSnapshotMock->expects($this->once())->method('copyPaidRecollectAndStamp')
+            ->with($reloaded, 'webhook-createorder')
             ->willReturnCallback(function () use (&$sequence) {
-                $sequence[] = 'recollect';
-                return ['before' => '', 'restored' => false, 'retryFailed' => false];
+                $sequence[] = 'stamp';
             });
-        $this->captureSnapshotMock->expects($this->once())->method('ensureStamped')
-            ->with(
-                $reloaded,
-                $this->callback(function ($paid) use (&$sequence) {
-                    $sequence[] = 'stamp';
-                    return is_array($paid)
-                        && array_key_exists('grand_total', $paid)
-                        && array_key_exists('shipping', $paid);
-                })
-            );
         $this->cartRepositoryMock->method('save')->willReturnCallback(function () use (&$sequence) {
             $sequence[] = 'save';
         });
@@ -665,11 +645,11 @@ class CreateOrderFromQuoteTest extends TestCase
 
         $this->invoke($quote, 'posted', 'pay-webhook-999');
 
-        $this->assertSame(['recollect', 'stamp', 'save', 'placeOrder'], $sequence);
+        $this->assertSame(['stamp', 'save', 'placeOrder'], $sequence);
     }
 
     /**
-     * ACH often reaches Magento createOrderFromQuote as processing (quote 4490737).
+     * ACH often reaches Magento createOrderFromQuote as processing.
      * Magento placeOrder still runs. The snapshot must be written on that path
      * or collect-then-pin never engages.
      */
@@ -688,8 +668,8 @@ class CreateOrderFromQuoteTest extends TestCase
         );
         $this->cartRepositoryMock->method('get')->willReturn($reloaded);
         $this->controller->method('findOrder')->willReturn(null);
-        $this->captureSnapshotMock->expects($this->once())->method('ensureStamped')
-            ->with($reloaded, $this->anything());
+        $this->captureSnapshotMock->expects($this->once())->method('copyPaidRecollectAndStamp')
+            ->with($reloaded, 'webhook-createorder');
 
         $order = $this->buildOrder(77, 'W000000077');
         $this->cartManagementMock->method('placeOrder')->willReturn(77);

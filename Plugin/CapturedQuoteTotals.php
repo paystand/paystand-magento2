@@ -1,8 +1,11 @@
 <?php
 
+declare(strict_types=1);
+
 namespace PayStand\PayStandMagento\Plugin;
 
 use PayStand\PayStandMagento\Helper\CaptureSnapshot;
+use PayStand\PayStandMagento\Helper\CloudLogger;
 use PayStand\PayStandMagento\Helper\QuoteShipping;
 use Psr\Log\LoggerInterface;
 
@@ -10,7 +13,7 @@ use Psr\Log\LoggerInterface;
  * After Paystand captures a quote, Magento must still collectTotals(). Skipping
  * collection (the 3.7.2 freeze) left placeOrder with no shipping rate after it
  * reloaded the quote — "The shipping method is missing" — even when the cart
- * had not changed (PROD-16503 / Rowley quote 4490737).
+ * had not changed (PROD-16503).
  *
  * This plugin lets Magento collect, then puts back the paid shipping row and
  * grand total when the cart still matches the capture snapshot. Quotes that
@@ -83,7 +86,7 @@ class CapturedQuoteTotals
     public function afterCollectTotals($subject, $result)
     {
         try {
-            $this->pinPaidTotals($subject ?: $result);
+            $this->pinPaidTotals($subject);
         } catch (\Throwable $e) {
             $quoteId = null;
             try {
@@ -107,6 +110,17 @@ class CapturedQuoteTotals
     private function pinPaidTotals($quote)
     {
         if (!$quote || !$this->snapshot->isCaptured($quote)) {
+            return;
+        }
+
+        // Multishipping splits totals across several addresses and never reaches
+        // QuoteManagement::submit(), so there is no guard behind this. Pinning a
+        // quote-level total onto one of those addresses would half-pin the order.
+        if ($quote->getIsMultiShipping()) {
+            $this->logger->warning(
+                'PAYSTAND-CAPTURED-TOTALS: multishipping quote is not pinned, leaving Magento totals on quote '
+                . $quote->getId()
+            );
             return;
         }
 
@@ -144,6 +158,25 @@ class CapturedQuoteTotals
             ? (float)$payload['base_grand_total']
             : $grandTotal;
 
+        $liveGrand = (float)$quote->getGrandTotal();
+        if (abs($liveGrand - $grandTotal) > 0.005) {
+            $this->logger->warning(
+                'PAYSTAND-CAPTURED-TOTALS: Magento live grand_total drifted from paid copy on quote '
+                . $quote->getId()
+                . ' live=' . $liveGrand
+                . ' paid=' . $grandTotal
+            );
+            try {
+                CloudLogger::ship(CloudLogger::EVENT_CAPTURE_TOTAL_DRIFT, [
+                    'quote_id' => (string)$quote->getId(),
+                    'payment_id' => (string)$quote->getData('paystand_payment_id'),
+                    'error_message' => 'live=' . $liveGrand . ' paid=' . $grandTotal,
+                ]);
+            } catch (\Throwable $e) {
+                // CloudLogger failure — ignored
+            }
+        }
+
         $quote->setGrandTotal($grandTotal);
         $quote->setBaseGrandTotal($baseGrandTotal);
 
@@ -151,8 +184,16 @@ class CapturedQuoteTotals
         if ($address) {
             $address->setGrandTotal($grandTotal);
             $address->setBaseGrandTotal($baseGrandTotal);
-            if (array_key_exists('discount_amount', $payload)) {
-                $address->setDiscountAmount($payload['discount_amount']);
+            if (isset($payload['address']) && is_array($payload['address'])) {
+                // Cast like the grand total above: the snapshot stores money as
+                // strings, and the order must not carry a mix of the two types.
+                foreach (CaptureSnapshot::ADDRESS_MONEY_KEYS as $key) {
+                    if (array_key_exists($key, $payload['address']) && $payload['address'][$key] !== '') {
+                        $address->setData($key, (float)$payload['address'][$key]);
+                    }
+                }
+            } elseif (array_key_exists('discount_amount', $payload) && $payload['discount_amount'] !== '') {
+                $address->setDiscountAmount((float)$payload['discount_amount']);
             }
         }
 

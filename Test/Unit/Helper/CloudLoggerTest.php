@@ -42,6 +42,10 @@ class CloudLoggerTest extends TestCase
         $this->assertNotEmpty(CloudLogger::EVENT_WEBHOOK_ORDER_CREATED);
         $this->assertNotEmpty(CloudLogger::EVENT_PLACEORDER_EXCEPTION);
         $this->assertNotEmpty(CloudLogger::EVENT_SERIALIZATION_ERROR);
+        $this->assertNotEmpty(CloudLogger::EVENT_CAPTURE_TOTAL_DRIFT);
+        $this->assertNotEmpty(CloudLogger::EVENT_CAPTURE_SNAPSHOT_CORRUPT);
+        $this->assertNotEmpty(CloudLogger::EVENT_CAPTURED_CART_REFUSED);
+        $this->assertSame('captured_cart_refused', CloudLogger::EVENT_CAPTURED_CART_REFUSED);
     }
 
     public function testEventTypeConstantsAreUnique(): void
@@ -53,6 +57,9 @@ class CloudLoggerTest extends TestCase
             CloudLogger::EVENT_WEBHOOK_ORDER_CREATED,
             CloudLogger::EVENT_PLACEORDER_EXCEPTION,
             CloudLogger::EVENT_SERIALIZATION_ERROR,
+            CloudLogger::EVENT_CAPTURE_TOTAL_DRIFT,
+            CloudLogger::EVENT_CAPTURE_SNAPSHOT_CORRUPT,
+            CloudLogger::EVENT_CAPTURED_CART_REFUSED,
         ];
         $this->assertCount(count($events), array_unique($events), 'Event type constants must be unique');
     }

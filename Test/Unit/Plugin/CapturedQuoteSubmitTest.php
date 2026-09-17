@@ -3,6 +3,7 @@
 namespace PayStand\PayStandMagento\Test\Unit\Plugin;
 
 use Magento\Framework\App\Config\ScopeConfigInterface;
+use Magento\Framework\Event\ManagerInterface;
 use Magento\Framework\Exception\LocalizedException;
 use Magento\Quote\Model\Quote;
 use Magento\Quote\Model\QuoteManagement;
@@ -31,63 +32,35 @@ class CapturedQuoteSubmitTest extends TestCase
     {
         $plugin = $this->plugin();
         $quote = $this->quoteWith(null, null, null);
-        $called = false;
 
-        $result = $plugin->aroundSubmit($this->subject, function ($q, $data) use (&$called, $quote) {
-            $called = true;
-            $this->assertSame($quote, $q);
-            return 'order';
-        }, $quote);
-
-        $this->assertTrue($called);
-        $this->assertSame('order', $result);
+        $this->assertNull($plugin->beforeSubmit($this->subject, $quote));
     }
 
     public function testCapturedQuoteWithNoSnapshotSubmits(): void
     {
         $plugin = $this->plugin();
         $quote = $this->quoteWith('pay1', 'posted', null);
-        $called = false;
 
-        $plugin->aroundSubmit($this->subject, function () use (&$called) {
-            $called = true;
-            return 'order';
-        }, $quote);
-
-        $this->assertTrue($called);
+        $this->assertNull($plugin->beforeSubmit($this->subject, $quote));
     }
 
     public function testMatchingSnapshotSubmits(): void
     {
         $plugin = $this->plugin();
         $quote = $this->capturedQuote('1');
-        $called = false;
 
-        $plugin->aroundSubmit($this->subject, function () use (&$called) {
-            $called = true;
-            return 'order';
-        }, $quote);
-
-        $this->assertTrue($called);
+        $this->assertNull($plugin->beforeSubmit($this->subject, $quote));
     }
 
     public function testMismatchRefusesSubmitWhenGuardIsRefuse(): void
     {
         $plugin = $this->plugin(CapturedQuoteSubmit::MODE_REFUSE);
         $quote = $this->capturedQuote('2');
-        $called = false;
 
         $this->expectException(LocalizedException::class);
         $this->expectExceptionMessage('The cart changed after payment was captured');
 
-        try {
-            $plugin->aroundSubmit($this->subject, function () use (&$called) {
-                $called = true;
-                return 'order';
-            }, $quote);
-        } finally {
-            $this->assertFalse($called);
-        }
+        $plugin->beforeSubmit($this->subject, $quote);
     }
 
     public function testMismatchLogOnlySubmits(): void
@@ -102,14 +75,8 @@ class CapturedQuoteSubmitTest extends TestCase
 
         $plugin = $this->plugin(CapturedQuoteSubmit::MODE_LOG_ONLY, $logger);
         $quote = $this->capturedQuote('2');
-        $called = false;
 
-        $plugin->aroundSubmit($this->subject, function () use (&$called) {
-            $called = true;
-            return 'order';
-        }, $quote);
-
-        $this->assertTrue($called);
+        $this->assertNull($plugin->beforeSubmit($this->subject, $quote));
     }
 
     public function testMismatchOffSubmitsWithoutLog(): void
@@ -119,28 +86,67 @@ class CapturedQuoteSubmitTest extends TestCase
 
         $plugin = $this->plugin(CapturedQuoteSubmit::MODE_OFF, $logger);
         $quote = $this->capturedQuote('2');
-        $called = false;
 
-        $plugin->aroundSubmit($this->subject, function () use (&$called) {
-            $called = true;
-            return 'order';
-        }, $quote);
-
-        $this->assertTrue($called);
+        $this->assertNull($plugin->beforeSubmit($this->subject, $quote));
     }
 
     public function testEmptyGuardModeIsLogOnly(): void
     {
         $plugin = $this->plugin('');
         $quote = $this->capturedQuote('2');
-        $called = false;
 
-        $plugin->aroundSubmit($this->subject, function () use (&$called) {
-            $called = true;
-            return 'order';
-        }, $quote);
+        $this->assertNull($plugin->beforeSubmit($this->subject, $quote));
+    }
 
-        $this->assertTrue($called);
+    /**
+     * A malformed hash is not a changed cart, so the order still goes through.
+     */
+    public function testUnreadableStampSubmitsAndLogs(): void
+    {
+        $logger = $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass();
+        $logger->expects($this->once())->method('error')->with($this->callback(function ($message) {
+            return is_string($message) && str_contains($message, 'no usable hash');
+        }));
+
+        $plugin = $this->plugin(CapturedQuoteSubmit::MODE_REFUSE, $logger);
+        $quote = $this->capturedQuote('2', 'not-a-sha256');
+
+        $this->assertNull($plugin->beforeSubmit($this->subject, $quote));
+    }
+
+    public function testRefuseDispatchesMagentoSubmitFailure(): void
+    {
+        $events = $this->getMockBuilder(ManagerInterface::class)
+            ->getMockForAbstractClass();
+        $events->expects($this->once())->method('dispatch')->with(
+            'sales_model_service_quote_submit_failure',
+            $this->callback(function ($data) {
+                return isset($data['quote'], $data['exception'])
+                    && $data['exception'] instanceof LocalizedException;
+            })
+        );
+
+        $plugin = $this->plugin(CapturedQuoteSubmit::MODE_REFUSE, null, $events);
+        $this->expectException(LocalizedException::class);
+        $plugin->beforeSubmit($this->subject, $this->capturedQuote('2'));
+    }
+
+    public function testRefuseMessageIncludesPaymentId(): void
+    {
+        $plugin = $this->plugin(CapturedQuoteSubmit::MODE_REFUSE);
+        $this->expectExceptionMessage('0an3zfttt9p7jm1v9xdqc2tq');
+        $plugin->beforeSubmit($this->subject, $this->capturedQuote('2'));
+    }
+
+    public function testMismatchLogOnlyDoesNotDispatchSubmitFailure(): void
+    {
+        $events = $this->getMockBuilder(ManagerInterface::class)
+            ->getMockForAbstractClass();
+        $events->expects($this->never())->method('dispatch');
+
+        $plugin = $this->plugin(CapturedQuoteSubmit::MODE_LOG_ONLY, null, $events);
+
+        $this->assertNull($plugin->beforeSubmit($this->subject, $this->capturedQuote('2')));
     }
 
     public function testMismatchLogsStampedAndCurrentHash(): void
@@ -156,9 +162,7 @@ class CapturedQuoteSubmitTest extends TestCase
         $quote = $this->capturedQuote('2');
 
         $this->expectException(LocalizedException::class);
-        $plugin->aroundSubmit($this->subject, function () {
-            return 'order';
-        }, $quote);
+        $plugin->beforeSubmit($this->subject, $quote);
     }
 
     public function testConfigDefaultsToLogOnly(): void
@@ -170,40 +174,59 @@ class CapturedQuoteSubmitTest extends TestCase
         );
     }
 
+    /**
+     * The guard throws before Magento runs, so the submit logger must sort ahead
+     * of it. A lower sortOrder wraps a higher one, so refusals stay logged.
+     */
+    public function testSubmitLoggerWrapsTheGuard(): void
+    {
+        $xml = simplexml_load_file(dirname(__DIR__, 3) . '/etc/di.xml');
+        $orders = [];
+        foreach ($xml->xpath('//type[@name="Magento\Quote\Model\QuoteManagement"]/plugin') as $plugin) {
+            $orders[(string)$plugin['name']] = (int)$plugin['sortOrder'];
+        }
+
+        $this->assertArrayHasKey('paystand_quote_submit_logger', $orders);
+        $this->assertArrayHasKey('paystand_captured_quote_submit', $orders);
+        $this->assertLessThan(
+            $orders['paystand_captured_quote_submit'],
+            $orders['paystand_quote_submit_logger']
+        );
+    }
+
     public function testBrokenCheckFailsOpen(): void
     {
         $quote = $this->getMockBuilder(Quote::class)
             ->disableOriginalConstructor()
             ->onlyMethods(['getData', 'getId'])
             ->getMock();
-        $quote->method('getId')->willReturn(4490737);
+        $quote->method('getId')->willReturn(770001);
         $quote->method('getData')->willThrowException(new \Error('boom'));
 
         $plugin = $this->plugin();
-        $called = false;
 
-        $plugin->aroundSubmit($this->subject, function () use (&$called) {
-            $called = true;
-            return 'order';
-        }, $quote);
-
-        $this->assertTrue($called);
+        $this->assertNull($plugin->beforeSubmit($this->subject, $quote));
     }
 
     private function plugin(
         string $mode = CapturedQuoteSubmit::MODE_LOG_ONLY,
-        ?LoggerInterface $logger = null
+        ?LoggerInterface $logger = null,
+        $eventManager = null
     ): CapturedQuoteSubmit {
         $config = $this->getMockBuilder(ScopeConfigInterface::class)->getMockForAbstractClass();
         $config->method('getValue')->willReturn($mode);
-
+        if ($eventManager === null) {
+            $eventManager = $this->getMockBuilder(ManagerInterface::class)
+                ->getMockForAbstractClass();
+        }
         return new CapturedQuoteSubmit(
             $logger ?: $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass(),
             new CaptureSnapshot(
                 $this->getMockBuilder(QuoteShipping::class)->disableOriginalConstructor()->getMock(),
                 $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass()
             ),
-            $config
+            $config,
+            $eventManager
         );
     }
 
@@ -218,7 +241,7 @@ class CapturedQuoteSubmitTest extends TestCase
             ->disableOriginalConstructor()
             ->onlyMethods(['getData', 'getId', 'getAllVisibleItems', 'isVirtual', 'getShippingAddress'])
             ->getMock();
-        $quote->method('getId')->willReturn(4490737);
+        $quote->method('getId')->willReturn(770001);
         $quote->method('isVirtual')->willReturn(false);
         $quote->method('getAllVisibleItems')->willReturn([]);
         $quote->method('getShippingAddress')->willReturn(null);
@@ -237,7 +260,7 @@ class CapturedQuoteSubmitTest extends TestCase
         return $quote;
     }
 
-    private function capturedQuote(string $currentQty): Quote
+    private function capturedQuote(string $currentQty, ?string $hashOverride = null): Quote
     {
         $item = $this->getMockBuilder(\Magento\Quote\Model\Quote\Item::class)
             ->disableOriginalConstructor()
@@ -264,7 +287,10 @@ class CapturedQuoteSubmitTest extends TestCase
                 'country' => 'US',
             ]
         );
-        $payload = json_encode(['hash' => $hash, 'grand_total' => '343.83'], JSON_UNESCAPED_SLASHES);
+        $payload = json_encode(
+            ['hash' => $hashOverride ?? $hash, 'grand_total' => '343.83'],
+            JSON_UNESCAPED_SLASHES
+        );
 
         $quote = $this->getMockBuilder(Quote::class)
             ->disableOriginalConstructor()
@@ -272,7 +298,7 @@ class CapturedQuoteSubmitTest extends TestCase
                 'getData', 'getId', 'getAllVisibleItems', 'isVirtual', 'getShippingAddress',
             ])
             ->getMock();
-        $quote->method('getId')->willReturn(4490737);
+        $quote->method('getId')->willReturn(770001);
         $quote->method('isVirtual')->willReturn(false);
         $quote->method('getAllVisibleItems')->willReturn([$item]);
         $quote->method('getShippingAddress')->willReturn($address);

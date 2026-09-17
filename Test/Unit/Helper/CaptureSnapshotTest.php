@@ -101,6 +101,81 @@ class CaptureSnapshotTest extends TestCase
         );
     }
 
+    /**
+     * Fixed vector so a 3.7.4 key-order or normalisation change cannot mismatch
+     * in-flight 3.7.3 snapshots with a green suite.
+     */
+    public function testHashPartsGoldenVector(): void
+    {
+        $this->assertSame(
+            '696ecd963c118a29a6606167b70e6abaefa476ced164636b412f720bed8dcc8d',
+            CaptureSnapshot::hashParts(
+                [['sku' => 'A', 'qty' => '1']],
+                [
+                    'city' => 'Santa Cruz',
+                    'postcode' => '95060',
+                    'country' => 'us',
+                ]
+            )
+        );
+    }
+
+    /**
+     * row_total is what separates two carts that sku + qty cannot tell apart:
+     * a priced custom option, a different child of one configurable, a price
+     * that moved. Without it those all hash equal and pin the wrong total.
+     */
+    public function testHashChangesWhenRowTotalChanges(): void
+    {
+        $address = [
+            'city' => 'Santa Cruz',
+            'postcode' => '95060',
+            'country' => 'us',
+        ];
+        $this->assertNotSame(
+            CaptureSnapshot::hashParts([['sku' => 'A', 'qty' => '1', 'row_total' => '10.00']], $address),
+            CaptureSnapshot::hashParts([['sku' => 'A', 'qty' => '1', 'row_total' => '12.00']], $address)
+        );
+    }
+
+    /**
+     * A false refusal blocks an order the shopper already paid for, so the
+     * normalisation has to absorb spellings that are not a destination change.
+     */
+    public function testHashFoldsMultibyteCityCase(): void
+    {
+        $items = [['sku' => 'A', 'qty' => '1', 'row_total' => '10.00']];
+        $this->assertSame(
+            CaptureSnapshot::hashParts($items, [
+                'city' => 'MÜNCHEN',
+                'postcode' => '80331',
+                'country' => 'DE',
+            ]),
+            CaptureSnapshot::hashParts($items, [
+                'city' => 'München',
+                'postcode' => '80331',
+                'country' => 'de',
+            ])
+        );
+    }
+
+    public function testHashIgnoresPostcodePunctuation(): void
+    {
+        $items = [['sku' => 'A', 'qty' => '1', 'row_total' => '10.00']];
+        $this->assertSame(
+            CaptureSnapshot::hashParts($items, [
+                'city' => 'Santa Cruz',
+                'postcode' => '95060-1234',
+                'country' => 'us',
+            ]),
+            CaptureSnapshot::hashParts($items, [
+                'city' => 'Santa Cruz',
+                'postcode' => '950601234',
+                'country' => 'us',
+            ])
+        );
+    }
+
     public function testMatchesIgnoresItemIdAndStreetOnTheQuote(): void
     {
         $snapshot = $this->makeSnapshot();
@@ -195,6 +270,81 @@ class CaptureSnapshotTest extends TestCase
         $this->assertNull($snapshot->read($quote));
     }
 
+    public function testReadLogsWhenSnapshotJsonIsCorrupt(): void
+    {
+        $logger = $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass();
+        $logger->expects($this->once())->method('warning')->with($this->callback(function ($message) {
+            return is_string($message)
+                && str_contains($message, 'corrupt')
+                && str_contains($message, '1001');
+        }));
+
+        // Dedicated mock: quoteWith() already stubs getData, so a second
+        // getData stub would replace capture-field returns.
+        $quote = $this->getMockBuilder(Quote::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods([
+                'getData', 'setData', 'getAllVisibleItems', 'isVirtual',
+                'getShippingAddress', 'getBillingAddress', 'getId', 'getResource',
+            ])
+            ->addMethods(['getGrandTotal', 'getBaseGrandTotal'])
+            ->getMock();
+        $quote->method('getId')->willReturn(1001);
+        $quote->method('getData')->willReturnCallback(function ($key) {
+            if ($key === CaptureSnapshot::QUOTE_FIELD) {
+                return '{not-json';
+            }
+            if ($key === 'paystand_payment_id') {
+                return 'pay1';
+            }
+            if ($key === 'paystand_capture_status') {
+                return 'posted';
+            }
+            return null;
+        });
+
+        $snapshot = new CaptureSnapshot(
+            $this->getMockBuilder(QuoteShipping::class)->disableOriginalConstructor()->getMock(),
+            $logger
+        );
+        $this->assertNull($snapshot->read($quote));
+    }
+
+    public function testReadDoesNotLogWhenSnapshotIsEmpty(): void
+    {
+        $logger = $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass();
+        $logger->expects($this->never())->method('warning');
+
+        $quote = $this->quoteWith('pay1', 'posted');
+        $snapshot = new CaptureSnapshot(
+            $this->getMockBuilder(QuoteShipping::class)->disableOriginalConstructor()->getMock(),
+            $logger
+        );
+        $this->assertNull($snapshot->read($quote));
+    }
+
+    public function testEnsureStampedLogsWhenJsonEncodeThrows(): void
+    {
+        $logger = $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass();
+        $logger->expects($this->once())->method('error');
+
+        $quoteShipping = $this->getMockBuilder(QuoteShipping::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['snapshot'])
+            ->getMock();
+        $quoteShipping->method('snapshot')->willReturn(null);
+
+        $quote = $this->quoteWith('pay1', 'posted');
+        $quote->method('getResource')->willReturn($this->emptyPersistedSnapshotResource());
+        $quote->method('getAllVisibleItems')->willReturn([]);
+        $quote->method('isVirtual')->willReturn(true);
+        $quote->method('getGrandTotal')->willReturn(NAN);
+        $quote->method('getBaseGrandTotal')->willReturn(10);
+        $quote->method('getBillingAddress')->willReturn(null);
+
+        (new CaptureSnapshot($quoteShipping, $logger))->ensureStamped($quote);
+    }
+
     public function testEnsureStampedWritesOnce(): void
     {
         $quoteShipping = $this->getMockBuilder(QuoteShipping::class)
@@ -239,6 +389,63 @@ class CaptureSnapshotTest extends TestCase
 
         $this->assertNotNull($first);
         $this->assertSame($first, $stored);
+    }
+
+    public function testEnsureStampedUsesPersistedColumnWhenMemoryIsEmpty(): void
+    {
+        $persisted = '{"hash":"' . str_repeat('ab', 32) . '","grand_total":"1"}';
+        $connection = $this->getMockBuilder(\stdClass::class)
+            ->addMethods(['select', 'fetchOne'])
+            ->getMock();
+        $select = $this->getMockBuilder(\stdClass::class)
+            ->addMethods(['from', 'where'])
+            ->getMock();
+        $select->method('from')->willReturnSelf();
+        $select->method('where')->willReturnSelf();
+        $connection->method('select')->willReturn($select);
+        $connection->method('fetchOne')->willReturn($persisted);
+
+        $resource = $this->getMockBuilder(\stdClass::class)
+            ->addMethods(['getConnection', 'getMainTable'])
+            ->getMock();
+        $resource->method('getConnection')->willReturn($connection);
+        $resource->method('getMainTable')->willReturn('quote');
+
+        $written = null;
+        $quote = $this->quoteWith('pay1', 'posted');
+        $quote->method('getResource')->willReturn($resource);
+        $quote->method('getData')->willReturnCallback(function ($key) use (&$written) {
+            if ($key === CaptureSnapshot::QUOTE_FIELD) {
+                return $written;
+            }
+            if ($key === 'paystand_payment_id') {
+                return 'pay1';
+            }
+            if ($key === 'paystand_capture_status') {
+                return 'posted';
+            }
+            return null;
+        });
+        $quote->method('setData')->willReturnCallback(function ($key, $value) use (&$written, $quote) {
+            if ($key === CaptureSnapshot::QUOTE_FIELD) {
+                $written = $value;
+            }
+            return $quote;
+        });
+
+        $quoteShipping = $this->getMockBuilder(QuoteShipping::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['snapshot'])
+            ->getMock();
+        $quoteShipping->expects($this->never())->method('snapshot');
+
+        $snapshot = new CaptureSnapshot(
+            $quoteShipping,
+            $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass()
+        );
+        $snapshot->ensureStamped($quote, ['grand_total' => '999']);
+
+        $this->assertSame($persisted, $written);
     }
 
     public function testStampWarnsWhenMethodHasNoRateRow(): void
@@ -346,12 +553,20 @@ class CaptureSnapshotTest extends TestCase
             'rate' => ['code' => 'fedex_FEDEX_GROUND', 'price' => 55.0],
         ]);
 
+        $address = $this->address();
+        $address->method('getData')->willReturnCallback(function ($key) {
+            if ($key === 'subtotal') {
+                return 999;
+            }
+            return null;
+        });
+
         $quote = $this->quoteWith('pay1', 'posted');
         $quote->method('getAllVisibleItems')->willReturn([]);
         $quote->method('isVirtual')->willReturn(false);
         $quote->method('getGrandTotal')->willReturn(288.83);
         $quote->method('getBaseGrandTotal')->willReturn(288.83);
-        $quote->method('getShippingAddress')->willReturn($this->address());
+        $quote->method('getShippingAddress')->willReturn($address);
 
         $written = null;
         $quote->method('setData')->willReturnCallback(function ($key, $value) use (&$written, $quote) {
@@ -369,6 +584,9 @@ class CaptureSnapshotTest extends TestCase
             'grand_total' => '343.83',
             'base_grand_total' => '343.83',
             'discount_amount' => '-14.31',
+            'address' => [
+                'subtotal' => '303.14',
+            ],
             'shipping' => [
                 'method' => 'fedex_FEDEX_GROUND',
                 'amount' => 55.0,
@@ -381,6 +599,53 @@ class CaptureSnapshotTest extends TestCase
         $payload = json_decode($written, true);
         $this->assertSame('343.83', $payload['grand_total']);
         $this->assertSame('fedex_FEDEX_GROUND', $payload['shipping']['rate']['code']);
+        $this->assertSame('303.14', $payload['address']['subtotal']);
+    }
+
+    public function testPaidBagCopiesAddressBaseDiscount(): void
+    {
+        $address = $this->address();
+        $address->method('getData')->willReturnCallback(function ($key) {
+            $map = [
+                'discount_amount' => -14.31,
+                'base_discount_amount' => -14.31,
+                'subtotal' => 303.14,
+                'base_subtotal' => 303.14,
+                'subtotal_with_discount' => 288.83,
+                'base_subtotal_with_discount' => 288.83,
+                'tax_amount' => 0,
+                'base_tax_amount' => 0,
+                'shipping_incl_tax' => 55.0,
+                'base_shipping_incl_tax' => 55.0,
+                'shipping_tax_amount' => 0,
+                'base_shipping_tax_amount' => 0,
+            ];
+            return $map[$key] ?? null;
+        });
+
+        $quoteShipping = $this->getMockBuilder(QuoteShipping::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['snapshot'])
+            ->getMock();
+        $quoteShipping->method('snapshot')->willReturn(null);
+
+        $quote = $this->quoteWith('pay1', 'posted');
+        $quote->method('isVirtual')->willReturn(false);
+        $quote->method('getGrandTotal')->willReturn(343.83);
+        $quote->method('getBaseGrandTotal')->willReturn(343.83);
+        $quote->method('getShippingAddress')->willReturn($address);
+
+        $bag = (new CaptureSnapshot(
+            $quoteShipping,
+            $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass()
+        ))->paidBag($quote);
+
+        $this->assertSame('-14.31', $bag['address']['base_discount_amount']);
+        $this->assertSame('303.14', $bag['address']['subtotal']);
+        $this->assertSame('0', $bag['address']['tax_amount']);
+        $this->assertSame('0', $bag['address']['base_tax_amount']);
+        $this->assertSame('0', $bag['address']['shipping_tax_amount']);
+        $this->assertSame('0', $bag['address']['base_shipping_tax_amount']);
     }
 
     public function testEnsureStampedSkipsUncapturedQuotes(): void
@@ -403,6 +668,7 @@ class CaptureSnapshotTest extends TestCase
         $quoteShipping->method('snapshot')->willThrowException(new \RuntimeException('boom'));
 
         $quote = $this->quoteWith('pay1', 'posted');
+        $quote->method('getResource')->willReturn($this->emptyPersistedSnapshotResource());
         $quote->method('getAllVisibleItems')->willReturn([]);
         $quote->method('isVirtual')->willReturn(true);
         $quote->method('getGrandTotal')->willReturn(10);
@@ -410,6 +676,85 @@ class CaptureSnapshotTest extends TestCase
         $quote->method('getBillingAddress')->willReturn(null);
 
         (new CaptureSnapshot($quoteShipping, $logger))->ensureStamped($quote);
+    }
+
+    /**
+     * SavePaymentData and webhook must copy paid money before recollect.
+     * Recollect first would stamp a rewritten grand_total.
+     */
+    public function testCopyPaidRecollectAndStampCopiesBeforeRecollect(): void
+    {
+        $sequence = [];
+        $afterRecollect = false;
+        $written = null;
+        $quoteShipping = $this->getMockBuilder(QuoteShipping::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['snapshot', 'recollectPreservingShipping'])
+            ->getMock();
+        $quoteShipping->method('snapshot')->willReturnCallback(function () use (&$sequence) {
+            $sequence[] = 'paidBag';
+            return [
+                'method' => 'fedex_FEDEX_GROUND',
+                'amount' => 55.0,
+                'baseAmount' => 55.0,
+                'description' => 'FedEx Ground',
+                'rate' => ['code' => 'fedex_FEDEX_GROUND', 'price' => 55.0],
+            ];
+        });
+        $quoteShipping->method('recollectPreservingShipping')
+            ->willReturnCallback(function ($quote, $context) use (&$sequence, &$afterRecollect) {
+                $sequence[] = 'recollect';
+                $this->assertSame('savepaymentdata', $context);
+                $afterRecollect = true;
+                return ['before' => '', 'restored' => false, 'retryFailed' => false];
+            });
+
+        // Dedicated mock: quoteWith() already stubs getData, so a second
+        // getData stub would replace capture-field returns and skip stamping.
+        $quote = $this->getMockBuilder(Quote::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods([
+                'getData', 'setData', 'getAllVisibleItems', 'isVirtual',
+                'getShippingAddress', 'getBillingAddress', 'getId', 'getResource',
+            ])
+            ->addMethods(['getGrandTotal', 'getBaseGrandTotal'])
+            ->getMock();
+        $quote->method('getId')->willReturn(770001);
+        $quote->method('getAllVisibleItems')->willReturn([]);
+        $quote->method('isVirtual')->willReturn(true);
+        $quote->method('getGrandTotal')->willReturnCallback(function () use (&$afterRecollect) {
+            return $afterRecollect ? 288.83 : 343.83;
+        });
+        $quote->method('getBaseGrandTotal')->willReturnCallback(function () use (&$afterRecollect) {
+            return $afterRecollect ? 288.83 : 343.83;
+        });
+        $quote->method('getBillingAddress')->willReturn(null);
+        $quote->method('getData')->willReturnCallback(function ($key) {
+            if ($key === 'paystand_payment_id') {
+                return 'pay1';
+            }
+            if ($key === 'paystand_capture_status') {
+                return 'posted';
+            }
+            return null;
+        });
+        $quote->method('setData')->willReturnCallback(function ($key, $value) use (&$sequence, &$written, $quote) {
+            if ($key === CaptureSnapshot::QUOTE_FIELD) {
+                $sequence[] = 'stamp';
+                $written = $value;
+            }
+            return $quote;
+        });
+
+        $snapshot = new CaptureSnapshot(
+            $quoteShipping,
+            $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass()
+        );
+        $snapshot->copyPaidRecollectAndStamp($quote, 'savepaymentdata');
+
+        $this->assertSame(['paidBag', 'recollect', 'stamp'], $sequence);
+        $payload = json_decode((string)$written, true);
+        $this->assertSame('343.83', $payload['grand_total']);
     }
 
     private function makeSnapshot(): CaptureSnapshot
@@ -426,11 +771,11 @@ class CaptureSnapshotTest extends TestCase
             ->disableOriginalConstructor()
             ->onlyMethods([
                 'getData', 'setData', 'getAllVisibleItems', 'isVirtual',
-                'getShippingAddress', 'getBillingAddress', 'getId',
+                'getShippingAddress', 'getBillingAddress', 'getId', 'getResource',
             ])
             ->addMethods(['getGrandTotal', 'getBaseGrandTotal'])
             ->getMock();
-        $quote->method('getId')->willReturn(4490737);
+        $quote->method('getId')->willReturn(770001);
         $quote->method('getData')->willReturnCallback(function ($key) use ($paymentId, $captureStatus) {
             if ($key === 'paystand_payment_id') {
                 return $paymentId;
@@ -441,6 +786,32 @@ class CaptureSnapshotTest extends TestCase
             return null;
         });
         return $quote;
+    }
+
+    /**
+     * DB has no snapshot. getResource unstubbed logs a re-read error;
+     * these stamp-failure tests need one error from stamp only.
+     *
+     * @return object
+     */
+    private function emptyPersistedSnapshotResource()
+    {
+        $connection = $this->getMockBuilder(\stdClass::class)
+            ->addMethods(['select', 'fetchOne'])
+            ->getMock();
+        $select = $this->getMockBuilder(\stdClass::class)
+            ->addMethods(['from', 'where'])
+            ->getMock();
+        $select->method('from')->willReturnSelf();
+        $select->method('where')->willReturnSelf();
+        $connection->method('select')->willReturn($select);
+        $connection->method('fetchOne')->willReturn(false);
+        $resource = $this->getMockBuilder(\stdClass::class)
+            ->addMethods(['getConnection', 'getMainTable'])
+            ->getMock();
+        $resource->method('getConnection')->willReturn($connection);
+        $resource->method('getMainTable')->willReturn('quote');
+        return $resource;
     }
 
     private function item(string $id, string $sku, string $qty): Item
@@ -462,7 +833,7 @@ class CaptureSnapshotTest extends TestCase
     {
         $address = $this->getMockBuilder(Address::class)
             ->disableOriginalConstructor()
-            ->onlyMethods(['getStreet', 'getCity', 'getPostcode', 'getCountryId'])
+            ->onlyMethods(['getStreet', 'getCity', 'getPostcode', 'getCountryId', 'getData'])
             ->addMethods(['getDiscountAmount'])
             ->getMock();
         $address->method('getStreet')->willReturn($street);

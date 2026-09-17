@@ -53,6 +53,12 @@ class CloudLogger
     // The confirmation page was about to redirect, but the order for the
     // session's own quote was found and the missing session values restored.
     const EVENT_SUCCESS_PAGE_REPAIRED = 'success_page_repaired';
+    // Magento live grand_total after collect differs from the paid snapshot.
+    const EVENT_CAPTURE_TOTAL_DRIFT = 'capture_total_drift';
+    // paystand_capture_snapshot on the quote is not valid JSON.
+    const EVENT_CAPTURE_SNAPSHOT_CORRUPT = 'capture_snapshot_corrupt';
+    // Magento refused placeOrder because the cart no longer matches the capture.
+    const EVENT_CAPTURED_CART_REFUSED = 'captured_cart_refused';
 
     /**
      * Resolve the merchant's customer ID from store config.

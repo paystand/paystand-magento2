@@ -285,9 +285,7 @@ class SavePaymentData extends Action
 
             // Copy paid money first. Recollect can drop shipping and rewrite
             // grand_total; the snapshot must keep the captured amount.
-            $paid = $this->captureSnapshot->paidBag($quote);
-            $this->quoteShipping->recollectPreservingShipping($quote, 'savepaymentdata');
-            $this->captureSnapshot->ensureStamped($quote, $paid);
+            $this->captureSnapshot->copyPaidRecollectAndStamp($quote, 'savepaymentdata');
 
             $this->cartRepository->save($quote);
 
