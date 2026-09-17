@@ -264,9 +264,72 @@ class CaptureSnapshotTest extends TestCase
         $quote->method('getGrandTotal')->willReturn(343.83);
         $quote->method('getBaseGrandTotal')->willReturn(343.83);
         $quote->method('getShippingAddress')->willReturn($this->address());
-        $quote->method('setData')->willReturnSelf();
+        $written = null;
+        $quote->method('setData')->willReturnCallback(function ($key, $value) use (&$written, $quote) {
+            if ($key === CaptureSnapshot::QUOTE_FIELD) {
+                $written = $value;
+            }
+            return $quote;
+        });
 
         (new CaptureSnapshot($quoteShipping, $logger))->stamp($quote);
+
+        $payload = json_decode((string)$written, true);
+        $this->assertSame('fedex_FEDEX_GROUND', $payload['shipping']['rate']['code']);
+        $this->assertSame('fedex', $payload['shipping']['rate']['carrier']);
+        $this->assertSame('FEDEX_GROUND', $payload['shipping']['rate']['method']);
+        $this->assertEquals(55.0, $payload['shipping']['rate']['price']);
+    }
+
+    public function testStampSynthesizesRateFromPaidBagWhenLiveRateMissing(): void
+    {
+        $quoteShipping = $this->getMockBuilder(QuoteShipping::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['snapshot'])
+            ->getMock();
+        $quoteShipping->method('snapshot')->willReturn([
+            'method' => 'fedex_FEDEX_GROUND',
+            'amount' => 55.0,
+            'baseAmount' => 55.0,
+            'description' => 'FedEx Ground',
+            'rate' => null,
+        ]);
+
+        $quote = $this->quoteWith('pay1', 'posted');
+        $quote->method('getAllVisibleItems')->willReturn([]);
+        $quote->method('isVirtual')->willReturn(false);
+        $quote->method('getGrandTotal')->willReturn(343.83);
+        $quote->method('getBaseGrandTotal')->willReturn(343.83);
+        $quote->method('getShippingAddress')->willReturn($this->address());
+        $written = null;
+        $quote->method('setData')->willReturnCallback(function ($key, $value) use (&$written, $quote) {
+            if ($key === CaptureSnapshot::QUOTE_FIELD) {
+                $written = $value;
+            }
+            return $quote;
+        });
+
+        $snapshot = new CaptureSnapshot(
+            $quoteShipping,
+            $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass()
+        );
+        $snapshot->stamp($quote, [
+            'grand_total' => '343.83',
+            'base_grand_total' => '343.83',
+            'discount_amount' => '-14.31',
+            'shipping' => [
+                'method' => 'fedex_FEDEX_GROUND',
+                'amount' => 55.0,
+                'baseAmount' => 55.0,
+                'description' => 'FedEx Ground',
+                'rate' => null,
+            ],
+        ]);
+
+        $payload = json_decode((string)$written, true);
+        $this->assertSame('fedex_FEDEX_GROUND', $payload['shipping']['rate']['code']);
+        $this->assertEquals(55.0, $payload['shipping']['rate']['price']);
+        $this->assertSame('FedEx Ground', $payload['shipping']['rate']['methodTitle']);
     }
 
     public function testStampUsesPaidGrandTotalNotLiveQuoteTotal(): void

@@ -101,5 +101,8 @@ class SavePaymentDataTest extends TestCase
         foreach (PaymentStatus::CAPTURED_STATUSES as $status) {
             $this->assertSame($status, $this->gate('nlvsnvr0ska9i7ugvoab9917', $status));
         }
+
+        $this->assertNotContains('processing', PaymentStatus::CAPTURED_STATUSES);
+        $this->assertContains('processing', PaymentStatus::PLACE_ORDER_STATUSES);
     }
 }

@@ -2,6 +2,7 @@
 
 namespace PayStand\PayStandMagento\Test\Unit\Plugin;
 
+use Magento\Framework\App\Config\ScopeConfigInterface;
 use Magento\Framework\Exception\LocalizedException;
 use Magento\Quote\Model\Quote;
 use Magento\Quote\Model\QuoteManagement;
@@ -70,9 +71,9 @@ class CapturedQuoteSubmitTest extends TestCase
         $this->assertTrue($called);
     }
 
-    public function testMismatchRefusesSubmit(): void
+    public function testMismatchRefusesSubmitWhenGuardIsRefuse(): void
     {
-        $plugin = $this->plugin();
+        $plugin = $this->plugin(CapturedQuoteSubmit::MODE_REFUSE);
         $quote = $this->capturedQuote('2');
         $called = false;
 
@@ -89,6 +90,59 @@ class CapturedQuoteSubmitTest extends TestCase
         }
     }
 
+    public function testMismatchLogOnlySubmits(): void
+    {
+        $logger = $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass();
+        $logger->expects($this->once())->method('error')->with($this->callback(function ($message) {
+            return is_string($message)
+                && str_contains($message, 'stamped=')
+                && str_contains($message, 'current=')
+                && str_contains($message, 'log_only');
+        }));
+
+        $plugin = $this->plugin(CapturedQuoteSubmit::MODE_LOG_ONLY, $logger);
+        $quote = $this->capturedQuote('2');
+        $called = false;
+
+        $plugin->aroundSubmit($this->subject, function () use (&$called) {
+            $called = true;
+            return 'order';
+        }, $quote);
+
+        $this->assertTrue($called);
+    }
+
+    public function testMismatchOffSubmitsWithoutLog(): void
+    {
+        $logger = $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass();
+        $logger->expects($this->never())->method('error');
+
+        $plugin = $this->plugin(CapturedQuoteSubmit::MODE_OFF, $logger);
+        $quote = $this->capturedQuote('2');
+        $called = false;
+
+        $plugin->aroundSubmit($this->subject, function () use (&$called) {
+            $called = true;
+            return 'order';
+        }, $quote);
+
+        $this->assertTrue($called);
+    }
+
+    public function testEmptyGuardModeIsLogOnly(): void
+    {
+        $plugin = $this->plugin('');
+        $quote = $this->capturedQuote('2');
+        $called = false;
+
+        $plugin->aroundSubmit($this->subject, function () use (&$called) {
+            $called = true;
+            return 'order';
+        }, $quote);
+
+        $this->assertTrue($called);
+    }
+
     public function testMismatchLogsStampedAndCurrentHash(): void
     {
         $logger = $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass();
@@ -98,19 +152,22 @@ class CapturedQuoteSubmitTest extends TestCase
                 && str_contains($message, 'current=');
         }));
 
-        $plugin = new CapturedQuoteSubmit(
-            $logger,
-            new CaptureSnapshot(
-                $this->getMockBuilder(QuoteShipping::class)->disableOriginalConstructor()->getMock(),
-                $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass()
-            )
-        );
+        $plugin = $this->plugin(CapturedQuoteSubmit::MODE_REFUSE, $logger);
         $quote = $this->capturedQuote('2');
 
         $this->expectException(LocalizedException::class);
         $plugin->aroundSubmit($this->subject, function () {
             return 'order';
         }, $quote);
+    }
+
+    public function testConfigDefaultsToLogOnly(): void
+    {
+        $xml = file_get_contents(dirname(__DIR__, 3) . '/etc/config.xml');
+        $this->assertStringContainsString(
+            '<captured_cart_guard>log_only</captured_cart_guard>',
+            (string)$xml
+        );
     }
 
     public function testBrokenCheckFailsOpen(): void
@@ -133,14 +190,20 @@ class CapturedQuoteSubmitTest extends TestCase
         $this->assertTrue($called);
     }
 
-    private function plugin(): CapturedQuoteSubmit
-    {
+    private function plugin(
+        string $mode = CapturedQuoteSubmit::MODE_LOG_ONLY,
+        ?LoggerInterface $logger = null
+    ): CapturedQuoteSubmit {
+        $config = $this->getMockBuilder(ScopeConfigInterface::class)->getMockForAbstractClass();
+        $config->method('getValue')->willReturn($mode);
+
         return new CapturedQuoteSubmit(
-            $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass(),
+            $logger ?: $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass(),
             new CaptureSnapshot(
                 $this->getMockBuilder(QuoteShipping::class)->disableOriginalConstructor()->getMock(),
                 $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass()
-            )
+            ),
+            $config
         );
     }
 

@@ -13,7 +13,8 @@ use Psr\Log\LoggerInterface;
  * had not changed (PROD-16503 / Rowley quote 4490737).
  *
  * This plugin lets Magento collect, then puts back the paid shipping row and
- * grand total when the cart still matches the capture snapshot.
+ * grand total when the cart still matches the capture snapshot. Quotes that
+ * are captured but have no snapshot freeze collect, same as 3.7.2.
  */
 class CapturedQuoteTotals
 {
@@ -37,14 +38,41 @@ class CapturedQuoteTotals
     }
 
     /**
-     * Do not setTotalsCollectedFlag. Quote::collectTotals() must run so Magento
-     * can rebuild rate rows after a reload.
+     * Collect when a snapshot exists so Magento can rebuild rate rows after a
+     * reload. Freeze collect when the quote is captured and the snapshot is
+     * missing, so cart price rules cannot raise the paid total.
      *
      * @param \Magento\Quote\Model\Quote $subject
      * @return void
      */
     public function beforeCollectTotals($subject)
     {
+        try {
+            if (!$subject || !$this->snapshot->isCaptured($subject)) {
+                return;
+            }
+
+            if ($this->snapshot->read($subject)) {
+                return;
+            }
+
+            $subject->setTotalsCollectedFlag(true);
+            $this->logger->warning(
+                'PAYSTAND-CAPTURED-TOTALS: captured quote has no snapshot, freezing collect on quote '
+                . $subject->getId()
+            );
+        } catch (\Throwable $e) {
+            $quoteId = null;
+            try {
+                $quoteId = $subject ? $subject->getId() : null;
+            } catch (\Throwable $ignored) {
+                $quoteId = null;
+            }
+            $this->logger->error(
+                'PAYSTAND-CAPTURED-TOTALS: freeze check failed for quote ' . ($quoteId ?: 'unknown')
+                . ', Magento totals will collect: ' . $e->getMessage()
+            );
+        }
     }
 
     /**
@@ -84,6 +112,10 @@ class CapturedQuoteTotals
 
         $payload = $this->snapshot->read($quote);
         if (!$payload) {
+            $this->logger->warning(
+                'PAYSTAND-CAPTURED-TOTALS: captured quote has no snapshot, leaving Magento totals on quote '
+                . $quote->getId()
+            );
             return;
         }
 

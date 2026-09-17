@@ -2,6 +2,7 @@
 
 namespace PayStand\PayStandMagento\Plugin;
 
+use Magento\Framework\App\Config\ScopeConfigInterface;
 use Magento\Framework\Exception\LocalizedException;
 use Magento\Framework\Phrase;
 use Magento\Quote\Model\Quote;
@@ -15,19 +16,36 @@ use Psr\Log\LoggerInterface;
  *
  * Quotes captured before paystand_capture_snapshot existed have no snapshot;
  * those still submit so a missing column cannot strand paid carts.
+ *
+ * payment/paystandmagento/captured_cart_guard:
+ * off      — do not check
+ * log_only — log a mismatch and still submit (default)
+ * refuse   — throw and block placeOrder
  */
 class CapturedQuoteSubmit
 {
+    public const CONFIG_PATH = 'payment/paystandmagento/captured_cart_guard';
+    public const MODE_OFF = 'off';
+    public const MODE_LOG_ONLY = 'log_only';
+    public const MODE_REFUSE = 'refuse';
+
     /** @var LoggerInterface */
     private $logger;
 
     /** @var CaptureSnapshot */
     private $snapshot;
 
-    public function __construct(LoggerInterface $logger, CaptureSnapshot $snapshot)
-    {
+    /** @var ScopeConfigInterface */
+    private $scopeConfig;
+
+    public function __construct(
+        LoggerInterface $logger,
+        CaptureSnapshot $snapshot,
+        ScopeConfigInterface $scopeConfig
+    ) {
         $this->logger = $logger;
         $this->snapshot = $snapshot;
+        $this->scopeConfig = $scopeConfig;
     }
 
     /**
@@ -55,6 +73,11 @@ class CapturedQuoteSubmit
         $stamped = '';
         $current = '';
         try {
+            $mode = $this->guardMode();
+            if ($mode === self::MODE_OFF) {
+                return;
+            }
+
             if (!$this->snapshot->isCaptured($quote)) {
                 return;
             }
@@ -96,17 +119,39 @@ class CapturedQuoteSubmit
             $quoteId = 'unknown';
         }
 
+        $mode = $this->guardMode();
         $this->logger->error(
-            'PAYSTAND-CAPTURED-SUBMIT: cart changed after capture; refusing placeOrder for quote '
+            'PAYSTAND-CAPTURED-SUBMIT: cart changed after capture; '
+            . $mode
+            . ' placeOrder for quote '
             . $quoteId
             . ' stamped=' . $stamped
             . ' current=' . $current
         );
+
+        if ($mode !== self::MODE_REFUSE) {
+            return;
+        }
 
         throw new LocalizedException(
             new Phrase(
                 'The cart changed after payment was captured. Do not place this order. Contact support.'
             )
         );
+    }
+
+    private function guardMode(): string
+    {
+        try {
+            $mode = strtolower(trim((string)$this->scopeConfig->getValue(self::CONFIG_PATH)));
+        } catch (\Throwable $e) {
+            return self::MODE_LOG_ONLY;
+        }
+
+        if ($mode === self::MODE_OFF || $mode === self::MODE_LOG_ONLY || $mode === self::MODE_REFUSE) {
+            return $mode;
+        }
+
+        return self::MODE_LOG_ONLY;
     }
 }

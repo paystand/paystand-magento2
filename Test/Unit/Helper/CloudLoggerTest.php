@@ -152,6 +152,21 @@ class CloudLoggerTest extends TestCase
     }
 
     /**
+     * Magento refuse of a captured cart must not show "Finalizing Your Order".
+     * The poll timeout must treat that checkout error as a real failure.
+     */
+    public function testLumaPollDoesNotFinalizeWhenMagentoRefusedCapturedCart(): void
+    {
+        $renderer = file_get_contents(
+            __DIR__ . '/../../../view/frontend/web/js/view/payment/method-renderer/paystandmagento-directpost.js'
+        );
+
+        $this->assertStringContainsString('cart changed after payment', $renderer);
+        $this->assertStringContainsString('order_confirm_refused', $renderer);
+        $this->assertStringContainsString('showErrorModal', $renderer);
+    }
+
+    /**
      * setup_version drives whether Magento runs the module's schema patches, so a
      * stale value can leave a released column uncreated.
      */

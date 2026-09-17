@@ -558,6 +558,7 @@ class CreateOrderFromQuoteTest extends TestCase
         return [
             'card capture posts'  => ['posted'],
             'settled payment'     => ['paid'],
+            'ach still processing' => ['processing'],
         ];
     }
 
@@ -668,9 +669,41 @@ class CreateOrderFromQuoteTest extends TestCase
     }
 
     /**
-     * A payment still in flight must not freeze the cart: the same reasoning as
-     * the client-side writer, where an unconfirmed capture would strand a quote
-     * whose totals could then never recollect.
+     * ACH often reaches Magento createOrderFromQuote as processing (quote 4490737).
+     * Magento placeOrder still runs. The snapshot must be written on that path
+     * or collect-then-pin never engages.
+     */
+    public function testProcessingRescueRecordsCaptureMarkers(): void
+    {
+        $quote = $this->buildInitialQuote(42);
+        $this->lockManagerMock->method('lock')->willReturn(true);
+
+        $reloaded = $this->buildReloadedQuote(['paystandPaymentId' => null]);
+        $written = [];
+        $reloaded->method('setData')->willReturnCallback(
+            function ($key, $value = null) use (&$written, $reloaded) {
+                $written[$key] = $value;
+                return $reloaded;
+            }
+        );
+        $this->cartRepositoryMock->method('get')->willReturn($reloaded);
+        $this->controller->method('findOrder')->willReturn(null);
+        $this->captureSnapshotMock->expects($this->once())->method('ensureStamped')
+            ->with($reloaded, $this->anything());
+
+        $order = $this->buildOrder(77, 'W000000077');
+        $this->cartManagementMock->method('placeOrder')->willReturn(77);
+        $this->orderRepositoryMock->method('get')->willReturn($order);
+
+        $this->invoke($quote, 'processing', 'pay-webhook-999');
+
+        $this->assertSame('processing', $written['paystand_capture_status'] ?? null);
+        $this->assertSame('pay-webhook-999', $written['paystand_payment_id'] ?? null);
+    }
+
+    /**
+     * failed never maps to Magento STATE_PROCESSING, so createOrderFromQuote
+     * returns before markers or Magento placeOrder.
      */
     public function testNonCaptureStatusRecordsNoFreezeMarker(): void
     {
@@ -687,13 +720,9 @@ class CreateOrderFromQuoteTest extends TestCase
         );
         $this->cartRepositoryMock->method('get')->willReturn($reloaded);
         $this->controller->method('findOrder')->willReturn(null);
+        $this->cartManagementMock->expects($this->never())->method('placeOrder');
 
-        $order = $this->buildOrder(77, 'W000000077');
-        $this->cartManagementMock->method('placeOrder')->willReturn(77);
-        $this->orderRepositoryMock->method('get')->willReturn($order);
-
-        $this->invoke($quote, 'processing', 'pay-webhook-999');
-
+        $this->assertNull($this->invoke($quote, 'failed', 'pay-webhook-999'));
         $this->assertArrayNotHasKey('paystand_capture_status', $written);
     }
 

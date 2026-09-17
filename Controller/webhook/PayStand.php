@@ -1009,7 +1009,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
             // collect, and CapturedQuoteSubmit can refuse a cart that changed.
             $captureId = $quote->getData('paystand_payment_id') ?: ($json->resource->id ?? null);
             $captureStatus = strtolower(trim((string)$psPaymentStatus));
-            if ($captureId && in_array($captureStatus, PaymentStatus::CAPTURED_STATUSES, true)) {
+            if ($captureId && in_array($captureStatus, PaymentStatus::PLACE_ORDER_STATUSES, true)) {
                 $quote->setData('paystand_payment_id', $captureId);
                 $quote->setData('paystand_capture_status', $captureStatus);
                 $this->_logger->debug(

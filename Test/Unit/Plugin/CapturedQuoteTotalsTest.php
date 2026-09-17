@@ -43,20 +43,51 @@ class CapturedQuoteTotalsTest extends TestCase
         );
     }
 
-    public function testConfirmedCaptureStillCollects(): void
+    public function testConfirmedCaptureWithSnapshotStillCollects(): void
     {
-        $quote = $this->quoteWith('nlvsnvr0ska9i7ugvoab9917', 'posted');
+        $quote = $this->quoteWith('nlvsnvr0ska9i7ugvoab9917', 'posted', '{"ok":1}');
         $quote->expects($this->never())->method('setTotalsCollectedFlag');
 
         $this->plugin->beforeCollectTotals($quote);
     }
 
-    public function testPaidStatusStillCollects(): void
+    public function testPaidStatusWithSnapshotStillCollects(): void
     {
-        $quote = $this->quoteWith('nlvsnvr0ska9i7ugvoab9917', 'paid');
+        $quote = $this->quoteWith('nlvsnvr0ska9i7ugvoab9917', 'paid', '{"ok":1}');
         $quote->expects($this->never())->method('setTotalsCollectedFlag');
 
         $this->plugin->beforeCollectTotals($quote);
+    }
+
+    /**
+     * Quotes captured before paystand_capture_snapshot existed have no JSON.
+     * Fall back to the 3.7.2 freeze so cart price rules cannot raise the total.
+     *
+     * @dataProvider capturedStatusProvider
+     */
+    public function testCapturedQuoteWithoutSnapshotFreezesCollect(string $status): void
+    {
+        $logger = $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass();
+        $logger->expects($this->once())->method('warning')->with($this->callback(function ($message) {
+            return is_string($message) && str_contains($message, 'no snapshot');
+        }));
+        $plugin = new CapturedQuoteTotals($logger, $this->quoteShipping, $this->snapshot);
+
+        $quote = $this->quoteWith('nlvsnvr0ska9i7ugvoab9917', $status);
+        $quote->expects($this->once())->method('setTotalsCollectedFlag')->with(true);
+
+        $plugin->beforeCollectTotals($quote);
+    }
+
+    /**
+     * @return array<string, array{0: string}>
+     */
+    public static function capturedStatusProvider(): array
+    {
+        return [
+            'posted' => ['posted'],
+            'paid' => ['paid'],
+        ];
     }
 
     public function testPaymentIdWithoutConfirmedCaptureStillCollects(): void
@@ -139,8 +170,9 @@ class CapturedQuoteTotalsTest extends TestCase
     /**
      * @param string|null $paymentId
      * @param string|null $captureStatus
+     * @param string|null $snapshotJson
      */
-    private function quoteWith($paymentId, $captureStatus): Quote
+    private function quoteWith($paymentId, $captureStatus, $snapshotJson = null): Quote
     {
         $quote = $this->getMockBuilder(Quote::class)
             ->disableOriginalConstructor()
@@ -148,15 +180,20 @@ class CapturedQuoteTotalsTest extends TestCase
             ->addMethods(['setTotalsCollectedFlag', 'setGrandTotal', 'setBaseGrandTotal', 'getGrandTotal', 'getBaseGrandTotal'])
             ->getMock();
         $quote->method('getId')->willReturn(4490737);
-        $quote->method('getData')->willReturnCallback(function ($key) use ($paymentId, $captureStatus) {
-            if ($key === 'paystand_payment_id') {
-                return $paymentId;
+        $quote->method('getData')->willReturnCallback(
+            function ($key) use ($paymentId, $captureStatus, $snapshotJson) {
+                if ($key === 'paystand_payment_id') {
+                    return $paymentId;
+                }
+                if ($key === 'paystand_capture_status') {
+                    return $captureStatus;
+                }
+                if ($key === CaptureSnapshot::QUOTE_FIELD) {
+                    return $snapshotJson;
+                }
+                return null;
             }
-            if ($key === 'paystand_capture_status') {
-                return $captureStatus;
-            }
-            return null;
-        });
+        );
         return $quote;
     }
 

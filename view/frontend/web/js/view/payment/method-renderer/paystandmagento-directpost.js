@@ -534,7 +534,7 @@ define(
         const ORDER_CONFIRM_MAX_ATTEMPTS = 15;
         const ORDER_CONFIRM_INTERVAL_MS = 2000;
 
-        async function confirmOrderPlaced(quoteId, paymentId, onFailure) {
+        async function confirmOrderPlaced(quoteId, paymentId, onFailure, onRefused) {
             for (let attempt = 1; attempt <= ORDER_CONFIRM_MAX_ATTEMPTS; attempt++) {
                 await new Promise(function (resolve) {
                     setTimeout(resolve, ORDER_CONFIRM_INTERVAL_MS);
@@ -569,6 +569,19 @@ define(
                 }
             }
 
+            // Magento already refused this captured cart. The order will not appear.
+            // Do not tell the shopper we are still finalizing it.
+            const checkoutError = magentoCheckoutErrorText();
+            if (magentoRefusedCapturedCart(checkoutError)) {
+                cfLog('order_confirm_refused', quoteId, paymentId,
+                    'Magento refused placeOrder after capture: ' + checkoutError
+                );
+                if (typeof onRefused === 'function') {
+                    onRefused(checkoutError);
+                }
+                return;
+            }
+
             // No order yet: the webhook may still create it, so reassure rather
             // than report an error — and tell them not to pay again.
             cfLog('order_confirm_timeout', quoteId, paymentId,
@@ -576,6 +589,18 @@ define(
                 ' attempts; payment captured, order pending server-side creation'
             );
             onFailure();
+        }
+
+        function magentoCheckoutErrorText() {
+            try {
+                return ($('.message-error, .message.error').text() || '').trim();
+            } catch (e) {
+                return '';
+            }
+        }
+
+        function magentoRefusedCapturedCart(text) {
+            return /cart changed after payment/i.test(text || '');
         }
         // ────────────────────────────────────────────────────────────────────
 
@@ -693,7 +718,7 @@ define(
                 // quote and, if it never appears within the window, reassure the
                 // shopper their order is being finalized (and not to pay again).
                 // On success Magento redirects and this is aborted.
-                confirmOrderPlaced(qid, pid, showFinalizingModal);
+                confirmOrderPlaced(qid, pid, showFinalizingModal, showErrorModal);
             });
         }
 

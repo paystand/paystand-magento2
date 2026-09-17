@@ -10,6 +10,13 @@ class PaymentStatus implements \Magento\Framework\Option\ArrayInterface
      */
     const CAPTURED_STATUSES = ['paid', 'posted'];
 
+    /**
+     * Statuses that Magento createOrderFromQuote will convert to an order.
+     * ACH often arrives as processing before paid. SavePaymentData must keep
+     * using CAPTURED_STATUSES so an in-flight ACH does not freeze collect.
+     */
+    const PLACE_ORDER_STATUSES = ['paid', 'posted', 'processing'];
+
   /**
      * @return array
      */

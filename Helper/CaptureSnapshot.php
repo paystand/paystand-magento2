@@ -131,10 +131,12 @@ class CaptureSnapshot
             && !empty($shipping['method'])
             && empty($shipping['rate'])
         ) {
+            $shipping['rate'] = $this->synthesizeRate($shipping);
             $this->logger->warning(
                 'PAYSTAND-CAPTURE-SNAPSHOT: shipping method has no rate row on quote '
                 . $quote->getId()
                 . ' method=' . $shipping['method']
+                . '; synthesized rate from method and amount'
             );
         }
 
@@ -249,5 +251,33 @@ class CaptureSnapshot
         }
 
         return (string)$address->getDiscountAmount();
+    }
+
+    /**
+     * Magento validateBeforeSubmit needs getShippingRateByCode(), not only a method.
+     * Build a rate row from the paid method code and amount when Magento has none.
+     *
+     * @param array<string, mixed> $shipping
+     * @return array{code:string,carrier:string,carrierTitle:string,method:string,methodTitle:string,price:mixed}
+     */
+    private function synthesizeRate(array $shipping): array
+    {
+        $code = (string)$shipping['method'];
+        $pos = strpos($code, '_');
+        $carrier = $pos === false ? $code : substr($code, 0, $pos);
+        $method = $pos === false ? $code : substr($code, $pos + 1);
+        $title = trim((string)($shipping['description'] ?? ''));
+        $price = array_key_exists('amount', $shipping)
+            ? $shipping['amount']
+            : ($shipping['baseAmount'] ?? 0);
+
+        return [
+            'code' => $code,
+            'carrier' => $carrier,
+            'carrierTitle' => $carrier,
+            'method' => $method,
+            'methodTitle' => $title !== '' ? $title : $method,
+            'price' => $price,
+        ];
     }
 }
