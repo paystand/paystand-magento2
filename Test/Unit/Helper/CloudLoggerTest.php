@@ -46,6 +46,7 @@ class CloudLoggerTest extends TestCase
         $this->assertNotEmpty(CloudLogger::EVENT_CAPTURE_SNAPSHOT_CORRUPT);
         $this->assertNotEmpty(CloudLogger::EVENT_CAPTURED_CART_REFUSED);
         $this->assertSame('captured_cart_refused', CloudLogger::EVENT_CAPTURED_CART_REFUSED);
+        $this->assertSame('capture_snapshot_stamp_failed', CloudLogger::EVENT_CAPTURE_SNAPSHOT_STAMP_FAILED);
     }
 
     public function testEventTypeConstantsAreUnique(): void
@@ -60,6 +61,7 @@ class CloudLoggerTest extends TestCase
             CloudLogger::EVENT_CAPTURE_TOTAL_DRIFT,
             CloudLogger::EVENT_CAPTURE_SNAPSHOT_CORRUPT,
             CloudLogger::EVENT_CAPTURED_CART_REFUSED,
+            CloudLogger::EVENT_CAPTURE_SNAPSHOT_STAMP_FAILED,
         ];
         $this->assertCount(count($events), array_unique($events), 'Event type constants must be unique');
     }
@@ -168,7 +170,8 @@ class CloudLoggerTest extends TestCase
             __DIR__ . '/../../../view/frontend/web/js/view/payment/method-renderer/paystandmagento-directpost.js'
         );
 
-        $this->assertStringContainsString('cart changed after payment', $renderer);
+        // The code, not the sentence: the sentence is translatable.
+        $this->assertStringContainsString('PS-CART-CHANGED', $renderer);
         $this->assertStringContainsString('order_confirm_refused', $renderer);
         $this->assertStringContainsString('showErrorModal', $renderer);
     }

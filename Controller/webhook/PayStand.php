@@ -10,6 +10,8 @@ use Magento\Framework\Lock\LockManagerInterface;
 use \stdClass;
 use Magento\Sales\Model\Order\Payment\Transaction\BuilderInterface as BuilderInterface;
 use Magento\Sales\Model\Order;
+use PayStand\PayStandMagento\Exception\CapturedCartChangedException;
+use PayStand\PayStandMagento\Helper\CaptureSnapshot;
 use PayStand\PayStandMagento\Helper\CloudLogger;
 use PayStand\PayStandMagento\Model\Config\Source\PaymentStatus;
 
@@ -339,7 +341,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 try {
                     $abandonMessage = 'Paid but unplaceable for >' . self::RESCUE_ABANDON_AFTER_HOURS
                         . 'h; needs manual resolution. Last error: ' . $reason;
-                    if (str_contains((string)$reason, 'cart changed after payment')) {
+                    if (!empty($this->lastRescueFailure['refused'])) {
                         $abandonMessage = 'captured_cart_refused: ' . $abandonMessage;
                     }
                     CloudLogger::ship(CloudLogger::EVENT_RESCUE_ABANDONED, [
@@ -1036,8 +1038,14 @@ class Paystand extends \Magento\Framework\App\Action\Action
 
             // Copy paid money first. Recollect can drop shipping and rewrite
             // grand_total; the snapshot must keep the captured amount. A restored
-            // rate row can merge in at stamp time.
-            $this->captureSnapshot->copyPaidRecollectAndStamp($quote, 'webhook-createorder');
+            // rate row can merge in at stamp time. Marked as rescue-stamped: this
+            // runs when the browser never stamped, so the cart here is whatever
+            // the shopper left, not provably the cart that was paid for.
+            $this->captureSnapshot->copyPaidRecollectAndStamp(
+                $quote,
+                'webhook-createorder',
+                CaptureSnapshot::SOURCE_RESCUE
+            );
 
             $this->cartRepository->save($quote);
 
@@ -1062,6 +1070,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
             // minimum). Anything else is infrastructure and worth retrying.
             $this->lastRescueFailure = [
                 'terminal' => $e instanceof \Magento\Framework\Exception\LocalizedException,
+                'refused'  => $e instanceof CapturedCartChangedException,
                 'message'  => $e->getMessage(),
             ];
             $this->_logger->error('>>>>> PAYSTAND-ERROR: Server-side order creation failed for quote ' . $quoteId . ': ' . $e->getMessage());
@@ -1081,7 +1090,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
 
             try {
                 $errorMessage = 'Server-side placeOrder failed: ' . $e->getMessage();
-                if (str_contains($e->getMessage(), 'cart changed after payment')) {
+                if ($e instanceof CapturedCartChangedException) {
                     $errorMessage = 'captured_cart_refused: ' . $errorMessage;
                 }
                 CloudLogger::ship(CloudLogger::EVENT_PLACEORDER_EXCEPTION, [

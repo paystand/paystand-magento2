@@ -8,6 +8,7 @@ use Magento\Framework\App\Config\ScopeConfigInterface;
 use Magento\Framework\Event\ManagerInterface;
 use Magento\Framework\Exception\LocalizedException;
 use Magento\Framework\Phrase;
+use PayStand\PayStandMagento\Exception\CapturedCartChangedException;
 use Magento\Quote\Model\Quote;
 use Magento\Quote\Model\QuoteManagement;
 use PayStand\PayStandMagento\Helper\CaptureSnapshot;
@@ -97,6 +98,16 @@ class CapturedQuoteSubmit
                 return;
             }
 
+            // The rescue stamps from the quote it is about to place, so its hash
+            // always matches itself. Comparing proves nothing; say so and submit.
+            if ($this->snapshot->isSelfStamped($payload)) {
+                $this->logger->warning(
+                    'PAYSTAND-CAPTURED-SUBMIT: snapshot was written by the rescue on quote '
+                    . $quote->getId() . ', cart cannot be verified, submit continues'
+                );
+                return;
+            }
+
             // An unreadable stamp is not a changed cart. Refusing on one would tell
             // the shopper they altered a cart they never touched, so log and submit.
             $stamped = (string)$this->snapshot->stampedHash($payload);
@@ -148,10 +159,6 @@ class CapturedQuoteSubmit
             . ' current=' . $current
         );
 
-        if ($mode !== self::MODE_REFUSE) {
-            return;
-        }
-
         $paymentId = '';
         try {
             $paymentId = (string)$quote->getData('paystand_payment_id');
@@ -163,15 +170,20 @@ class CapturedQuoteSubmit
             CloudLogger::ship(CloudLogger::EVENT_CAPTURED_CART_REFUSED, [
                 'quote_id' => (string)$quoteId,
                 'payment_id' => $paymentId,
-                'error_message' => 'stamped=' . $stamped . ' current=' . $current,
+                'error_message' => 'mode=' . $mode . ' stamped=' . $stamped . ' current=' . $current,
             ]);
         } catch (\Throwable $ignored) {
         }
 
-        $exception = new LocalizedException(
+        if ($mode !== self::MODE_REFUSE) {
+            return;
+        }
+
+        $exception = new CapturedCartChangedException(
             new Phrase(
-                'The cart changed after payment was captured. Do not place this order. Contact support. Payment ID: %1',
-                [$paymentId !== '' ? $paymentId : 'unknown']
+                'The cart changed after payment was captured. Do not place this order.'
+                . ' Contact support. Payment ID: %1 (%2)',
+                [$paymentId !== '' ? $paymentId : 'unknown', CapturedCartChangedException::CODE]
             )
         );
 
@@ -190,16 +202,6 @@ class CapturedQuoteSubmit
 
     private function guardMode(): string
     {
-        try {
-            $mode = strtolower(trim((string)$this->scopeConfig->getValue(self::CONFIG_PATH)));
-        } catch (\Throwable $e) {
-            return self::MODE_LOG_ONLY;
-        }
-
-        if ($mode === self::MODE_OFF || $mode === self::MODE_LOG_ONLY || $mode === self::MODE_REFUSE) {
-            return $mode;
-        }
-
-        return self::MODE_LOG_ONLY;
+        return $this->snapshot->resolveGuardMode($this->scopeConfig);
     }
 }

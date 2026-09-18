@@ -4,6 +4,10 @@ declare(strict_types=1);
 
 namespace PayStand\PayStandMagento\Helper;
 
+use Magento\Framework\App\Config\ScopeConfigInterface;
+use Magento\Store\Model\ScopeInterface;
+use PayStand\PayStandMagento\Model\Config\Source\PaymentStatus;
+use PayStand\PayStandMagento\Plugin\CapturedQuoteSubmit;
 use Psr\Log\LoggerInterface;
 
 /**
@@ -19,6 +23,14 @@ use Psr\Log\LoggerInterface;
 class CaptureSnapshot
 {
     public const QUOTE_FIELD = 'paystand_capture_snapshot';
+
+    // Stamped by the shopper's own browser, from the cart that was on screen
+    // when Paystand captured. The hash is evidence of what was paid for.
+    public const SOURCE_CHECKOUT = 'checkout';
+    // Stamped by the webhook rescue, up to 24h later, from whatever the cart
+    // holds now. The hash describes that cart, not the paid one, so comparing
+    // the cart against it proves nothing.
+    public const SOURCE_RESCUE = 'rescue';
 
     public const ADDRESS_MONEY_KEYS = [
         'subtotal',
@@ -41,6 +53,9 @@ class CaptureSnapshot
     /** @var LoggerInterface */
     private $logger;
 
+    /** @var int */
+    private $stampDepth = 0;
+
     public function __construct(QuoteShipping $quoteShipping, LoggerInterface $logger)
     {
         $this->quoteShipping = $quoteShipping;
@@ -56,8 +71,55 @@ class CaptureSnapshot
             return false;
         }
 
+        $status = strtolower(trim((string)$quote->getData('paystand_capture_status')));
+
         return !empty($quote->getData('paystand_payment_id'))
-            && !empty($quote->getData('paystand_capture_status'));
+            && in_array($status, PaymentStatus::CAPTURED_STATUSES, true);
+    }
+
+    /**
+     * True while copyPaidRecollectAndStamp is running. The freeze must not
+     * short-circuit that recollect: capture markers are already set and the
+     * snapshot is not written yet.
+     */
+    public function isStamping(): bool
+    {
+        return $this->stampDepth > 0;
+    }
+
+    /**
+     * payment/paystandmagento/captured_cart_guard at store scope (website
+     * values fall through). Unknown, empty, and read failures are log_only.
+     *
+     * @param ScopeConfigInterface $config
+     */
+    public function resolveGuardMode(ScopeConfigInterface $config): string
+    {
+        try {
+            $mode = strtolower(trim((string)$config->getValue(
+                CapturedQuoteSubmit::CONFIG_PATH,
+                ScopeInterface::SCOPE_STORE
+            )));
+        } catch (\Throwable $e) {
+            $this->logger->error(
+                'PAYSTAND-CAPTURED-GUARD: could not read captured_cart_guard, using log_only: '
+                . $e->getMessage()
+            );
+            return CapturedQuoteSubmit::MODE_LOG_ONLY;
+        }
+
+        if ($mode === CapturedQuoteSubmit::MODE_OFF
+            || $mode === CapturedQuoteSubmit::MODE_LOG_ONLY
+            || $mode === CapturedQuoteSubmit::MODE_REFUSE
+        ) {
+            return $mode;
+        }
+
+        $this->logger->warning(
+            'PAYSTAND-CAPTURED-GUARD: unknown captured_cart_guard value, using log_only'
+        );
+
+        return CapturedQuoteSubmit::MODE_LOG_ONLY;
     }
 
     /**
@@ -65,11 +127,12 @@ class CaptureSnapshot
      * omitted: Magento can rewrite those on save/load without the shopper
      * changing the cart.
      *
-     * row_total carries what sku + qty cannot: a priced custom option, a
-     * different child of the same configurable, and a price that moved under an
-     * otherwise identical cart. Normalisation is deliberately lossy in the
-     * direction of not refusing — case and postcode punctuation are never a
-     * shopper's intent to change the destination.
+     * row_total carries what sku + qty cannot: a priced custom option and a
+     * different child of the same configurable. It is the base-currency figure
+     * rounded to cents, so a currency-rate import or a re-render cannot move it
+     * — only the goods can. Normalisation is deliberately lossy in the direction
+     * of not refusing: case and postcode punctuation are never a shopper's
+     * intent to change the destination.
      *
      * Changing anything here invalidates every stamp already written, so a
      * change must ship with a plugin version bump. testGoldenHashVector pins it.
@@ -84,7 +147,7 @@ class CaptureSnapshot
             $normalized[] = [
                 'sku' => self::fold((string)($item['sku'] ?? '')),
                 'qty' => (string)(float)($item['qty'] ?? 0),
-                'row_total' => (string)(float)($item['row_total'] ?? 0),
+                'row_total' => self::money($item['row_total'] ?? 0),
             ];
         }
         usort($normalized, static function (array $left, array $right): int {
@@ -118,6 +181,18 @@ class CaptureSnapshot
      * One case rule for every hashed field. strtolower is byte-wise, so it
      * leaves "MÜNCHEN" and "München" hashing differently.
      */
+    /**
+     * Money as cents, so a display re-render or a decimal(20,4) reload cannot
+     * move the hash. Catalog price changes still move it; the epsilon drift
+     * check is what covers a price that moved without the cart changing.
+     *
+     * @param mixed $value
+     */
+    private static function money($value): string
+    {
+        return number_format(round((float)$value, 2), 2, '.', '');
+    }
+
     private static function fold(string $value): string
     {
         return function_exists('mb_strtolower')
@@ -135,7 +210,7 @@ class CaptureSnapshot
             $items[] = [
                 'sku' => (string)$item->getSku(),
                 'qty' => (string)(float)$item->getQty(),
-                'row_total' => (string)(float)$item->getRowTotal(),
+                'row_total' => self::money($item->getBaseRowTotal()),
             ];
         }
 
@@ -153,7 +228,7 @@ class CaptureSnapshot
      * @param mixed $quote Magento quote
      * @param array<string, mixed>|null $paid Paid totals copied before recollect
      */
-    public function stamp($quote, ?array $paid = null): void
+    public function stamp($quote, ?array $paid = null, string $source = self::SOURCE_CHECKOUT): void
     {
         if (!$quote) {
             return;
@@ -198,6 +273,7 @@ class CaptureSnapshot
 
         $payload = [
             'hash' => $this->hash($quote),
+            'source' => $source === self::SOURCE_RESCUE ? self::SOURCE_RESCUE : self::SOURCE_CHECKOUT,
             'grand_total' => (string)$grandTotal,
             'base_grand_total' => (string)$baseGrandTotal,
             'discount_amount' => array_key_exists('discount_amount', $paid)
@@ -257,11 +333,31 @@ class CaptureSnapshot
      *
      * @param mixed $quote Magento quote
      */
-    public function copyPaidRecollectAndStamp($quote, string $context): void
+    public function copyPaidRecollectAndStamp(
+        $quote,
+        string $context,
+        string $source = self::SOURCE_CHECKOUT
+    ): void {
+        $this->stampDepth++;
+        try {
+            $paid = $this->paidBag($quote);
+            $this->quoteShipping->recollectPreservingShipping($quote, $context);
+            $this->ensureStamped($quote, $paid, $source);
+        } finally {
+            $this->stampDepth--;
+        }
+    }
+
+    /**
+     * True when the snapshot was written by the rescue rather than by checkout.
+     * Its hash comes from the same quote the rescue is about to place, so a
+     * comparison against it always matches and proves nothing.
+     *
+     * @param array<string, mixed> $payload
+     */
+    public function isSelfStamped(array $payload): bool
     {
-        $paid = $this->paidBag($quote);
-        $this->quoteShipping->recollectPreservingShipping($quote, $context);
-        $this->ensureStamped($quote, $paid);
+        return isset($payload['source']) && (string)$payload['source'] === self::SOURCE_RESCUE;
     }
 
     /**
@@ -271,7 +367,7 @@ class CaptureSnapshot
      * @param mixed $quote Magento quote
      * @param array<string, mixed>|null $paid Paid totals copied before recollect
      */
-    public function ensureStamped($quote, ?array $paid = null): void
+    public function ensureStamped($quote, ?array $paid = null, string $source = self::SOURCE_CHECKOUT): void
     {
         try {
             if (!$this->isCaptured($quote)) {
@@ -288,7 +384,7 @@ class CaptureSnapshot
                 return;
             }
 
-            $this->stamp($quote, $paid);
+            $this->stamp($quote, $paid, $source);
         } catch (\Throwable $e) {
             $quoteId = 'unknown';
             try {
@@ -300,6 +396,20 @@ class CaptureSnapshot
                 'PAYSTAND-CAPTURE-SNAPSHOT: stamp failed for quote ' . $quoteId
                 . ': ' . $e->getMessage()
             );
+            $paymentId = '';
+            try {
+                $paymentId = $quote ? (string)$quote->getData('paystand_payment_id') : '';
+            } catch (\Throwable $ignored) {
+                $paymentId = '';
+            }
+            try {
+                CloudLogger::ship(CloudLogger::EVENT_CAPTURE_SNAPSHOT_STAMP_FAILED, [
+                    'quote_id' => $quoteId,
+                    'payment_id' => $paymentId,
+                    'error_message' => $e->getMessage(),
+                ]);
+            } catch (\Throwable $ignored) {
+            }
         }
     }
 

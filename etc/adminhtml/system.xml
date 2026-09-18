@@ -47,7 +47,7 @@
                 </field>
                 <field id="captured_cart_guard" translate="label" type="select" sortOrder="10" showInDefault="1" showInWebsite="1" showInStore="0">
                     <label>Captured Cart Guard</label>
-                    <comment>After Paystand captures payment, Magento can refuse placeOrder when the cart no longer matches. Log only records a mismatch and still places the order. Use Refuse after you measure the mismatch rate.</comment>
+                    <comment>After Paystand captures payment, Magento can refuse placeOrder when the cart no longer matches. Log only records a mismatch (including a CloudLogger event with the payment id) and still places the order. Off places the order with Magento totals and also removes the cart-price-rule freeze from 3.7.1/3.7.2. Use Refuse after you measure the mismatch rate.</comment>
                     <source_model>PayStand\PayStandMagento\Model\Config\Source\CapturedCartGuard</source_model>
                 </field>
             </group>

@@ -599,8 +599,12 @@ define(
             }
         }
 
+        // Matches the untranslated code from CapturedCartChangedException::CODE,
+        // not the sentence around it, which a store may translate or reword.
+        const CAPTURED_CART_REFUSED_CODE = 'PS-CART-CHANGED';
+
         function magentoRefusedCapturedCart(text) {
-            return /cart changed after payment/i.test(text || '');
+            return (text || '').indexOf(CAPTURED_CART_REFUSED_CODE) !== -1;
         }
         // ────────────────────────────────────────────────────────────────────
 

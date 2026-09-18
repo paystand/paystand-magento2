@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PayStand\PayStandMagento\Plugin;
 
+use Magento\Framework\App\Config\ScopeConfigInterface;
 use PayStand\PayStandMagento\Helper\CaptureSnapshot;
 use PayStand\PayStandMagento\Helper\CloudLogger;
 use PayStand\PayStandMagento\Helper\QuoteShipping;
@@ -16,8 +17,10 @@ use Psr\Log\LoggerInterface;
  * had not changed (PROD-16503).
  *
  * This plugin lets Magento collect, then puts back the paid shipping row and
- * grand total when the cart still matches the capture snapshot. Quotes that
- * are captured but have no snapshot freeze collect, same as 3.7.2.
+ * grand total when the cart still matches the capture snapshot, or when the
+ * recollected grand total is within a cent of the paid one. Quotes that are
+ * captured but have no snapshot freeze collect, same as 3.7.2, except during
+ * the stamp recollect and when captured_cart_guard is off.
  */
 class CapturedQuoteTotals
 {
@@ -30,14 +33,19 @@ class CapturedQuoteTotals
     /** @var CaptureSnapshot */
     private $snapshot;
 
+    /** @var ScopeConfigInterface */
+    private $scopeConfig;
+
     public function __construct(
         LoggerInterface $logger,
         QuoteShipping $quoteShipping,
-        CaptureSnapshot $snapshot
+        CaptureSnapshot $snapshot,
+        ScopeConfigInterface $scopeConfig
     ) {
         $this->logger = $logger;
         $this->quoteShipping = $quoteShipping;
         $this->snapshot = $snapshot;
+        $this->scopeConfig = $scopeConfig;
     }
 
     /**
@@ -52,6 +60,16 @@ class CapturedQuoteTotals
     {
         try {
             if (!$subject || !$this->snapshot->isCaptured($subject)) {
+                return;
+            }
+
+            if ($this->guardIsOff()) {
+                return;
+            }
+
+            // Capture markers are set before the snapshot. Freeze here and the
+            // stamp recollect never runs.
+            if ($this->snapshot->isStamping()) {
                 return;
             }
 
@@ -113,6 +131,10 @@ class CapturedQuoteTotals
             return;
         }
 
+        if ($this->guardIsOff()) {
+            return;
+        }
+
         // Multishipping splits totals across several addresses and never reaches
         // QuoteManagement::submit(), so there is no guard behind this. Pinning a
         // quote-level total onto one of those addresses would half-pin the order.
@@ -133,12 +155,25 @@ class CapturedQuoteTotals
             return;
         }
 
-        if (!$this->snapshot->matches($quote, $payload)) {
+        $hashMatches = $this->snapshot->matches($quote, $payload);
+        $hasPaidTotal = isset($payload['grand_total']) && $payload['grand_total'] !== '';
+        $grandTotal = $hasPaidTotal ? (float)$payload['grand_total'] : 0.0;
+        $liveGrand = (float)$quote->getGrandTotal();
+        $moneyClose = $hasPaidTotal && abs($liveGrand - $grandTotal) <= 0.01;
+
+        if (!$hashMatches && !$moneyClose) {
             $this->logger->warning(
                 'PAYSTAND-CAPTURED-TOTALS: cart changed after capture, leaving Magento totals on quote '
                 . $quote->getId()
             );
             return;
+        }
+
+        if (!$hashMatches) {
+            $this->logger->warning(
+                'PAYSTAND-CAPTURED-TOTALS: cart hash changed after capture, pinning paid total on quote '
+                . $quote->getId()
+            );
         }
 
         $shipping = isset($payload['shipping']) && is_array($payload['shipping'])
@@ -149,17 +184,15 @@ class CapturedQuoteTotals
             $this->pinShippingAmounts($quote, $shipping);
         }
 
-        if (!isset($payload['grand_total']) || $payload['grand_total'] === '') {
+        if (!$hasPaidTotal) {
             return;
         }
 
-        $grandTotal = (float)$payload['grand_total'];
         $baseGrandTotal = isset($payload['base_grand_total']) && $payload['base_grand_total'] !== ''
             ? (float)$payload['base_grand_total']
             : $grandTotal;
 
-        $liveGrand = (float)$quote->getGrandTotal();
-        if (abs($liveGrand - $grandTotal) > 0.005) {
+        if ($hashMatches && abs($liveGrand - $grandTotal) > 0.005) {
             $this->logger->warning(
                 'PAYSTAND-CAPTURED-TOTALS: Magento live grand_total drifted from paid copy on quote '
                 . $quote->getId()
@@ -223,14 +256,19 @@ class CapturedQuoteTotals
             return;
         }
 
-        if (array_key_exists('amount', $shipping)) {
-            $address->setShippingAmount($shipping['amount']);
+        if (array_key_exists('amount', $shipping) && $shipping['amount'] !== '') {
+            $address->setShippingAmount((float)$shipping['amount']);
         }
-        if (array_key_exists('baseAmount', $shipping)) {
-            $address->setBaseShippingAmount($shipping['baseAmount']);
+        if (array_key_exists('baseAmount', $shipping) && $shipping['baseAmount'] !== '') {
+            $address->setBaseShippingAmount((float)$shipping['baseAmount']);
         }
         if (!empty($shipping['description'])) {
             $address->setShippingDescription($shipping['description']);
         }
+    }
+
+    private function guardIsOff(): bool
+    {
+        return $this->snapshot->resolveGuardMode($this->scopeConfig) === CapturedQuoteSubmit::MODE_OFF;
     }
 }

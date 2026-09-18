@@ -15,7 +15,7 @@ class CapturedCartGuard implements \Magento\Framework\Option\ArrayInterface
         return [
             [
                 'value' => CapturedQuoteSubmit::MODE_OFF,
-                'label' => __('Off — always place the order'),
+                'label' => __('Off — always place the order (no freeze, no pin)'),
             ],
             [
                 'value' => CapturedQuoteSubmit::MODE_LOG_ONLY,

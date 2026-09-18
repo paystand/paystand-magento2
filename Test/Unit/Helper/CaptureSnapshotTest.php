@@ -2,8 +2,11 @@
 
 namespace PayStand\PayStandMagento\Test\Unit\Helper;
 
+use Magento\Framework\App\Config\ScopeConfigInterface;
+use Magento\Store\Model\ScopeInterface;
 use PayStand\PayStandMagento\Helper\CaptureSnapshot;
 use PayStand\PayStandMagento\Helper\QuoteShipping;
+use PayStand\PayStandMagento\Plugin\CapturedQuoteSubmit;
 use PHPUnit\Framework\TestCase;
 use Magento\Quote\Model\Quote;
 use Magento\Quote\Model\Quote\Address;
@@ -108,7 +111,7 @@ class CaptureSnapshotTest extends TestCase
     public function testHashPartsGoldenVector(): void
     {
         $this->assertSame(
-            '696ecd963c118a29a6606167b70e6abaefa476ced164636b412f720bed8dcc8d',
+            '2cc3e7b7153c0ca1b00713d867936e0b46900823dfa338cb9f013c80e64445d6',
             CaptureSnapshot::hashParts(
                 [['sku' => 'A', 'qty' => '1']],
                 [
@@ -122,8 +125,8 @@ class CaptureSnapshotTest extends TestCase
 
     /**
      * row_total is what separates two carts that sku + qty cannot tell apart:
-     * a priced custom option, a different child of one configurable, a price
-     * that moved. Without it those all hash equal and pin the wrong total.
+     * a priced custom option and a different child of one configurable.
+     * Without it those hash equal and pin the wrong total.
      */
     public function testHashChangesWhenRowTotalChanges(): void
     {
@@ -136,6 +139,44 @@ class CaptureSnapshotTest extends TestCase
             CaptureSnapshot::hashParts([['sku' => 'A', 'qty' => '1', 'row_total' => '10.00']], $address),
             CaptureSnapshot::hashParts([['sku' => 'A', 'qty' => '1', 'row_total' => '12.00']], $address)
         );
+    }
+
+    /**
+     * row_total is money. A re-render or a decimal(20,4) reload must not move
+     * it, or every in-flight paid cart mismatches for no shopper action.
+     */
+    public function testHashRoundsRowTotalToCents(): void
+    {
+        $address = [
+            'city' => 'Santa Cruz',
+            'postcode' => '95060',
+            'country' => 'us',
+        ];
+        $this->assertSame(
+            CaptureSnapshot::hashParts([['sku' => 'A', 'qty' => '1', 'row_total' => '10.00']], $address),
+            CaptureSnapshot::hashParts([['sku' => 'A', 'qty' => '1', 'row_total' => '10.0000']], $address)
+        );
+        $this->assertSame(
+            CaptureSnapshot::hashParts([['sku' => 'A', 'qty' => '1', 'row_total' => '10.004']], $address),
+            CaptureSnapshot::hashParts([['sku' => 'A', 'qty' => '1', 'row_total' => 10]], $address)
+        );
+    }
+
+    /**
+     * hash() must read the base figure. row_total is the display-currency
+     * amount, so a nightly rate import would otherwise trip every paid cart.
+     */
+    public function testHashReadsBaseRowTotal(): void
+    {
+        $snapshot = $this->makeSnapshot();
+        $quote = $this->quoteForHash(19.99, 24.5);
+
+        $expected = CaptureSnapshot::hashParts(
+            [['sku' => 'SKU', 'qty' => '1', 'row_total' => '19.99']],
+            ['city' => 'Santa Cruz', 'postcode' => '95060', 'country' => 'US']
+        );
+
+        $this->assertSame($expected, $snapshot->hash($quote));
     }
 
     /**
@@ -200,6 +241,8 @@ class CaptureSnapshotTest extends TestCase
         $this->assertFalse($snapshot->isCaptured($this->quoteWith(null, 'posted')));
         $this->assertFalse($snapshot->isCaptured($this->quoteWith('pay1', null)));
         $this->assertTrue($snapshot->isCaptured($this->quoteWith('pay1', 'posted')));
+        $this->assertTrue($snapshot->isCaptured($this->quoteWith('pay1', 'paid')));
+        $this->assertFalse($snapshot->isCaptured($this->quoteWith('pay1', 'processing')));
     }
 
     public function testStampPersistsHashTotalsAndShipping(): void
@@ -656,6 +699,64 @@ class CaptureSnapshotTest extends TestCase
         $this->makeSnapshot()->ensureStamped($quote);
     }
 
+    public function testEnsureStampedSkipsProcessingStatus(): void
+    {
+        $quote = $this->quoteWith('pay1', 'processing');
+        $quote->expects($this->never())->method('setData');
+
+        $this->makeSnapshot()->ensureStamped($quote);
+    }
+
+    public function testResolveGuardModeReadsStoreScopeAndLogsUnknown(): void
+    {
+        $logger = $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass();
+        $logger->expects($this->once())->method('warning')->with($this->callback(function ($message) {
+            return is_string($message) && str_contains($message, 'unknown captured_cart_guard');
+        }));
+        $config = $this->getMockBuilder(ScopeConfigInterface::class)->getMockForAbstractClass();
+        $config->expects($this->once())->method('getValue')->with(
+            CapturedQuoteSubmit::CONFIG_PATH,
+            ScopeInterface::SCOPE_STORE
+        )->willReturn('maybe');
+
+        $mode = (new CaptureSnapshot(
+            $this->getMockBuilder(QuoteShipping::class)->disableOriginalConstructor()->getMock(),
+            $logger
+        ))->resolveGuardMode($config);
+
+        $this->assertSame(CapturedQuoteSubmit::MODE_LOG_ONLY, $mode);
+    }
+
+    public function testCopyPaidRecollectAndStampSetsStampingDuringRecollect(): void
+    {
+        $quoteShipping = $this->getMockBuilder(QuoteShipping::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['snapshot', 'recollectPreservingShipping'])
+            ->getMock();
+        $quoteShipping->method('snapshot')->willReturn(null);
+        $snapshot = new CaptureSnapshot(
+            $quoteShipping,
+            $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass()
+        );
+        $quoteShipping->expects($this->once())->method('recollectPreservingShipping')
+            ->willReturnCallback(function () use ($snapshot) {
+                $this->assertTrue($snapshot->isStamping());
+                return ['before' => '', 'restored' => false, 'retryFailed' => false];
+            });
+
+        $quote = $this->quoteWith('pay1', 'posted');
+        $quote->method('getResource')->willReturn($this->emptyPersistedSnapshotResource());
+        $quote->method('getAllVisibleItems')->willReturn([]);
+        $quote->method('isVirtual')->willReturn(true);
+        $quote->method('getGrandTotal')->willReturn(10);
+        $quote->method('getBaseGrandTotal')->willReturn(10);
+        $quote->method('getBillingAddress')->willReturn(null);
+
+        $this->assertFalse($snapshot->isStamping());
+        $snapshot->copyPaidRecollectAndStamp($quote, 'savepaymentdata');
+        $this->assertFalse($snapshot->isStamping());
+    }
+
     public function testEnsureStampedLogsWhenStampThrows(): void
     {
         $logger = $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass();
@@ -755,6 +856,40 @@ class CaptureSnapshotTest extends TestCase
         $this->assertSame(['paidBag', 'recollect', 'stamp'], $sequence);
         $payload = json_decode((string)$written, true);
         $this->assertSame('343.83', $payload['grand_total']);
+    }
+
+    /**
+     * One item whose base and display row totals differ, as on any store whose
+     * presentation currency is not its base currency.
+     */
+    private function quoteForHash(float $baseRowTotal, float $rowTotal): Quote
+    {
+        $item = $this->getMockBuilder(Item::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['getSku', 'getQty'])
+            ->addMethods(['getRowTotal', 'getBaseRowTotal'])
+            ->getMock();
+        $item->method('getSku')->willReturn('SKU');
+        $item->method('getQty')->willReturn('1');
+        $item->method('getRowTotal')->willReturn($rowTotal);
+        $item->method('getBaseRowTotal')->willReturn($baseRowTotal);
+
+        $address = $this->getMockBuilder(Address::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['getCity', 'getPostcode', 'getCountryId'])
+            ->getMock();
+        $address->method('getCity')->willReturn('Santa Cruz');
+        $address->method('getPostcode')->willReturn('95060');
+        $address->method('getCountryId')->willReturn('US');
+
+        $quote = $this->getMockBuilder(Quote::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['getAllVisibleItems', 'isVirtual', 'getShippingAddress'])
+            ->getMock();
+        $quote->method('getAllVisibleItems')->willReturn([$item]);
+        $quote->method('isVirtual')->willReturn(false);
+        $quote->method('getShippingAddress')->willReturn($address);
+        return $quote;
     }
 
     private function makeSnapshot(): CaptureSnapshot

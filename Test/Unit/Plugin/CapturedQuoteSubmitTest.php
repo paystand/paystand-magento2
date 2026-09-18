@@ -7,6 +7,8 @@ use Magento\Framework\Event\ManagerInterface;
 use Magento\Framework\Exception\LocalizedException;
 use Magento\Quote\Model\Quote;
 use Magento\Quote\Model\QuoteManagement;
+use Magento\Store\Model\ScopeInterface;
+use PayStand\PayStandMagento\Exception\CapturedCartChangedException;
 use PayStand\PayStandMagento\Helper\CaptureSnapshot;
 use PayStand\PayStandMagento\Helper\QuoteShipping;
 use PayStand\PayStandMagento\Plugin\CapturedQuoteSubmit;
@@ -40,6 +42,14 @@ class CapturedQuoteSubmitTest extends TestCase
     {
         $plugin = $this->plugin();
         $quote = $this->quoteWith('pay1', 'posted', null);
+
+        $this->assertNull($plugin->beforeSubmit($this->subject, $quote));
+    }
+
+    public function testProcessingStatusDoesNotRefuseMismatch(): void
+    {
+        $plugin = $this->plugin(CapturedQuoteSubmit::MODE_REFUSE);
+        $quote = $this->capturedQuote('2', null, 'processing');
 
         $this->assertNull($plugin->beforeSubmit($this->subject, $quote));
     }
@@ -165,6 +175,56 @@ class CapturedQuoteSubmitTest extends TestCase
         $plugin->beforeSubmit($this->subject, $quote);
     }
 
+    /**
+     * The rescue stamps from the quote it is about to place, so a match there
+     * is a tautology. Refusing on a mismatch would be equally meaningless.
+     */
+    public function testRescueStampedSnapshotIsNeverRefused(): void
+    {
+        $logger = $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass();
+        $logger->expects($this->once())->method('warning')->with($this->callback(function ($message) {
+            return is_string($message) && str_contains($message, 'written by the rescue');
+        }));
+        $logger->expects($this->never())->method('error');
+
+        $plugin = $this->plugin(CapturedQuoteSubmit::MODE_REFUSE, $logger);
+        $quote = $this->capturedQuote('2', null, 'posted', CaptureSnapshot::SOURCE_RESCUE);
+
+        $this->assertNull($plugin->beforeSubmit($this->subject, $quote));
+    }
+
+    /**
+     * Three consumers identify the refusal. None may match on the wording,
+     * which a store can translate or edit.
+     */
+    public function testRefusalIsTypedAndCarriesAnUntranslatedCode(): void
+    {
+        $plugin = $this->plugin(CapturedQuoteSubmit::MODE_REFUSE);
+
+        try {
+            $plugin->beforeSubmit($this->subject, $this->capturedQuote('2'));
+            $this->fail('Expected the guard to refuse');
+        } catch (CapturedCartChangedException $e) {
+            $this->assertStringContainsString(CapturedCartChangedException::CODE, $e->getMessage());
+        }
+    }
+
+    /**
+     * The browser matches this string in rendered checkout text. Changing it
+     * silently stops the shopper being told the order will not exist.
+     */
+    public function testRefusalCodeMatchesTheBrowserConstant(): void
+    {
+        $js = (string)file_get_contents(
+            dirname(__DIR__, 3)
+            . '/view/frontend/web/js/view/payment/method-renderer/paystandmagento-directpost.js'
+        );
+        $this->assertStringContainsString(
+            "CAPTURED_CART_REFUSED_CODE = '" . CapturedCartChangedException::CODE . "'",
+            $js
+        );
+    }
+
     public function testConfigDefaultsToLogOnly(): void
     {
         $xml = file_get_contents(dirname(__DIR__, 3) . '/etc/config.xml');
@@ -172,6 +232,12 @@ class CapturedQuoteSubmitTest extends TestCase
             '<captured_cart_guard>log_only</captured_cart_guard>',
             (string)$xml
         );
+    }
+
+    public function testOffHelpTextNamesCartPriceRuleFreeze(): void
+    {
+        $xml = file_get_contents(dirname(__DIR__, 3) . '/etc/adminhtml/system.xml');
+        $this->assertStringContainsString('cart-price-rule freeze from 3.7.1/3.7.2', (string)$xml);
     }
 
     /**
@@ -214,7 +280,10 @@ class CapturedQuoteSubmitTest extends TestCase
         $eventManager = null
     ): CapturedQuoteSubmit {
         $config = $this->getMockBuilder(ScopeConfigInterface::class)->getMockForAbstractClass();
-        $config->method('getValue')->willReturn($mode);
+        $config->method('getValue')->with(
+            CapturedQuoteSubmit::CONFIG_PATH,
+            ScopeInterface::SCOPE_STORE
+        )->willReturn($mode);
         if ($eventManager === null) {
             $eventManager = $this->getMockBuilder(ManagerInterface::class)
                 ->getMockForAbstractClass();
@@ -260,7 +329,12 @@ class CapturedQuoteSubmitTest extends TestCase
         return $quote;
     }
 
-    private function capturedQuote(string $currentQty, ?string $hashOverride = null): Quote
+    private function capturedQuote(
+        string $currentQty,
+        ?string $hashOverride = null,
+        string $captureStatus = 'posted',
+        string $source = CaptureSnapshot::SOURCE_CHECKOUT
+    ): Quote
     {
         $item = $this->getMockBuilder(\Magento\Quote\Model\Quote\Item::class)
             ->disableOriginalConstructor()
@@ -288,7 +362,7 @@ class CapturedQuoteSubmitTest extends TestCase
             ]
         );
         $payload = json_encode(
-            ['hash' => $hashOverride ?? $hash, 'grand_total' => '343.83'],
+            ['hash' => $hashOverride ?? $hash, 'source' => $source, 'grand_total' => '343.83'],
             JSON_UNESCAPED_SLASHES
         );
 
@@ -302,12 +376,12 @@ class CapturedQuoteSubmitTest extends TestCase
         $quote->method('isVirtual')->willReturn(false);
         $quote->method('getAllVisibleItems')->willReturn([$item]);
         $quote->method('getShippingAddress')->willReturn($address);
-        $quote->method('getData')->willReturnCallback(function ($key) use ($payload) {
+        $quote->method('getData')->willReturnCallback(function ($key) use ($payload, $captureStatus) {
             if ($key === 'paystand_payment_id') {
                 return '0an3zfttt9p7jm1v9xdqc2tq';
             }
             if ($key === 'paystand_capture_status') {
-                return 'posted';
+                return $captureStatus;
             }
             if ($key === CaptureSnapshot::QUOTE_FIELD) {
                 return $payload;

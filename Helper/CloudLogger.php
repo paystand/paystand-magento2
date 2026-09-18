@@ -59,6 +59,8 @@ class CloudLogger
     const EVENT_CAPTURE_SNAPSHOT_CORRUPT = 'capture_snapshot_corrupt';
     // Magento refused placeOrder because the cart no longer matches the capture.
     const EVENT_CAPTURED_CART_REFUSED = 'captured_cart_refused';
+    // First stamp threw after capture markers were already on the quote.
+    const EVENT_CAPTURE_SNAPSHOT_STAMP_FAILED = 'capture_snapshot_stamp_failed';
 
     /**
      * Resolve the merchant's customer ID from store config.
