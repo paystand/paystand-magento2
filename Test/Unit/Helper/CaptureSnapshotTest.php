@@ -245,6 +245,24 @@ class CaptureSnapshotTest extends TestCase
         $this->assertFalse($snapshot->isCaptured($this->quoteWith('pay1', 'processing')));
     }
 
+    /**
+     * The two gates must stay separate. Freeze and refuse run on a confirmed
+     * capture; the snapshot and the pin also run on the processing rescue,
+     * which places an order.
+     */
+    public function testIsPinnableCoversProcessingAndIsCapturedDoesNot(): void
+    {
+        $snapshot = $this->makeSnapshot();
+
+        $this->assertFalse($snapshot->isPinnable(null));
+        $this->assertFalse($snapshot->isPinnable($this->quoteWith(null, 'processing')));
+        $this->assertFalse($snapshot->isPinnable($this->quoteWith('pay1', null)));
+        $this->assertTrue($snapshot->isPinnable($this->quoteWith('pay1', 'processing')));
+        $this->assertTrue($snapshot->isPinnable($this->quoteWith('pay1', 'posted')));
+        $this->assertTrue($snapshot->isPinnable($this->quoteWith('pay1', 'paid')));
+        $this->assertFalse($snapshot->isPinnable($this->quoteWith('pay1', 'failed')));
+    }
+
     public function testStampPersistsHashTotalsAndShipping(): void
     {
         $shipping = [
@@ -699,9 +717,46 @@ class CaptureSnapshotTest extends TestCase
         $this->makeSnapshot()->ensureStamped($quote);
     }
 
-    public function testEnsureStampedSkipsProcessingStatus(): void
+    /**
+     * ACH reaches the webhook rescue as processing and the rescue places the
+     * order anyway. Stamping there is what lets the pin book that order at the
+     * amount charged.
+     */
+    public function testEnsureStampedStampsAProcessingRescue(): void
     {
         $quote = $this->quoteWith('pay1', 'processing');
+        $quote->method('getResource')->willReturn($this->emptyPersistedSnapshotResource());
+        $quote->method('getAllVisibleItems')->willReturn([]);
+        $quote->method('isVirtual')->willReturn(true);
+        $quote->method('getBillingAddress')->willReturn(null);
+        $quote->method('getGrandTotal')->willReturn(343.83);
+        $quote->method('getBaseGrandTotal')->willReturn(343.83);
+
+        $written = null;
+        $quote->expects($this->once())->method('setData')
+            ->willReturnCallback(function ($key, $value = null) use (&$written, $quote) {
+                $written = [$key, $value];
+                return $quote;
+            });
+
+        $this->makeSnapshot()->ensureStamped(
+            $quote,
+            null,
+            CaptureSnapshot::SOURCE_RESCUE
+        );
+
+        $this->assertSame(CaptureSnapshot::QUOTE_FIELD, $written[0]);
+        $payload = json_decode($written[1], true);
+        $this->assertSame('343.83', $payload['grand_total']);
+        $this->assertSame(CaptureSnapshot::SOURCE_RESCUE, $payload['source']);
+    }
+
+    /**
+     * failed never becomes an order, so it must not leave a snapshot behind.
+     */
+    public function testEnsureStampedSkipsAStatusThatNeverPlacesAnOrder(): void
+    {
+        $quote = $this->quoteWith('pay1', 'failed');
         $quote->expects($this->never())->method('setData');
 
         $this->makeSnapshot()->ensureStamped($quote);

@@ -61,6 +61,9 @@ class CloudLogger
     const EVENT_CAPTURED_CART_REFUSED = 'captured_cart_refused';
     // First stamp threw after capture markers were already on the quote.
     const EVENT_CAPTURE_SNAPSHOT_STAMP_FAILED = 'capture_snapshot_stamp_failed';
+    // Totals were pinned from a snapshot the webhook rescue wrote, which is the
+    // cart the rescue found rather than a cart proven to be the one paid for.
+    const EVENT_CAPTURE_PIN_UNVERIFIED = 'capture_pin_unverified';
 
     /**
      * Resolve the merchant's customer ID from store config.
@@ -115,9 +118,16 @@ class CloudLogger
      */
     public static function ship(string $eventType, array $context = []): void
     {
+        // The Worker answers a keyless event with 401, so sending one buys
+        // nothing and still costs the caller a blocking request.
+        $publishableKey = (string)($context['publishable_key'] ?? self::getPublishableKey());
+        if ($publishableKey === '') {
+            return;
+        }
+
         $payload = json_encode([
             'customer_id'     => $context['customer_id'] ?? self::getMerchantId(),
-            'publishable_key' => $context['publishable_key'] ?? self::getPublishableKey(),
+            'publishable_key' => $publishableKey,
             'event_type'      => $eventType,
             'quote_id'        => $context['quote_id'] ?? '',
             'payment_id'      => $context['payment_id'] ?? '',

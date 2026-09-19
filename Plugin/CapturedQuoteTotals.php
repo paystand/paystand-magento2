@@ -122,12 +122,17 @@ class CapturedQuoteTotals
     }
 
     /**
+     * Pins on isPinnable, not isCaptured. The webhook rescue reaches Magento
+     * with an ACH still reported as processing and places the order anyway;
+     * gating the pin on a confirmed capture would book that order at whatever
+     * the recollect produced instead of the amount charged.
+     *
      * @param \Magento\Quote\Model\Quote $quote
      * @return void
      */
     private function pinPaidTotals($quote)
     {
-        if (!$quote || !$this->snapshot->isCaptured($quote)) {
+        if (!$quote || !$this->snapshot->isPinnable($quote)) {
             return;
         }
 
@@ -159,7 +164,7 @@ class CapturedQuoteTotals
         $hasPaidTotal = isset($payload['grand_total']) && $payload['grand_total'] !== '';
         $grandTotal = $hasPaidTotal ? (float)$payload['grand_total'] : 0.0;
         $liveGrand = (float)$quote->getGrandTotal();
-        $moneyClose = $hasPaidTotal && abs($liveGrand - $grandTotal) <= 0.01;
+        $moneyClose = $hasPaidTotal && self::centsApart($liveGrand, $grandTotal) <= 1;
 
         if (!$hashMatches && !$moneyClose) {
             $this->logger->warning(
@@ -169,19 +174,51 @@ class CapturedQuoteTotals
             return;
         }
 
+        $shipping = isset($payload['shipping']) && is_array($payload['shipping'])
+            ? $payload['shipping']
+            : null;
+
         if (!$hashMatches) {
+            // The cart changed and only the total still agrees. A second change,
+            // to a different shipping service, would have this order ship on a
+            // rate the shopper picked for something else, so it ends the pin.
+            if ($shipping && $this->shippingMethodChanged($quote, $shipping)) {
+                $this->logger->warning(
+                    'PAYSTAND-CAPTURED-TOTALS: cart hash and shipping method both changed after capture,'
+                    . ' leaving Magento totals on quote ' . $quote->getId()
+                );
+                return;
+            }
+
             $this->logger->warning(
                 'PAYSTAND-CAPTURED-TOTALS: cart hash changed after capture, pinning paid total on quote '
                 . $quote->getId()
             );
         }
 
-        $shipping = isset($payload['shipping']) && is_array($payload['shipping'])
-            ? $payload['shipping']
-            : null;
         if ($shipping) {
             $this->quoteShipping->restore($quote, $shipping, 'captured-collect');
             $this->pinShippingAmounts($quote, $shipping);
+        }
+
+        // A rescue writes its snapshot from the cart it found, so its hash matching
+        // proves nothing. It is still the best paid figure available, so pin it and
+        // record that the pinned amount was never verified against the capture.
+        if (($hasPaidTotal || $shipping) && $this->snapshot->isSelfStamped($payload)) {
+            $this->logger->warning(
+                'PAYSTAND-CAPTURED-TOTALS: pinning quote ' . $quote->getId()
+                . ' from a rescue-written snapshot, paid amount is unverified'
+                . ' live=' . $liveGrand . ' stamped=' . $grandTotal
+            );
+            try {
+                CloudLogger::ship(CloudLogger::EVENT_CAPTURE_PIN_UNVERIFIED, [
+                    'quote_id' => (string)$quote->getId(),
+                    'payment_id' => (string)$quote->getData('paystand_payment_id'),
+                    'error_message' => 'live=' . $liveGrand . ' stamped=' . $grandTotal,
+                ]);
+            } catch (\Throwable $e) {
+                // CloudLogger failure — ignored
+            }
         }
 
         if (!$hasPaidTotal) {
@@ -192,7 +229,7 @@ class CapturedQuoteTotals
             ? (float)$payload['base_grand_total']
             : $grandTotal;
 
-        if ($hashMatches && abs($liveGrand - $grandTotal) > 0.005) {
+        if ($hashMatches && self::centsApart($liveGrand, $grandTotal) > 0) {
             $this->logger->warning(
                 'PAYSTAND-CAPTURED-TOTALS: Magento live grand_total drifted from paid copy on quote '
                 . $quote->getId()
@@ -265,6 +302,41 @@ class CapturedQuoteTotals
         if (!empty($shipping['description'])) {
             $address->setShippingDescription($shipping['description']);
         }
+    }
+
+    /**
+     * True when the address carries a different shipping method than the one
+     * the snapshot recorded. An empty method is not a change: the recollect
+     * clears the selection on its own, which is what restore() puts back.
+     *
+     * @param \Magento\Quote\Model\Quote $quote
+     * @param array<string, mixed> $shipping
+     * @return bool
+     */
+    private function shippingMethodChanged($quote, array $shipping): bool
+    {
+        if ($quote->isVirtual() || empty($shipping['method'])) {
+            return false;
+        }
+
+        $address = $quote->getShippingAddress();
+        if (!$address) {
+            return false;
+        }
+
+        $live = (string)$address->getShippingMethod();
+
+        return $live !== '' && $live !== (string)$shipping['method'];
+    }
+
+    /**
+     * Distance between two money figures in whole cents. Comparing floats with
+     * a decimal epsilon misses by one bit (abs(1.01 - 1.00) is above 0.01), so
+     * round to cents first and compare integers.
+     */
+    private static function centsApart(float $left, float $right): int
+    {
+        return (int)abs((int)round($left * 100) - (int)round($right * 100));
     }
 
     private function guardIsOff(): bool

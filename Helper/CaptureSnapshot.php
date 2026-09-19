@@ -63,9 +63,34 @@ class CaptureSnapshot
     }
 
     /**
+     * Money confirmed taken. Gates the collect freeze and the submit refusal,
+     * so a payment still in flight is never frozen and never refused.
+     *
      * @param mixed $quote
      */
     public function isCaptured($quote): bool
+    {
+        return $this->hasStatusIn($quote, PaymentStatus::CAPTURED_STATUSES);
+    }
+
+    /**
+     * Paystand reported a payment and Magento will build an order from it.
+     * Wider than isCaptured: ACH usually reaches the webhook rescue as
+     * processing, and that rescue places the order anyway. Gates the snapshot
+     * and the pin, so the order is booked at the amount the shopper was charged.
+     *
+     * @param mixed $quote
+     */
+    public function isPinnable($quote): bool
+    {
+        return $this->hasStatusIn($quote, PaymentStatus::PLACE_ORDER_STATUSES);
+    }
+
+    /**
+     * @param mixed $quote
+     * @param array<string> $statuses
+     */
+    private function hasStatusIn($quote, array $statuses): bool
     {
         if (!$quote) {
             return false;
@@ -74,7 +99,7 @@ class CaptureSnapshot
         $status = strtolower(trim((string)$quote->getData('paystand_capture_status')));
 
         return !empty($quote->getData('paystand_payment_id'))
-            && in_array($status, PaymentStatus::CAPTURED_STATUSES, true);
+            && in_array($status, $statuses, true);
     }
 
     /**
@@ -361,8 +386,10 @@ class CaptureSnapshot
     }
 
     /**
-     * Record the snapshot once, the first time this quote shows a confirmed capture.
+     * Record the snapshot once, the first time this quote shows a reported payment.
      * Later saves must not overwrite it: that hash is the cart the shopper paid for.
+     * A status that arrives later never re-stamps, so a cart edited between two
+     * webhook deliveries keeps the first snapshot.
      *
      * @param mixed $quote Magento quote
      * @param array<string, mixed>|null $paid Paid totals copied before recollect
@@ -370,7 +397,7 @@ class CaptureSnapshot
     public function ensureStamped($quote, ?array $paid = null, string $source = self::SOURCE_CHECKOUT): void
     {
         try {
-            if (!$this->isCaptured($quote)) {
+            if (!$this->isPinnable($quote)) {
                 return;
             }
 

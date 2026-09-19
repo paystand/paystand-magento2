@@ -611,7 +611,7 @@ class CreateOrderFromQuoteTest extends TestCase
         $this->cartRepositoryMock->method('get')->willReturn($reloaded);
         $this->controller->method('findOrder')->willReturn(null);
         $this->captureSnapshotMock->expects($this->once())->method('copyPaidRecollectAndStamp')
-            ->with($reloaded, 'webhook-createorder');
+            ->with($reloaded, 'webhook-createorder', CaptureSnapshot::SOURCE_RESCUE);
 
         $this->cartRepositoryMock->method('save')->willReturn(null);
         $this->cartManagementMock->method('placeOrder')->willReturn(77);
@@ -649,9 +649,9 @@ class CreateOrderFromQuoteTest extends TestCase
     }
 
     /**
-     * ACH often reaches Magento createOrderFromQuote as processing.
-     * Magento placeOrder still runs. The snapshot must be written on that path
-     * or collect-then-pin never engages.
+     * ACH often reaches Magento createOrderFromQuote as processing, and
+     * placeOrder still runs. The markers and the snapshot must both be written
+     * on that path, marked as rescue-stamped, or the pin never engages there.
      */
     public function testProcessingRescueRecordsCaptureMarkers(): void
     {
@@ -669,7 +669,7 @@ class CreateOrderFromQuoteTest extends TestCase
         $this->cartRepositoryMock->method('get')->willReturn($reloaded);
         $this->controller->method('findOrder')->willReturn(null);
         $this->captureSnapshotMock->expects($this->once())->method('copyPaidRecollectAndStamp')
-            ->with($reloaded, 'webhook-createorder');
+            ->with($reloaded, 'webhook-createorder', CaptureSnapshot::SOURCE_RESCUE);
 
         $order = $this->buildOrder(77, 'W000000077');
         $this->cartManagementMock->method('placeOrder')->willReturn(77);

@@ -290,6 +290,38 @@ class CapturedQuoteTotalsTest extends TestCase
         $this->assertSame($quote, $this->plugin->afterCollectTotals($quote, $quote));
     }
 
+    /**
+     * The incident quote. The webhook rescue places the order while ACH still
+     * reads processing, so the pin has to run at that status or the order is
+     * booked at the recollected total instead of the charged one.
+     */
+    public function testAfterCollectPinsAProcessingRescue(): void
+    {
+        $shippingSnap = [
+            'method' => 'fedex_FEDEX_GROUND',
+            'amount' => '55',
+            'baseAmount' => '55',
+            'description' => 'FedEx Ground',
+            'rate' => ['code' => 'fedex_FEDEX_GROUND', 'price' => 55.0],
+        ];
+        $quote = $this->matchingCapturedQuote(
+            $shippingSnap,
+            343.83,
+            '1',
+            true,
+            288.83,
+            false,
+            'processing'
+        );
+        $this->quoteShipping->expects($this->once())
+            ->method('restore')
+            ->with($quote, $shippingSnap, 'captured-collect')
+            ->willReturn(true);
+        $quote->expects($this->atLeastOnce())->method('setGrandTotal')->with(343.83);
+
+        $this->assertSame($quote, $this->plugin->afterCollectTotals($quote, $quote));
+    }
+
     public function testAfterCollectDoesNotPinWhenHashDiffersAndTotalMoved(): void
     {
         $shippingSnap = [
@@ -304,6 +336,177 @@ class CapturedQuoteTotalsTest extends TestCase
         $quote->expects($this->never())->method('setGrandTotal');
 
         $this->assertSame($quote, $this->plugin->afterCollectTotals($quote, $quote));
+    }
+
+    public function testAfterCollectDoesNotPinWhenHashAndShippingMethodBothChanged(): void
+    {
+        $shippingSnap = [
+            'method' => 'fedex_FEDEX_GROUND',
+            'amount' => '55',
+            'baseAmount' => '55',
+            'description' => 'FedEx Ground',
+            'rate' => ['code' => 'fedex_FEDEX_GROUND', 'price' => 55.0],
+        ];
+        $quote = $this->matchingCapturedQuote(
+            $shippingSnap,
+            343.83,
+            '2',
+            true,
+            343.84,
+            false,
+            'posted',
+            'flatrate_flatrate'
+        );
+        $this->quoteShipping->expects($this->never())->method('restore');
+        $quote->expects($this->never())->method('setGrandTotal');
+
+        $this->assertSame($quote, $this->plugin->afterCollectTotals($quote, $quote));
+    }
+
+    /**
+     * The cart changed but the shopper is still on the service they paid for,
+     * so the paid shipping row goes back and the paid total is pinned.
+     */
+    public function testAfterCollectPinsWhenHashDiffersAndTheSameMethodIsStillSelected(): void
+    {
+        $shippingSnap = [
+            'method' => 'fedex_FEDEX_GROUND',
+            'amount' => '55',
+            'baseAmount' => '55',
+            'description' => 'FedEx Ground',
+            'rate' => ['code' => 'fedex_FEDEX_GROUND', 'price' => 55.0],
+        ];
+        $quote = $this->matchingCapturedQuote(
+            $shippingSnap,
+            343.83,
+            '2',
+            true,
+            343.84,
+            false,
+            'posted',
+            'fedex_FEDEX_GROUND'
+        );
+        $this->quoteShipping->expects($this->once())
+            ->method('restore')
+            ->with($quote, $shippingSnap, 'captured-collect')
+            ->willReturn(true);
+        $quote->expects($this->atLeastOnce())->method('setGrandTotal')->with(343.83);
+
+        $this->assertSame($quote, $this->plugin->afterCollectTotals($quote, $quote));
+    }
+
+    /**
+     * One cent apart in cents, but abs(1.01 - 1.00) is above 0.01 in floats.
+     * The comparison has to round to cents or this cart is left unpinned.
+     */
+    public function testAfterCollectPinsWhenTheLiveTotalIsOneCentAboveThePaidOne(): void
+    {
+        $shippingSnap = [
+            'method' => 'fedex_FEDEX_GROUND',
+            'amount' => '55',
+            'baseAmount' => '55',
+            'description' => 'FedEx Ground',
+            'rate' => ['code' => 'fedex_FEDEX_GROUND', 'price' => 55.0],
+        ];
+        $quote = $this->matchingCapturedQuote($shippingSnap, 1.00, '2', true, 1.01);
+        $this->quoteShipping->expects($this->once())
+            ->method('restore')
+            ->with($quote, $shippingSnap, 'captured-collect')
+            ->willReturn(true);
+        $quote->expects($this->atLeastOnce())->method('setGrandTotal')->with(1.00);
+
+        $this->assertSame($quote, $this->plugin->afterCollectTotals($quote, $quote));
+    }
+
+    public function testAfterCollectDoesNotPinWhenTheLiveTotalIsTwoCentsFromThePaidOne(): void
+    {
+        $shippingSnap = [
+            'method' => 'fedex_FEDEX_GROUND',
+            'amount' => '55',
+            'baseAmount' => '55',
+            'description' => 'FedEx Ground',
+            'rate' => ['code' => 'fedex_FEDEX_GROUND', 'price' => 55.0],
+        ];
+        $quote = $this->matchingCapturedQuote($shippingSnap, 1.00, '2', true, 1.02);
+        $this->quoteShipping->expects($this->never())->method('restore');
+        $quote->expects($this->never())->method('setGrandTotal');
+
+        $this->assertSame($quote, $this->plugin->afterCollectTotals($quote, $quote));
+    }
+
+    /**
+     * The rescue stamps the cart it found, so its hash matching proves nothing.
+     * The pin still runs, and the quote is named so the amount can be checked
+     * against the capture later.
+     */
+    public function testAfterCollectFlagsAPinFromARescueWrittenSnapshot(): void
+    {
+        $shippingSnap = [
+            'method' => 'fedex_FEDEX_GROUND',
+            'amount' => '55',
+            'baseAmount' => '55',
+            'description' => 'FedEx Ground',
+            'rate' => ['code' => 'fedex_FEDEX_GROUND', 'price' => 55.0],
+        ];
+        $quote = $this->matchingCapturedQuote(
+            $shippingSnap,
+            343.83,
+            '1',
+            true,
+            288.83,
+            false,
+            'processing',
+            null,
+            CaptureSnapshot::SOURCE_RESCUE
+        );
+
+        $messages = [];
+        $logger = $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass();
+        $logger->method('warning')->willReturnCallback(function ($message) use (&$messages) {
+            $messages[] = (string)$message;
+        });
+        $plugin = $this->makePlugin($logger);
+
+        $quote->expects($this->atLeastOnce())->method('setGrandTotal')->with(343.83);
+
+        $this->assertSame($quote, $plugin->afterCollectTotals($quote, $quote));
+
+        $unverified = array_filter($messages, function ($message) {
+            return str_contains($message, 'unverified');
+        });
+        $this->assertCount(1, $unverified);
+        $this->assertStringContainsString('343.83', implode(' ', $unverified));
+    }
+
+    /**
+     * A checkout-written snapshot is verifiable, so the pin carries no flag.
+     */
+    public function testAfterCollectDoesNotFlagAPinFromACheckoutSnapshot(): void
+    {
+        $shippingSnap = [
+            'method' => 'fedex_FEDEX_GROUND',
+            'amount' => '55',
+            'baseAmount' => '55',
+            'description' => 'FedEx Ground',
+            'rate' => ['code' => 'fedex_FEDEX_GROUND', 'price' => 55.0],
+        ];
+        $quote = $this->matchingCapturedQuote(
+            $shippingSnap,
+            343.83,
+            '1',
+            true,
+            343.83,
+            false,
+            'posted',
+            null,
+            CaptureSnapshot::SOURCE_CHECKOUT
+        );
+
+        $logger = $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass();
+        $logger->expects($this->never())->method('warning');
+        $plugin = $this->makePlugin($logger);
+
+        $this->assertSame($quote, $plugin->afterCollectTotals($quote, $quote));
     }
 
     public function testAfterCollectPinsRootDiscountWhenOldSnapshotHasNoAddress(): void
@@ -399,7 +602,10 @@ class CapturedQuoteTotalsTest extends TestCase
         string $currentQty = '1',
         bool $includeAddressMoney = true,
         ?float $liveGrandTotal = null,
-        bool $multiShipping = false
+        bool $multiShipping = false,
+        string $captureStatus = 'posted',
+        ?string $liveShippingMethod = null,
+        ?string $source = null
     ): Quote
     {
         $item = $this->getMockBuilder(\Magento\Quote\Model\Quote\Item::class)
@@ -415,7 +621,7 @@ class CapturedQuoteTotalsTest extends TestCase
             ->onlyMethods([
                 'getStreet', 'getCity', 'getPostcode', 'getCountryId',
                 'setShippingAmount', 'setBaseShippingAmount',
-                'getData', 'setData',
+                'getShippingMethod', 'getData', 'setData',
             ])
             ->addMethods([
                 'getDiscountAmount', 'setGrandTotal', 'setBaseGrandTotal', 'setDiscountAmount',
@@ -429,6 +635,7 @@ class CapturedQuoteTotalsTest extends TestCase
         $address->method('getDiscountAmount')->willReturn(-14.31);
         $address->method('setGrandTotal')->willReturnSelf();
         $address->method('setBaseGrandTotal')->willReturnSelf();
+        $address->method('getShippingMethod')->willReturn($liveShippingMethod);
 
         $stampedHash = CaptureSnapshot::hashParts(
             [['sku' => 'SKU', 'qty' => '1']],
@@ -445,6 +652,9 @@ class CapturedQuoteTotalsTest extends TestCase
             'discount_amount' => '-14.31',
             'shipping' => $shippingSnap,
         ];
+        if ($source !== null) {
+            $payloadData['source'] = $source;
+        }
         if ($includeAddressMoney) {
             $payloadData['address'] = [
                 'subtotal' => '303.14',
@@ -480,12 +690,12 @@ class CapturedQuoteTotalsTest extends TestCase
         $quote->method('getAllVisibleItems')->willReturn([$item]);
         $quote->method('getShippingAddress')->willReturn($address);
         $quote->method('getBillingAddress')->willReturn($address);
-        $quote->method('getData')->willReturnCallback(function ($key) use ($payload) {
+        $quote->method('getData')->willReturnCallback(function ($key) use ($payload, $captureStatus) {
             if ($key === 'paystand_payment_id') {
                 return '0an3zfttt9p7jm1v9xdqc2tq';
             }
             if ($key === 'paystand_capture_status') {
-                return 'posted';
+                return $captureStatus;
             }
             if ($key === CaptureSnapshot::QUOTE_FIELD) {
                 return $payload;
