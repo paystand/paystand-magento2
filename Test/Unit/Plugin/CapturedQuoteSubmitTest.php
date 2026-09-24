@@ -73,6 +73,17 @@ class CapturedQuoteSubmitTest extends TestCase
         $plugin->beforeSubmit($this->subject, $quote);
     }
 
+    public function testDefaultGuardRefusesMaterialCartMismatch(): void
+    {
+        $plugin = $this->plugin();
+        $quote = $this->capturedQuote('2');
+
+        $this->expectException(LocalizedException::class);
+        $this->expectExceptionMessage('The cart changed after payment was captured');
+
+        $plugin->beforeSubmit($this->subject, $quote);
+    }
+
     public function testMismatchLogOnlySubmits(): void
     {
         $logger = $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass();
@@ -225,11 +236,11 @@ class CapturedQuoteSubmitTest extends TestCase
         );
     }
 
-    public function testConfigDefaultsToLogOnly(): void
+    public function testConfigDefaultsToRefuse(): void
     {
         $xml = file_get_contents(dirname(__DIR__, 3) . '/etc/config.xml');
         $this->assertStringContainsString(
-            '<captured_cart_guard>log_only</captured_cart_guard>',
+            '<captured_cart_guard>refuse</captured_cart_guard>',
             (string)$xml
         );
     }
@@ -275,7 +286,7 @@ class CapturedQuoteSubmitTest extends TestCase
     }
 
     private function plugin(
-        string $mode = CapturedQuoteSubmit::MODE_LOG_ONLY,
+        string $mode = CapturedQuoteSubmit::MODE_REFUSE,
         ?LoggerInterface $logger = null,
         $eventManager = null
     ): CapturedQuoteSubmit {
