@@ -24,8 +24,8 @@ use Psr\Log\LoggerInterface;
  *
  * payment/paystandmagento/captured_cart_guard:
  * off      — do not check
- * log_only — log a mismatch and still submit
- * refuse   — throw and block placeOrder (default)
+ * log_only — log a mismatch and still submit (default)
+ * refuse   — throw and block placeOrder
  */
 class CapturedQuoteSubmit
 {

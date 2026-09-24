@@ -106,6 +106,17 @@ class SavePaymentDataTest extends TestCase
         $this->assertContains('processing', PaymentStatus::PLACE_ORDER_STATUSES);
     }
 
+    public function testProcessingDoesNotReplaceACapturedStatus(): void
+    {
+        $this->assertSame('paid', PaymentStatus::keepStrongerStatus('paid', 'processing'));
+        $this->assertSame('posted', PaymentStatus::keepStrongerStatus('posted', 'processing'));
+        $this->assertSame('paid', PaymentStatus::keepStrongerStatus('processing', 'paid'));
+        $this->assertSame('posted', PaymentStatus::keepStrongerStatus('paid', 'posted'));
+
+        $webhook = file_get_contents(__DIR__ . '/../../../../Controller/webhook/PayStand.php');
+        $this->assertStringContainsString('PaymentStatus::keepStrongerStatus(', $webhook);
+    }
+
     /**
      * SavePaymentData must stamp through the helper so paidBag, recollect, and
      * ensureStamped stay in one order. A naive paidBag substring would also

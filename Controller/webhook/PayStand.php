@@ -1016,6 +1016,10 @@ class Paystand extends \Magento\Framework\App\Action\Action
             $captureId = $quote->getData('paystand_payment_id') ?: ($json->resource->id ?? null);
             $captureStatus = strtolower(trim((string)$psPaymentStatus));
             if ($captureId && in_array($captureStatus, PaymentStatus::PLACE_ORDER_STATUSES, true)) {
+                $captureStatus = PaymentStatus::keepStrongerStatus(
+                    (string)$quote->getData('paystand_capture_status'),
+                    $captureStatus
+                );
                 $quote->setData('paystand_payment_id', $captureId);
                 $quote->setData('paystand_capture_status', $captureStatus);
                 $this->_logger->debug(
