@@ -64,14 +64,27 @@ class CaptureSnapshot
     }
 
     /**
-     * Money confirmed taken. Gates the collect freeze and the submit refusal,
-     * so a payment still in flight is never frozen and never refused.
+     * Money confirmed taken. Gates the collect freeze, so a payment still in
+     * flight is never frozen.
      *
      * @param mixed $quote
      */
     public function isCaptured($quote): bool
     {
         return $this->hasStatusIn($quote, PaymentStatus::CAPTURED_STATUSES);
+    }
+
+    /**
+     * Paystand reported a payment for this cart, whatever its status. Gates the
+     * submit refusal: a bank payment is still processing when checkout places the
+     * order, and the webhook rescue places processing payments too, so the cart
+     * must match what was paid for from the moment a payment exists.
+     *
+     * @param mixed $quote
+     */
+    public function hasReportedPayment($quote): bool
+    {
+        return $quote && !empty($quote->getData('paystand_payment_id'));
     }
 
     /**

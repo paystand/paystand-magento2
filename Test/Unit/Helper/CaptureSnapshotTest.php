@@ -1119,6 +1119,21 @@ class CaptureSnapshotTest extends TestCase
      * One item whose base and display row totals differ, as on any store whose
      * presentation currency is not its base currency.
      */
+    /**
+     * Any reported payment id counts, whatever its status: a bank payment reaches
+     * checkout still processing, with no capture status recorded.
+     */
+    public function testHasReportedPaymentNeedsOnlyAPaymentId(): void
+    {
+        $snapshot = $this->makeSnapshot();
+
+        $this->assertTrue($snapshot->hasReportedPayment($this->quoteWith('pay1', null)));
+        $this->assertTrue($snapshot->hasReportedPayment($this->quoteWith('pay1', 'processing')));
+        $this->assertFalse($snapshot->hasReportedPayment($this->quoteWith(null, 'posted')));
+        $this->assertFalse($snapshot->hasReportedPayment($this->quoteWith('', null)));
+        $this->assertFalse($snapshot->hasReportedPayment(null));
+    }
+
     private function quoteForHash(float $baseRowTotal, float $rowTotal): Quote
     {
         $item = $this->getMockBuilder(Item::class)

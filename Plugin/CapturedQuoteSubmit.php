@@ -89,7 +89,9 @@ class CapturedQuoteSubmit
                 return;
             }
 
-            if (!$this->snapshot->isCaptured($quote)) {
+            // Any reported payment, not only a confirmed capture: a bank payment is
+            // still processing when checkout places the order.
+            if (!$this->snapshot->hasReportedPayment($quote)) {
                 return;
             }
 

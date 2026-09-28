@@ -46,10 +46,36 @@ class CapturedQuoteSubmitTest extends TestCase
         $this->assertNull($plugin->beforeSubmit($this->subject, $quote));
     }
 
-    public function testProcessingStatusDoesNotRefuseMismatch(): void
+    /**
+     * A bank payment is still processing when checkout places the order, and the
+     * webhook rescue places processing payments too. The cart must still be the one
+     * paid for (PROD-16503: staging booked a changed cart through the rescue).
+     */
+    public function testProcessingPaymentRefusesAChangedCart(): void
     {
         $plugin = $this->plugin(CapturedQuoteSubmit::MODE_REFUSE);
         $quote = $this->capturedQuote('2', null, 'processing');
+
+        $this->expectException(CapturedCartChangedException::class);
+
+        $plugin->beforeSubmit($this->subject, $quote);
+    }
+
+    /** Checkout records no capture status for a bank payment, only its id. */
+    public function testReportedPaymentWithNoCaptureStatusRefusesAChangedCart(): void
+    {
+        $plugin = $this->plugin(CapturedQuoteSubmit::MODE_REFUSE);
+        $quote = $this->capturedQuote('2', null, '');
+
+        $this->expectException(CapturedCartChangedException::class);
+
+        $plugin->beforeSubmit($this->subject, $quote);
+    }
+
+    public function testProcessingPaymentSubmitsTheCartThatWasPaid(): void
+    {
+        $plugin = $this->plugin(CapturedQuoteSubmit::MODE_REFUSE);
+        $quote = $this->capturedQuote('1', null, 'processing');
 
         $this->assertNull($plugin->beforeSubmit($this->subject, $quote));
     }
