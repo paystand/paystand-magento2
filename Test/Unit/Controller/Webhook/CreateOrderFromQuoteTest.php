@@ -682,6 +682,58 @@ class CreateOrderFromQuoteTest extends TestCase
     }
 
     /**
+     * The delivery loaded its quote on arrival, then waited about 20s. The browser can
+     * record the payment in that time; the row's status must count, or saving the older
+     * copy as processing lets the refuse check skip a changed cart. On staging that
+     * booked order 000000353 for a cart nobody paid for (PROD-16503).
+     *
+     * @dataProvider statusRecordedSinceLoadProvider
+     */
+    public function testStatusRecordedSinceTheQuoteLoadedIsKept(
+        ?string $loaded,
+        ?string $persisted,
+        string $event,
+        string $expected
+    ): void {
+        $quote = $this->buildInitialQuote(42);
+        $this->lockManagerMock->method('lock')->willReturn(true);
+
+        $reloaded = $this->buildReloadedQuote([
+            'paystandPaymentId'      => null,
+            'paystandCaptureStatus'  => $loaded,
+            'persistedCaptureStatus' => $persisted,
+        ]);
+        $written = [];
+        $reloaded->method('setData')->willReturnCallback(
+            function ($key, $value = null) use (&$written, $reloaded) {
+                $written[$key] = $value;
+                return $reloaded;
+            }
+        );
+        $this->cartRepositoryMock->method('get')->willReturn($reloaded);
+        $this->controller->method('findOrder')->willReturn(null);
+        $this->cartManagementMock->method('placeOrder')->willReturn(77);
+        $this->orderRepositoryMock->method('get')->willReturn($this->buildOrder(77, 'W000000077'));
+
+        $this->invoke($quote, $event, 'pay-webhook-999');
+
+        $this->assertSame($expected, $written['paystand_capture_status'] ?? null);
+    }
+
+    /**
+     * @return array
+     */
+    public static function statusRecordedSinceLoadProvider(): array
+    {
+        return [
+            'browser recorded paid after the copy loaded' => [null, 'paid', 'processing', 'paid'],
+            'browser recorded posted over a processing copy' => ['processing', 'posted', 'processing', 'posted'],
+            'nothing recorded since the copy loaded' => [null, null, 'processing', 'processing'],
+            'the event is further along than the row' => [null, 'processing', 'posted', 'posted'],
+        ];
+    }
+
+    /**
      * failed never maps to Magento STATE_PROCESSING, so createOrderFromQuote
      * returns before markers or Magento placeOrder.
      */
@@ -745,6 +797,9 @@ class CreateOrderFromQuoteTest extends TestCase
             'paymentMethod'         => Directpost::METHOD_CODE,
             'paystandPaymentId'     => 'pay-default123',
             'paystandCaptureStatus' => null,
+            // The quote row's status now; null leaves getResource() unset, so the
+            // re-read fails as it does in tests that do not model the row.
+            'persistedCaptureStatus' => null,
         ], $overrides);
 
         // getCustomerEmail/setCustomerEmail are magic data accessors on Quote.
@@ -753,7 +808,7 @@ class CreateOrderFromQuoteTest extends TestCase
             ->onlyMethods([
                 'getId', 'getIsActive', 'setIsActive', 'getItemsCount',
                 'getPayment', 'getBillingAddress', 'getShippingAddress', 'collectTotals',
-                'getData', 'setData',
+                'getData', 'setData', 'getResource',
             ])
             ->addMethods(['getCustomerEmail', 'setCustomerEmail'])
             ->getMock();
@@ -777,6 +832,10 @@ class CreateOrderFromQuoteTest extends TestCase
             }
         );
 
+        if ($config['persistedCaptureStatus'] !== null) {
+            $quote->method('getResource')->willReturn($this->quoteRowWithStatus($config['persistedCaptureStatus']));
+        }
+
         $payment = $this->getMockBuilder(Payment::class)
             ->disableOriginalConstructor()
             ->onlyMethods(['getMethod', 'setMethod'])
@@ -788,6 +847,32 @@ class CreateOrderFromQuoteTest extends TestCase
         $quote->method('getShippingAddress')->willReturn($this->buildAddress($config['shippingEmail']));
 
         return $quote;
+    }
+
+    /**
+     * The quote resource as the status re-read uses it: one row, one column.
+     *
+     * @param string $status
+     * @return object
+     */
+    private function quoteRowWithStatus(string $status)
+    {
+        $select = $this->getMockBuilder(\stdClass::class)
+            ->addMethods(['from', 'where'])
+            ->getMock();
+        $select->method('from')->willReturnSelf();
+        $select->method('where')->willReturnSelf();
+        $connection = $this->getMockBuilder(\stdClass::class)
+            ->addMethods(['select', 'fetchOne'])
+            ->getMock();
+        $connection->method('select')->willReturn($select);
+        $connection->method('fetchOne')->willReturn($status);
+        $resource = $this->getMockBuilder(\stdClass::class)
+            ->addMethods(['getConnection', 'getMainTable'])
+            ->getMock();
+        $resource->method('getConnection')->willReturn($connection);
+        $resource->method('getMainTable')->willReturn('quote');
+        return $resource;
     }
 
     /**

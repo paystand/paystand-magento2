@@ -946,8 +946,9 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 return $existing;
             }
 
-            // Reload the quote fresh so is_active reflects any placeOrder that
-            // committed while we waited on the lock.
+            // Magento hands back the copy this request loaded on arrival, before the
+            // wait above (QuoteRepository caches per request). findOrder() and the
+            // capture-status re-read below go to the database for what can change.
             try {
                 $quote = $this->cartRepository->get($quoteId);
             } catch (\Exception $e) {
@@ -1016,8 +1017,14 @@ class Paystand extends \Magento\Framework\App\Action\Action
             $captureId = $quote->getData('paystand_payment_id') ?: ($json->resource->id ?? null);
             $captureStatus = strtolower(trim((string)$psPaymentStatus));
             if ($captureId && in_array($captureStatus, PaymentStatus::PLACE_ORDER_STATUSES, true)) {
+                // The browser can record the payment while this delivery waits. Rank the
+                // row's status too: saving this copy as processing over the browser's paid
+                // would let CapturedQuoteSubmit skip a changed cart.
                 $captureStatus = PaymentStatus::keepStrongerStatus(
-                    (string)$quote->getData('paystand_capture_status'),
+                    PaymentStatus::keepStrongerStatus(
+                        (string)$quote->getData('paystand_capture_status'),
+                        $this->persistedCaptureStatus($quote, $quoteId)
+                    ),
                     $captureStatus
                 );
                 $quote->setData('paystand_payment_id', $captureId);
@@ -1129,11 +1136,30 @@ class Paystand extends \Magento\Framework\App\Action\Action
      */
     protected function preserveCaptureStatus($quote, $quoteId)
     {
-        try {
-            if (!empty($quote->getData('paystand_capture_status'))) {
-                return;
-            }
+        if (!empty($quote->getData('paystand_capture_status'))) {
+            return;
+        }
 
+        $persisted = $this->persistedCaptureStatus($quote, $quoteId);
+        if ($persisted !== '') {
+            $quote->setData('paystand_capture_status', $persisted);
+            $this->_logger->debug(
+                '>>>>> PAYSTAND-WEBHOOK: Kept capture status ' . $persisted
+                . ' recorded for quote ' . $quoteId . ' since it was loaded'
+            );
+        }
+    }
+
+    /**
+     * paystand_capture_status as the quote row holds it now, '' when it holds none.
+     *
+     * @param mixed $quote
+     * @param int $quoteId
+     * @return string
+     */
+    private function persistedCaptureStatus($quote, $quoteId): string
+    {
+        try {
             // Uses the connection the quote itself is saved through, so this needs no
             // extra dependency and cannot drift from that table.
             $resource = $quote->getResource();
@@ -1141,19 +1167,12 @@ class Paystand extends \Magento\Framework\App\Action\Action
             $select = $connection->select()
                 ->from($resource->getMainTable(), 'paystand_capture_status')
                 ->where('entity_id = ?', $quoteId);
-            $persisted = $connection->fetchOne($select);
-
-            if (!empty($persisted)) {
-                $quote->setData('paystand_capture_status', $persisted);
-                $this->_logger->debug(
-                    '>>>>> PAYSTAND-WEBHOOK: Kept capture status ' . $persisted
-                    . ' recorded for quote ' . $quoteId . ' since it was loaded'
-                );
-            }
+            return strtolower(trim((string)$connection->fetchOne($select)));
         } catch (\Throwable $e) {
             // A failed read must not stop the rescue; the worst case is the status
             // this delivery already held being saved as it was loaded.
             $this->_logger->error('>>>>> PAYSTAND-WEBHOOK: Could not re-read capture status: ' . $e->getMessage());
+            return '';
         }
     }
 
