@@ -20,6 +20,11 @@ use Psr\Log\LoggerInterface;
  */
 class CaptureSnapshotTest extends TestCase
 {
+    private const UNPAID_ROW = [
+        'entity_id = ?' => 770001,
+        "paystand_payment_id IS NULL OR paystand_payment_id = ''",
+    ];
+
     public function testHashPartsIsStableForTheSameCart(): void
     {
         $items = [
@@ -452,6 +457,77 @@ class CaptureSnapshotTest extends TestCase
         $this->assertSame($first, $stored);
     }
 
+    /**
+     * The window stamps 164.96. Another browser then doubles the quote.
+     * The payment save must keep 164.96 so the guard can refuse 329.92.
+     */
+    public function testPaymentSaveKeepsTheSnapshotTakenWhenTheWindowOpened(): void
+    {
+        $quoteShipping = $this->getMockBuilder(QuoteShipping::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['snapshot'])
+            ->getMock();
+        $quoteShipping->method('snapshot')->willReturn(null);
+
+        $paymentId = null;
+        $captureStatus = null;
+        $grandTotal = 164.96;
+        $stored = null;
+        $quote = $this->getMockBuilder(Quote::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods([
+                'getData', 'setData', 'getAllVisibleItems', 'isVirtual',
+                'getShippingAddress', 'getBillingAddress', 'getId', 'getResource',
+            ])
+            ->addMethods(['getGrandTotal', 'getBaseGrandTotal'])
+            ->getMock();
+        $quote->method('getId')->willReturn(1201);
+        $quote->method('getAllVisibleItems')->willReturn([]);
+        $quote->method('isVirtual')->willReturn(true);
+        $quote->method('getBillingAddress')->willReturn(null);
+        $quote->method('getGrandTotal')->willReturnCallback(function () use (&$grandTotal) {
+            return $grandTotal;
+        });
+        $quote->method('getBaseGrandTotal')->willReturnCallback(function () use (&$grandTotal) {
+            return $grandTotal;
+        });
+        $quote->method('getData')->willReturnCallback(function ($key) use (&$paymentId, &$captureStatus, &$stored) {
+            if ($key === 'paystand_payment_id') {
+                return $paymentId;
+            }
+            if ($key === 'paystand_capture_status') {
+                return $captureStatus;
+            }
+            if ($key === CaptureSnapshot::QUOTE_FIELD) {
+                return $stored;
+            }
+            return null;
+        });
+        $quote->method('setData')->willReturnCallback(function ($key, $value) use (&$stored, $quote) {
+            if ($key === CaptureSnapshot::QUOTE_FIELD) {
+                $stored = $value;
+            }
+            return $quote;
+        });
+
+        $quote->method('getResource')->willReturn($this->unpaidRowResource(1));
+
+        $snapshot = new CaptureSnapshot(
+            $quoteShipping,
+            $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass()
+        );
+        $this->assertTrue($snapshot->stampCheckoutIntent($quote));
+
+        $paymentId = 'pay-window';
+        $captureStatus = 'paid';
+        $grandTotal = 329.92;
+        $snapshot->ensureStamped($quote);
+
+        $payload = json_decode((string)$stored, true);
+        $this->assertSame('164.96', $payload['grand_total']);
+        $this->assertSame(CaptureSnapshot::SOURCE_CHECKOUT, $payload['source']);
+    }
+
     public function testEnsureStampedUsesPersistedColumnWhenMemoryIsEmpty(): void
     {
         $persisted = '{"hash":"' . str_repeat('ab', 32) . '","grand_total":"1"}';
@@ -715,6 +791,132 @@ class CaptureSnapshotTest extends TestCase
         $quote->expects($this->never())->method('setData');
 
         $this->makeSnapshot()->ensureStamped($quote);
+    }
+
+    public function testStampCheckoutIntentRecordsTheCartBeforePayment(): void
+    {
+        $data = [];
+        $quote = $this->statefulQuote($data, 164.96);
+        $updates = [];
+        $quote->method('getResource')->willReturn($this->unpaidRowResource(1, false, $updates));
+
+        $this->assertTrue($this->makeSnapshot()->stampCheckoutIntent($quote));
+
+        $written = (string)$data[CaptureSnapshot::QUOTE_FIELD];
+        $payload = json_decode($written, true);
+        $this->assertSame('164.96', $payload['grand_total']);
+        $this->assertSame(CaptureSnapshot::SOURCE_CHECKOUT, $payload['source']);
+        // Only the snapshot column, and only on a row with no payment id yet.
+        $this->assertSame([[
+            'quote',
+            [CaptureSnapshot::QUOTE_FIELD => $written],
+            self::UNPAID_ROW,
+        ]], $updates);
+    }
+
+    public function testStampCheckoutIntentDoesNotOverwriteAReportedPayment(): void
+    {
+        $quote = $this->quoteWith('pay1', 'paid');
+        $quote->expects($this->never())->method('setData');
+        $updates = [];
+        $quote->method('getResource')->willReturn($this->unpaidRowResource(1, false, $updates));
+
+        $this->assertFalse($this->makeSnapshot()->stampCheckoutIntent($quote));
+        $this->assertSame([], $updates);
+    }
+
+    /**
+     * Another request recorded a payment after this quote was loaded, so the
+     * row refuses the write. Memory takes the row's snapshot rather than keep
+     * a cart that was never charged.
+     */
+    public function testStampCheckoutIntentYieldsToAPaymentRecordedSinceLoad(): void
+    {
+        $paidSnapshot = '{"hash":"' . str_repeat('cd', 32) . '","source":"checkout","grand_total":"164.96"}';
+        $data = [];
+        $quote = $this->statefulQuote($data, 329.92);
+        $quote->method('getResource')->willReturn($this->unpaidRowResource(0, $paidSnapshot));
+
+        $this->assertFalse($this->makeSnapshot()->stampCheckoutIntent($quote));
+
+        $this->assertSame($paidSnapshot, $data[CaptureSnapshot::QUOTE_FIELD]);
+    }
+
+    /**
+     * MySQL counts a row whose value did not change as not updated. The same
+     * cart opened twice without a clear in between is still written.
+     */
+    public function testStampCheckoutIntentTreatsAnUnchangedRowAsWritten(): void
+    {
+        $data = [];
+        $quote = $this->statefulQuote($data, 164.96);
+        $quote->method('getResource')->willReturn($this->unpaidRowResource(0, function () use (&$data) {
+            return $data[CaptureSnapshot::QUOTE_FIELD] ?? false;
+        }));
+
+        $this->assertTrue($this->makeSnapshot()->stampCheckoutIntent($quote));
+
+        $payload = json_decode((string)$data[CaptureSnapshot::QUOTE_FIELD], true);
+        $this->assertSame('164.96', $payload['grand_total']);
+    }
+
+    public function testClearCheckoutIntentDropsTheSnapshotOfAnUnpaidRow(): void
+    {
+        $quote = $this->quoteWith(null, null);
+        $updates = [];
+        $quote->method('getResource')->willReturn($this->unpaidRowResource(1, false, $updates));
+        $quote->expects($this->once())->method('setData')->with(CaptureSnapshot::QUOTE_FIELD, null);
+
+        $this->makeSnapshot()->clearCheckoutIntent($quote);
+
+        $this->assertSame([[
+            'quote',
+            [CaptureSnapshot::QUOTE_FIELD => null],
+            self::UNPAID_ROW,
+        ]], $updates);
+    }
+
+    /**
+     * A quote with a payment id keeps its snapshot: it records what was charged.
+     */
+    public function testClearCheckoutIntentLeavesAQuoteWithAPaymentAlone(): void
+    {
+        $quote = $this->quoteWith('pay1', 'processing');
+        $updates = [];
+        $quote->method('getResource')->willReturn($this->unpaidRowResource(1, false, $updates));
+        $quote->expects($this->never())->method('setData');
+
+        $this->makeSnapshot()->clearCheckoutIntent($quote);
+
+        $this->assertSame([], $updates);
+    }
+
+    /**
+     * A failed clear must not stop the window opening. It is logged, and the
+     * stamp that follows it still overwrites the old snapshot.
+     */
+    public function testClearCheckoutIntentLogsAWriteFailureAndReturns(): void
+    {
+        $quote = $this->quoteWith(null, null);
+        $connection = $this->getMockBuilder(\stdClass::class)
+            ->addMethods(['update'])
+            ->getMock();
+        $connection->method('update')->willThrowException(new \RuntimeException('db down'));
+        $resource = $this->getMockBuilder(\stdClass::class)
+            ->addMethods(['getConnection', 'getMainTable'])
+            ->getMock();
+        $resource->method('getConnection')->willReturn($connection);
+        $resource->method('getMainTable')->willReturn('quote');
+        $quote->method('getResource')->willReturn($resource);
+        $logger = $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass();
+        $logger->expects($this->once())->method('error')
+            ->with($this->stringContains('could not clear checkout intent for quote 770001'));
+
+        $snapshot = new CaptureSnapshot(
+            $this->getMockBuilder(QuoteShipping::class)->disableOriginalConstructor()->getMock(),
+            $logger
+        );
+        $snapshot->clearCheckoutIntent($quote);
     }
 
     /**
@@ -996,6 +1198,74 @@ class CaptureSnapshotTest extends TestCase
         $select->method('where')->willReturnSelf();
         $connection->method('select')->willReturn($select);
         $connection->method('fetchOne')->willReturn(false);
+        $resource = $this->getMockBuilder(\stdClass::class)
+            ->addMethods(['getConnection', 'getMainTable'])
+            ->getMock();
+        $resource->method('getConnection')->willReturn($connection);
+        $resource->method('getMainTable')->willReturn('quote');
+        return $resource;
+    }
+
+    /**
+     * A virtual, unpaid quote whose getData/setData share $data, so a value
+     * the helper writes is the value it reads back.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function statefulQuote(array &$data, float $grandTotal): Quote
+    {
+        $quote = $this->getMockBuilder(Quote::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods([
+                'getData', 'setData', 'getAllVisibleItems', 'isVirtual',
+                'getShippingAddress', 'getBillingAddress', 'getId', 'getResource',
+            ])
+            ->addMethods(['getGrandTotal', 'getBaseGrandTotal'])
+            ->getMock();
+        $quote->method('getId')->willReturn(770001);
+        $quote->method('getAllVisibleItems')->willReturn([]);
+        $quote->method('isVirtual')->willReturn(true);
+        $quote->method('getBillingAddress')->willReturn(null);
+        $quote->method('getGrandTotal')->willReturn($grandTotal);
+        $quote->method('getBaseGrandTotal')->willReturn($grandTotal);
+        $quote->method('getData')->willReturnCallback(function ($key) use (&$data) {
+            return $data[$key] ?? null;
+        });
+        $quote->method('setData')->willReturnCallback(function ($key, $value = null) use (&$data, $quote) {
+            $data[$key] = $value;
+            return $quote;
+        });
+        return $quote;
+    }
+
+    /**
+     * A quote row the snapshot helper writes to. Records every update() and
+     * reports $changed rows. Re-reads return $persisted (a value or a callable).
+     *
+     * @param mixed $persisted
+     * @param array<int, array{0:string,1:array,2:array}>|null $updates
+     * @return object
+     */
+    private function unpaidRowResource(int $changed, $persisted = false, ?array &$updates = null)
+    {
+        $connection = $this->getMockBuilder(\stdClass::class)
+            ->addMethods(['update', 'select', 'fetchOne'])
+            ->getMock();
+        $connection->method('update')->willReturnCallback(
+            function ($table, $bind, $where) use ($changed, &$updates) {
+                $updates[] = [$table, $bind, $where];
+                return $changed;
+            }
+        );
+        $select = $this->getMockBuilder(\stdClass::class)
+            ->addMethods(['from', 'where'])
+            ->getMock();
+        $select->method('from')->willReturnSelf();
+        $select->method('where')->willReturnSelf();
+        $connection->method('select')->willReturn($select);
+        $connection->method('fetchOne')->willReturnCallback(function () use ($persisted) {
+            return is_callable($persisted) ? $persisted() : $persisted;
+        });
         $resource = $this->getMockBuilder(\stdClass::class)
             ->addMethods(['getConnection', 'getMainTable'])
             ->getMock();

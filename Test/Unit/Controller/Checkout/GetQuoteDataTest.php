@@ -3,6 +3,7 @@
 namespace PayStand\PayStandMagento\Test\Unit\Controller\Checkout;
 
 use PayStand\PayStandMagento\Controller\Checkout\GetQuoteData;
+use PayStand\PayStandMagento\Helper\CaptureSnapshot;
 use PayStand\PayStandMagento\Helper\QuoteShipping;
 use PHPUnit\Framework\TestCase;
 use PHPUnit\Framework\MockObject\MockObject;
@@ -31,6 +32,9 @@ class GetQuoteDataTest extends TestCase
 
     /** @var CheckoutSession|MockObject */
     private $checkoutSessionMock;
+
+    /** @var CaptureSnapshot|MockObject */
+    private $captureSnapshot;
 
     /** @var array|null */
     private $captured;
@@ -79,6 +83,11 @@ class GetQuoteDataTest extends TestCase
             $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass(),
             $this->buildRateFactory()
         ));
+        $this->captureSnapshot = $this->getMockBuilder(CaptureSnapshot::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['stampCheckoutIntent', 'clearCheckoutIntent'])
+            ->getMock();
+        $this->set('captureSnapshot', $this->captureSnapshot);
     }
 
     /**
@@ -198,6 +207,61 @@ class GetQuoteDataTest extends TestCase
         $this->controller->execute();
 
         $this->assertTrue($this->captured['success']);
+    }
+
+    /**
+     * The snapshot an earlier open left is dropped before the cart is priced, and
+     * the cart this response hands the window is stamped after. Stamping first and
+     * clearing second would leave the window with no snapshot at all.
+     */
+    public function testClearsTheEarlierSnapshotBeforePricingAndStampsTheChargedCart(): void
+    {
+        $calls = [];
+        $address = $this->buildAddress('flatrate_flatrate', 5.00);
+        $quote = $this->buildQuote($address, 164.96);
+        $quote->method('collectTotals')->willReturnCallback(function () use (&$calls, $quote) {
+            $calls[] = 'collect';
+            return $quote;
+        });
+        $this->checkoutSessionMock->method('getQuote')->willReturn($quote);
+        $this->captureSnapshot->expects($this->once())
+            ->method('clearCheckoutIntent')
+            ->with($quote)
+            ->willReturnCallback(function () use (&$calls) {
+                $calls[] = 'clear';
+            });
+        $this->captureSnapshot->expects($this->once())
+            ->method('stampCheckoutIntent')
+            ->with($quote)
+            ->willReturnCallback(function () use (&$calls) {
+                $calls[] = 'stamp';
+                return true;
+            });
+
+        $this->controller->execute();
+
+        $this->assertTrue($this->captured['success']);
+        $this->assertSame(164.96, $this->captured['quote']['grand_total']);
+        $this->assertSame('clear', $calls[0]);
+        $this->assertContains('collect', $calls);
+        $this->assertSame('stamp', end($calls));
+    }
+
+    /**
+     * A snapshot that could not be written must not stop the window opening.
+     * With none on the row, the payment save stamps from the paid cart.
+     */
+    public function testStillReturnsQuoteDataWhenTheSnapshotIsNotWritten(): void
+    {
+        $address = $this->buildAddress('flatrate_flatrate', 5.00);
+        $quote = $this->buildQuote($address, 164.96);
+        $this->checkoutSessionMock->method('getQuote')->willReturn($quote);
+        $this->captureSnapshot->method('stampCheckoutIntent')->willReturn(false);
+
+        $this->controller->execute();
+
+        $this->assertTrue($this->captured['success']);
+        $this->assertSame(164.96, $this->captured['quote']['grand_total']);
     }
 
     /**

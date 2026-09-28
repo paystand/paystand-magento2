@@ -151,6 +151,9 @@ class SavePaymentData extends Action
         // Narrower than the payment id above: only a confirmed capture stamps a
         // snapshot so later collects can pin the totals the shopper paid.
         $paymentStatus   = $data['paymentStatus'] ?? null;
+        // False when the window was priced from browser totals because
+        // getquotedata failed. Older checkout JS does not send it.
+        $windowPricedByServer = $data['windowPricedByServer'] ?? null;
 
         if (!$payerId || !$quoteIdIncoming) {
             $this->logger->error('SAVEPAYMENTDATA >>>>>> Missing payerId or quote');
@@ -190,6 +193,9 @@ class SavePaymentData extends Action
                 ]);
             }
             $realQuoteId = (int)$quote->getId();
+
+            // Before the payment id lands: clearing checks for one.
+            $this->dropSnapshotFromEarlierOpen($quote, $windowPricedByServer);
 
             // 3) Check if paystand adjustment is enabled
             $isAdjustmentEnabled = $this->scopeConfig->isSetFlag(
@@ -403,6 +409,23 @@ class SavePaymentData extends Action
         $status = strtolower(trim((string)$paymentStatus));
 
         return in_array($status, self::CAPTURED_STATUSES, true) ? $status : null;
+    }
+
+    /**
+     * getquotedata did not price the window that took this payment, so the
+     * snapshot on the quote is from an earlier open and may describe another
+     * cart. Drop it, and the paid cart is stamped instead. Older checkout JS
+     * sends no flag and changes nothing; a quote with a payment is untouched.
+     *
+     * @param \Magento\Quote\Model\Quote $quote
+     * @param mixed $windowPricedByServer
+     * @return void
+     */
+    private function dropSnapshotFromEarlierOpen($quote, $windowPricedByServer)
+    {
+        if ($windowPricedByServer === false) {
+            $this->captureSnapshot->clearCheckoutIntent($quote);
+        }
     }
 
     /**

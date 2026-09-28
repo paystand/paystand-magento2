@@ -24,8 +24,9 @@ class CaptureSnapshot
 {
     public const QUOTE_FIELD = 'paystand_capture_snapshot';
 
-    // Stamped by the shopper's own browser, from the cart that was on screen
-    // when Paystand captured. The hash is evidence of what was paid for.
+    // Stamped by the shopper's own browser, from the cart on screen when the
+    // Paystand window opened. The window locks that amount; a later edit in
+    // another tab must not replace this hash. It is evidence of what was paid for.
     public const SOURCE_CHECKOUT = 'checkout';
     // Stamped by the webhook rescue, up to 24h later, from whatever the cart
     // holds now. The hash describes that cart, not the paid one, so comparing
@@ -386,10 +387,143 @@ class CaptureSnapshot
     }
 
     /**
-     * Record the snapshot once, the first time this quote shows a reported payment.
-     * Later saves must not overwrite it: that hash is the cart the shopper paid for.
-     * A status that arrives later never re-stamps, so a cart edited between two
-     * webhook deliveries keeps the first snapshot.
+     * Record the cart the Paystand window is about to charge.
+     *
+     * GetQuoteData runs when the window opens, and the window keeps that
+     * amount even if another browser changes the quote before payment
+     * finishes. Stamping here is what lets the guard see that change.
+     * A quote that already has a reported payment is left alone: replacing
+     * its snapshot would record the cart as it is now, not the cart charged.
+     *
+     * Only the snapshot column is written. GetQuoteData recollects the quote
+     * to price it and has never saved that recollect; a full quote save here
+     * would persist it, shipping rate rows included.
+     *
+     * @param mixed $quote Magento quote
+     * @return bool True when the quote row now holds this snapshot
+     */
+    public function stampCheckoutIntent($quote): bool
+    {
+        try {
+            if (!$quote || !$quote->getId()) {
+                return false;
+            }
+
+            if ($this->isPinnable($quote)) {
+                $this->logger->debug(
+                    'PAYSTAND-CAPTURE-SNAPSHOT: quote ' . $quote->getId()
+                    . ' already has a reported payment, checkout intent not restamped'
+                );
+                return false;
+            }
+
+            $this->stamp($quote, null, self::SOURCE_CHECKOUT);
+            $snapshot = (string)$quote->getData(self::QUOTE_FIELD);
+            if ($this->writeUnpaidSnapshot($quote, $snapshot) === 0) {
+                // Nothing changed: the row already holds this cart, or another
+                // request recorded a payment since this quote was loaded. Keep
+                // whatever the row holds, so memory never outvotes the payment.
+                $persisted = $this->persistedSnapshot($quote);
+                $quote->setData(self::QUOTE_FIELD, $persisted);
+                if ($persisted !== $snapshot) {
+                    $this->logger->debug(
+                        'PAYSTAND-CAPTURE-SNAPSHOT: quote ' . $quote->getId()
+                        . ' row already has a payment id, checkout intent not written'
+                    );
+                    return false;
+                }
+            }
+
+            $this->logger->debug(
+                'PAYSTAND-CAPTURE-SNAPSHOT: stamped checkout intent for quote ' . $quote->getId()
+                . ' grand_total=' . $quote->getGrandTotal()
+            );
+            return true;
+        } catch (\Throwable $e) {
+            $quoteId = 'unknown';
+            try {
+                $quoteId = $quote ? (string)$quote->getId() : 'unknown';
+            } catch (\Throwable $ignored) {
+                $quoteId = 'unknown';
+            }
+            $this->logger->error(
+                'PAYSTAND-CAPTURE-SNAPSHOT: checkout intent stamp failed for quote ' . $quoteId
+                . ': ' . $e->getMessage()
+            );
+            return false;
+        }
+    }
+
+    /**
+     * Drop the snapshot an earlier window open left, before this open prices
+     * the cart.
+     *
+     * If this GetQuoteData then fails, the browser opens the window from its
+     * own totals and nothing restamps. A snapshot kept from the earlier open
+     * describes a cart the shopper may have changed since, and refuse would
+     * block an order paid at the right amount. With no snapshot, the payment
+     * save stamps from the paid cart instead.
+     *
+     * A quote row that already carries a Paystand payment id is never cleared:
+     * its snapshot is the record of what was charged.
+     *
+     * @param mixed $quote Magento quote
+     */
+    public function clearCheckoutIntent($quote): void
+    {
+        try {
+            if (!$quote || !$quote->getId() || !empty($quote->getData('paystand_payment_id'))) {
+                return;
+            }
+
+            $this->writeUnpaidSnapshot($quote, null);
+            $quote->setData(self::QUOTE_FIELD, null);
+        } catch (\Throwable $e) {
+            $quoteId = 'unknown';
+            try {
+                $quoteId = $quote ? (string)$quote->getId() : 'unknown';
+            } catch (\Throwable $ignored) {
+                $quoteId = 'unknown';
+            }
+            $this->logger->error(
+                'PAYSTAND-CAPTURE-SNAPSHOT: could not clear checkout intent for quote ' . $quoteId
+                . ': ' . $e->getMessage()
+            );
+        }
+    }
+
+    /**
+     * Write only the snapshot column, and only while the row has no Paystand
+     * payment id. The condition is on the row, not on this in-memory quote, so
+     * a payment another request recorded since this quote was loaded still wins.
+     *
+     * @param mixed $quote Magento quote
+     * @return int Rows changed
+     */
+    private function writeUnpaidSnapshot($quote, ?string $snapshot): int
+    {
+        $resource = $quote->getResource();
+        $connection = $resource->getConnection();
+
+        return (int)$connection->update(
+            $resource->getMainTable(),
+            [self::QUOTE_FIELD => $snapshot],
+            [
+                'entity_id = ?' => (int)$quote->getId(),
+                "paystand_payment_id IS NULL OR paystand_payment_id = ''",
+            ]
+        );
+    }
+
+    /**
+     * Keep the snapshot already on the quote, or write one if this is the
+     * first time the quote shows a reported payment.
+     *
+     * The snapshot from stampCheckoutIntent is the cart the window locked.
+     * Later saves must not overwrite it: a cart edited after the window
+     * opened is a different cart, and the guard has to be able to see that.
+     * A quote with no earlier snapshot (the browser never opened the window)
+     * is still stamped here, from the paid bag copied before recollect.
      *
      * @param mixed $quote Magento quote
      * @param array<string, mixed>|null $paid Paid totals copied before recollect
@@ -401,13 +535,22 @@ class CaptureSnapshot
                 return;
             }
 
-            if ($this->read($quote)) {
+            $existing = $this->read($quote);
+            if ($existing) {
+                $this->logger->debug(
+                    'PAYSTAND-CAPTURE-SNAPSHOT: keeping existing snapshot on quote ' . $quote->getId()
+                    . ' grand_total=' . (string)($existing['grand_total'] ?? '')
+                    . ' source=' . (string)($existing['source'] ?? '')
+                );
                 return;
             }
 
             $persisted = $this->persistedSnapshot($quote);
             if ($persisted !== null) {
                 $quote->setData(self::QUOTE_FIELD, $persisted);
+                $this->logger->debug(
+                    'PAYSTAND-CAPTURE-SNAPSHOT: keeping persisted snapshot on quote ' . $quote->getId()
+                );
                 return;
             }
 

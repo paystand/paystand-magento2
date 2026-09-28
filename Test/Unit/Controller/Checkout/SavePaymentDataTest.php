@@ -3,6 +3,7 @@
 namespace PayStand\PayStandMagento\Test\Unit\Controller\Checkout;
 
 use PayStand\PayStandMagento\Controller\Checkout\SavePaymentData;
+use PayStand\PayStandMagento\Helper\CaptureSnapshot;
 use PayStand\PayStandMagento\Model\Config\Source\PaymentStatus;
 use PHPUnit\Framework\TestCase;
 
@@ -115,6 +116,67 @@ class SavePaymentDataTest extends TestCase
 
         $webhook = file_get_contents(__DIR__ . '/../../../../Controller/webhook/PayStand.php');
         $this->assertStringContainsString('PaymentStatus::keepStrongerStatus(', $webhook);
+    }
+
+    /**
+     * @param mixed $windowPricedByServer
+     * @param int $clears Times clearCheckoutIntent must run
+     */
+    private function dropFor($windowPricedByServer, int $clears): void
+    {
+        $quote = $this->getMockBuilder(\Magento\Quote\Model\Quote::class)
+            ->disableOriginalConstructor()
+            ->getMock();
+        $snapshot = $this->getMockBuilder(CaptureSnapshot::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['clearCheckoutIntent'])
+            ->getMock();
+        $snapshot->expects($this->exactly($clears))->method('clearCheckoutIntent')->with($quote);
+
+        $property = new \ReflectionProperty(SavePaymentData::class, 'captureSnapshot');
+        $property->setAccessible(true);
+        $property->setValue($this->controller, $snapshot);
+
+        $method = new \ReflectionMethod(SavePaymentData::class, 'dropSnapshotFromEarlierOpen');
+        $method->setAccessible(true);
+        $method->invoke($this->controller, $quote, $windowPricedByServer);
+    }
+
+    /**
+     * getquotedata failed, so the window charged the browser's totals. The
+     * snapshot on the quote is from an earlier open and must not judge it.
+     */
+    public function testWindowPricedByTheBrowserDropsTheEarlierSnapshot(): void
+    {
+        $this->dropFor(false, 1);
+    }
+
+    public function testWindowPricedByTheServerKeepsItsSnapshot(): void
+    {
+        $this->dropFor(true, 0);
+    }
+
+    /**
+     * Checkout JS cached from before this release sends no flag at all.
+     */
+    public function testNoFlagFromOlderCheckoutJsKeepsTheSnapshot(): void
+    {
+        $this->dropFor(null, 0);
+    }
+
+    /**
+     * clearCheckoutIntent leaves any quote that already has a payment id alone,
+     * so the drop must run before this request records its own.
+     */
+    public function testEarlierSnapshotIsDroppedBeforeThePaymentIdIsRecorded(): void
+    {
+        $source = file_get_contents(__DIR__ . '/../../../../Controller/Checkout/SavePaymentData.php');
+
+        $drop = strpos($source, '$this->dropSnapshotFromEarlierOpen($quote, $windowPricedByServer)');
+        $record = strpos($source, "\$quote->setData('paystand_payment_id', \$paymentId)");
+        $this->assertNotFalse($drop);
+        $this->assertNotFalse($record);
+        $this->assertLessThan($record, $drop);
     }
 
     /**

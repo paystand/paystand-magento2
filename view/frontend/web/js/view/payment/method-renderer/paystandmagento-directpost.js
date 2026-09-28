@@ -427,9 +427,15 @@ define(
         // unbounded hang here would be worse than the bug it guards.
         const QUOTE_PAYMENT_STATUS_TIMEOUT_MS = 8000;
 
+        // Whether getquotedata priced the window that is open now. Only that
+        // response stamps the cart on the server, so a window priced from the
+        // browser's own totals must not be judged against an older stamp.
+        let windowPricedByServer = false;
+
         // Terminal fallback so checkout is never left without a config.
         // isServerFetchFailure separates a network failure from a config-build bug.
         function fallbackToClientSnapshot(error, isServerFetchFailure) {
+            windowPricedByServer = false;
             console.error('[Paystand] Falling back to client snapshot:', error);
             cfLog(
                 isServerFetchFailure ? 'getquotedata_fallback' : 'build_config_error',
@@ -510,6 +516,7 @@ define(
                 }
                 try {
                     initCheckout(buildPaystandCheckoutConfig(serverQuote));
+                    windowPricedByServer = true;
                 } catch (buildError) {
                     fallbackToClientSnapshot(buildError, false);
                 }
@@ -667,7 +674,10 @@ define(
                     paymentId: pid,
                     // Gates the capture snapshot: only a confirmed capture pins
                     // paid totals after Magento collects on placeOrder.
-                    paymentStatus: data.status
+                    paymentStatus: data.status,
+                    // False when this window was priced from browser totals.
+                    // The snapshot on the quote is then from an earlier open.
+                    windowPricedByServer: windowPricedByServer
                 };
 
                 try {
