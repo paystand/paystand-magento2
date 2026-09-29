@@ -22,6 +22,7 @@
                 <!--<currency>USD</currency>-->
                 <create_order_before>1</create_order_before>
                 <enable_paystand_adjustment>1</enable_paystand_adjustment>
+                <captured_cart_guard>log_only</captured_cart_guard>
                 <!--<date_delim>/</date_delim>-->
             </paystandmagento>
         </payment>

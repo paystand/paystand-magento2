@@ -3,6 +3,7 @@
 namespace PayStand\PayStandMagento\Test\Unit\Controller\Webhook;
 
 use PayStand\PayStandMagento\Controller\Webhook\Paystand;
+use PayStand\PayStandMagento\Helper\CaptureSnapshot;
 use PayStand\PayStandMagento\Helper\QuoteShipping;
 use PayStand\PayStandMagento\Model\Directpost;
 use PHPUnit\Framework\TestCase;
@@ -45,6 +46,12 @@ class CreateOrderFromQuoteTest extends TestCase
     /** @var OrderRepositoryInterface|MockObject */
     private $orderRepositoryMock;
 
+    /** @var CaptureSnapshot|MockObject */
+    private $captureSnapshotMock;
+
+    /** @var QuoteShipping|MockObject */
+    private $quoteShippingMock;
+
     protected function setUp(): void
     {
         $this->lockManagerMock = $this->getMockBuilder(LockManagerInterface::class)
@@ -66,9 +73,14 @@ class CreateOrderFromQuoteTest extends TestCase
             ->getMock();
 
         $this->set('_logger',          $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass());
-        $this->set('quoteShipping',    $this->getMockBuilder(QuoteShipping::class)
+        $this->captureSnapshotMock = $this->getMockBuilder(CaptureSnapshot::class)
             ->disableOriginalConstructor()
-            ->getMock());
+            ->getMock();
+        $this->quoteShippingMock = $this->getMockBuilder(QuoteShipping::class)
+            ->disableOriginalConstructor()
+            ->getMock();
+        $this->set('quoteShipping',    $this->quoteShippingMock);
+        $this->set('captureSnapshot',  $this->captureSnapshotMock);
         $this->set('lockManager',      $this->lockManagerMock);
         $this->set('cartRepository',   $this->cartRepositoryMock);
         $this->set('cartManagement',   $this->cartManagementMock);
@@ -546,6 +558,7 @@ class CreateOrderFromQuoteTest extends TestCase
         return [
             'card capture posts'  => ['posted'],
             'settled payment'     => ['paid'],
+            'ach still processing' => ['processing'],
         ];
     }
 
@@ -589,10 +602,174 @@ class CreateOrderFromQuoteTest extends TestCase
         $this->assertSame(['stamp', 'save', 'placeOrder'], $sequence);
     }
 
+    public function testCaptureSnapshotIsRecordedBeforePlaceOrder(): void
+    {
+        $quote = $this->buildInitialQuote(42);
+        $this->lockManagerMock->method('lock')->willReturn(true);
+
+        $reloaded = $this->buildReloadedQuote([]);
+        $this->cartRepositoryMock->method('get')->willReturn($reloaded);
+        $this->controller->method('findOrder')->willReturn(null);
+        $this->captureSnapshotMock->expects($this->once())->method('copyPaidRecollectAndStamp')
+            ->with($reloaded, 'webhook-createorder', CaptureSnapshot::SOURCE_RESCUE);
+
+        $this->cartRepositoryMock->method('save')->willReturn(null);
+        $this->cartManagementMock->method('placeOrder')->willReturn(77);
+        $this->orderRepositoryMock->method('get')->willReturn($this->buildOrder(77, 'W000000077'));
+
+        $this->invoke($quote, 'posted', 'pay-webhook-999');
+    }
+
+    public function testRecollectThenStampThenSaveThenPlaceOrder(): void
+    {
+        $quote = $this->buildInitialQuote(42);
+        $this->lockManagerMock->method('lock')->willReturn(true);
+        $reloaded = $this->buildReloadedQuote([]);
+        $this->cartRepositoryMock->method('get')->willReturn($reloaded);
+        $this->controller->method('findOrder')->willReturn(null);
+
+        $sequence = [];
+        $this->captureSnapshotMock->expects($this->once())->method('copyPaidRecollectAndStamp')
+            ->with($reloaded, 'webhook-createorder')
+            ->willReturnCallback(function () use (&$sequence) {
+                $sequence[] = 'stamp';
+            });
+        $this->cartRepositoryMock->method('save')->willReturnCallback(function () use (&$sequence) {
+            $sequence[] = 'save';
+        });
+        $this->cartManagementMock->method('placeOrder')->willReturnCallback(function () use (&$sequence) {
+            $sequence[] = 'placeOrder';
+            return 77;
+        });
+        $this->orderRepositoryMock->method('get')->willReturn($this->buildOrder(77, 'W000000077'));
+
+        $this->invoke($quote, 'posted', 'pay-webhook-999');
+
+        $this->assertSame(['stamp', 'save', 'placeOrder'], $sequence);
+    }
+
     /**
-     * A payment still in flight must not freeze the cart: the same reasoning as
-     * the client-side writer, where an unconfirmed capture would strand a quote
-     * whose totals could then never recollect.
+     * ACH often reaches Magento createOrderFromQuote as processing, and
+     * placeOrder still runs. The markers and the snapshot must both be written
+     * on that path, marked as rescue-stamped, or the pin never engages there.
+     */
+    public function testProcessingRescueRecordsCaptureMarkers(): void
+    {
+        $quote = $this->buildInitialQuote(42);
+        $this->lockManagerMock->method('lock')->willReturn(true);
+
+        $reloaded = $this->buildReloadedQuote(['paystandPaymentId' => null]);
+        $written = [];
+        $reloaded->method('setData')->willReturnCallback(
+            function ($key, $value = null) use (&$written, $reloaded) {
+                $written[$key] = $value;
+                return $reloaded;
+            }
+        );
+        $this->cartRepositoryMock->method('get')->willReturn($reloaded);
+        $this->controller->method('findOrder')->willReturn(null);
+        $this->captureSnapshotMock->expects($this->once())->method('copyPaidRecollectAndStamp')
+            ->with($reloaded, 'webhook-createorder', CaptureSnapshot::SOURCE_RESCUE);
+
+        $order = $this->buildOrder(77, 'W000000077');
+        $this->cartManagementMock->method('placeOrder')->willReturn(77);
+        $this->orderRepositoryMock->method('get')->willReturn($order);
+
+        $this->invoke($quote, 'processing', 'pay-webhook-999');
+
+        $this->assertSame('processing', $written['paystand_capture_status'] ?? null);
+        $this->assertSame('pay-webhook-999', $written['paystand_payment_id'] ?? null);
+    }
+
+    /**
+     * The delivery loaded its quote on arrival, then waited about 20s. The browser can
+     * record the payment in that time; the row's status must count, or saving the older
+     * copy as processing lets the refuse check skip a changed cart. On staging that
+     * booked order 000000353 for a cart nobody paid for (PROD-16503).
+     *
+     * @dataProvider statusRecordedSinceLoadProvider
+     */
+    public function testStatusRecordedSinceTheQuoteLoadedIsKept(
+        ?string $loaded,
+        ?string $persisted,
+        string $event,
+        string $expected
+    ): void {
+        $quote = $this->buildInitialQuote(42);
+        $this->lockManagerMock->method('lock')->willReturn(true);
+
+        $reloaded = $this->buildReloadedQuote([
+            'paystandPaymentId'      => null,
+            'paystandCaptureStatus'  => $loaded,
+            'persistedCaptureStatus' => $persisted,
+        ]);
+        $written = [];
+        $reloaded->method('setData')->willReturnCallback(
+            function ($key, $value = null) use (&$written, $reloaded) {
+                $written[$key] = $value;
+                return $reloaded;
+            }
+        );
+        $this->cartRepositoryMock->method('get')->willReturn($reloaded);
+        $this->controller->method('findOrder')->willReturn(null);
+        $this->cartManagementMock->method('placeOrder')->willReturn(77);
+        $this->orderRepositoryMock->method('get')->willReturn($this->buildOrder(77, 'W000000077'));
+
+        $this->invoke($quote, $event, 'pay-webhook-999');
+
+        $this->assertSame($expected, $written['paystand_capture_status'] ?? null);
+    }
+
+    /**
+     * @return array
+     */
+    public static function statusRecordedSinceLoadProvider(): array
+    {
+        return [
+            'browser recorded paid after the copy loaded' => [null, 'paid', 'processing', 'paid'],
+            'browser recorded posted over a processing copy' => ['processing', 'posted', 'processing', 'posted'],
+            'nothing recorded since the copy loaded' => [null, null, 'processing', 'processing'],
+            'the event is further along than the row' => [null, 'processing', 'posted', 'posted'],
+        ];
+    }
+
+    /**
+     * The copy was loaded before the wait. The row's snapshot must be taken before
+     * stamping and saving, or an older snapshot is judged against and written back.
+     */
+    public function testRescueTakesTheRowsSnapshotBeforeStampingAndSaving(): void
+    {
+        $quote = $this->buildInitialQuote(42);
+        $this->lockManagerMock->method('lock')->willReturn(true);
+        $reloaded = $this->buildReloadedQuote([]);
+        $this->cartRepositoryMock->method('get')->willReturn($reloaded);
+        $this->controller->method('findOrder')->willReturn(null);
+
+        $sequence = [];
+        $this->captureSnapshotMock->expects($this->once())->method('adoptPersistedSnapshot')->with($reloaded)
+            ->willReturnCallback(function () use (&$sequence) {
+                $sequence[] = 'adopt';
+            });
+        $this->captureSnapshotMock->method('copyPaidRecollectAndStamp')->willReturnCallback(function () use (&$sequence) {
+            $sequence[] = 'stamp';
+        });
+        $this->cartRepositoryMock->method('save')->willReturnCallback(function () use (&$sequence) {
+            $sequence[] = 'save';
+        });
+        $this->cartManagementMock->method('placeOrder')->willReturnCallback(function () use (&$sequence) {
+            $sequence[] = 'placeOrder';
+            return 77;
+        });
+        $this->orderRepositoryMock->method('get')->willReturn($this->buildOrder(77, 'W000000077'));
+
+        $this->invoke($quote, 'processing', 'pay-webhook-999');
+
+        $this->assertSame(['adopt', 'stamp', 'save', 'placeOrder'], $sequence);
+    }
+
+    /**
+     * failed never maps to Magento STATE_PROCESSING, so createOrderFromQuote
+     * returns before markers or Magento placeOrder.
      */
     public function testNonCaptureStatusRecordsNoFreezeMarker(): void
     {
@@ -609,13 +786,9 @@ class CreateOrderFromQuoteTest extends TestCase
         );
         $this->cartRepositoryMock->method('get')->willReturn($reloaded);
         $this->controller->method('findOrder')->willReturn(null);
+        $this->cartManagementMock->expects($this->never())->method('placeOrder');
 
-        $order = $this->buildOrder(77, 'W000000077');
-        $this->cartManagementMock->method('placeOrder')->willReturn(77);
-        $this->orderRepositoryMock->method('get')->willReturn($order);
-
-        $this->invoke($quote, 'processing', 'pay-webhook-999');
-
+        $this->assertNull($this->invoke($quote, 'failed', 'pay-webhook-999'));
         $this->assertArrayNotHasKey('paystand_capture_status', $written);
     }
 
@@ -658,6 +831,9 @@ class CreateOrderFromQuoteTest extends TestCase
             'paymentMethod'         => Directpost::METHOD_CODE,
             'paystandPaymentId'     => 'pay-default123',
             'paystandCaptureStatus' => null,
+            // The quote row's status now; null leaves getResource() unset, so the
+            // re-read fails as it does in tests that do not model the row.
+            'persistedCaptureStatus' => null,
         ], $overrides);
 
         // getCustomerEmail/setCustomerEmail are magic data accessors on Quote.
@@ -666,7 +842,7 @@ class CreateOrderFromQuoteTest extends TestCase
             ->onlyMethods([
                 'getId', 'getIsActive', 'setIsActive', 'getItemsCount',
                 'getPayment', 'getBillingAddress', 'getShippingAddress', 'collectTotals',
-                'getData', 'setData',
+                'getData', 'setData', 'getResource',
             ])
             ->addMethods(['getCustomerEmail', 'setCustomerEmail'])
             ->getMock();
@@ -690,6 +866,10 @@ class CreateOrderFromQuoteTest extends TestCase
             }
         );
 
+        if ($config['persistedCaptureStatus'] !== null) {
+            $quote->method('getResource')->willReturn($this->quoteRowWithStatus($config['persistedCaptureStatus']));
+        }
+
         $payment = $this->getMockBuilder(Payment::class)
             ->disableOriginalConstructor()
             ->onlyMethods(['getMethod', 'setMethod'])
@@ -701,6 +881,32 @@ class CreateOrderFromQuoteTest extends TestCase
         $quote->method('getShippingAddress')->willReturn($this->buildAddress($config['shippingEmail']));
 
         return $quote;
+    }
+
+    /**
+     * The quote resource as the status re-read uses it: one row, one column.
+     *
+     * @param string $status
+     * @return object
+     */
+    private function quoteRowWithStatus(string $status)
+    {
+        $select = $this->getMockBuilder(\stdClass::class)
+            ->addMethods(['from', 'where'])
+            ->getMock();
+        $select->method('from')->willReturnSelf();
+        $select->method('where')->willReturnSelf();
+        $connection = $this->getMockBuilder(\stdClass::class)
+            ->addMethods(['select', 'fetchOne'])
+            ->getMock();
+        $connection->method('select')->willReturn($select);
+        $connection->method('fetchOne')->willReturn($status);
+        $resource = $this->getMockBuilder(\stdClass::class)
+            ->addMethods(['getConnection', 'getMainTable'])
+            ->getMock();
+        $resource->method('getConnection')->willReturn($connection);
+        $resource->method('getMainTable')->willReturn('quote');
+        return $resource;
     }
 
     /**

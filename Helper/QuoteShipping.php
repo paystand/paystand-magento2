@@ -95,13 +95,18 @@ class QuoteShipping
         // The validator needs both, so treat a dropped method OR a dropped rate row
         // as something to restore — the amounts the shopper already paid, and a rate
         // that getShippingRateByCode() can resolve for the method.
-        $methodMissing = !$address->getShippingMethod();
+        $current = (string)$address->getShippingMethod();
+        $methodMissing = $current === '';
+        // A method picked after capture must go back too. Leaving it while the
+        // paid amount and description are written below builds an order that
+        // ships one service and charges for another.
+        $methodChanged = !$methodMissing && $current !== (string)$snapshot['method'];
         $rateMissing = !$address->getShippingRateByCode($snapshot['method']);
-        if (!$methodMissing && !$rateMissing) {
+        if (!$methodMissing && !$methodChanged && !$rateMissing) {
             return false;
         }
 
-        if ($methodMissing) {
+        if ($methodMissing || $methodChanged) {
             $address->setShippingMethod($snapshot['method']);
             $address->setShippingDescription($snapshot['description']);
         }
@@ -134,6 +139,8 @@ class QuoteShipping
                 'method'          => $snapshot['method'],
                 'amount'          => $snapshot['amount'],
                 'method_restored' => $methodMissing,
+                'method_reverted' => $methodChanged,
+                'replaced_method' => $methodChanged ? $current : '',
                 'rate_reattached' => $rateReattached,
             ]
         );

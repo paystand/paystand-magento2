@@ -9,6 +9,7 @@ use Magento\Framework\Controller\Result\JsonFactory;
 use PayStand\PayStandMagento\Helper\CustomerPayerId;
 use PayStand\PayStandMagento\Helper\CloudLogger;
 use PayStand\PayStandMagento\Helper\QuoteAccess;
+use PayStand\PayStandMagento\Helper\CaptureSnapshot;
 use PayStand\PayStandMagento\Helper\QuoteShipping;
 use PayStand\PayStandMagento\Model\Config\Source\PaymentStatus;
 use Magento\Quote\Api\CartRepositoryInterface;
@@ -57,6 +58,9 @@ class SavePaymentData extends Action
     /** @var QuoteShipping */
     protected $quoteShipping;
 
+    /** @var CaptureSnapshot */
+    protected $captureSnapshot;
+
     /** @var ScopeConfigInterface */
     protected $scopeConfig;
 
@@ -74,7 +78,7 @@ class SavePaymentData extends Action
     const PAYMENT_ID_PATTERN = '/^[a-z0-9]{16,64}$/i';
 
     /**
-     * Statuses that freeze a quote's totals. Shared with the webhook rescue path
+     * Statuses that mark a confirmed capture. Shared with the webhook rescue path
      * so both writers of paystand_capture_status agree on what a capture is.
      */
     const CAPTURED_STATUSES = PaymentStatus::CAPTURED_STATUSES;
@@ -96,7 +100,8 @@ class SavePaymentData extends Action
         CartRepositoryInterface $cartRepository,
         QuoteAccess $quoteAccess,
         QuoteShipping $quoteShipping,
-        ScopeConfigInterface $scopeConfig
+        ScopeConfigInterface $scopeConfig,
+        CaptureSnapshot $captureSnapshot
     ) {
         $this->logger = $logger;
         $this->resultJsonFactory = $resultJsonFactory;
@@ -105,6 +110,7 @@ class SavePaymentData extends Action
         $this->quoteAccess = $quoteAccess;
         $this->quoteShipping = $quoteShipping;
         $this->scopeConfig = $scopeConfig;
+        $this->captureSnapshot = $captureSnapshot;
         parent::__construct($context);
     }
 
@@ -142,8 +148,12 @@ class SavePaymentData extends Action
         // Recorded on the quote so checkout can refuse to re-open the widget for a
         // cart that has already been paid.
         $paymentId       = $data['paymentId'] ?? null;
-        // Narrower than the payment id above: only a confirmed capture freezes totals.
+        // Narrower than the payment id above: only a confirmed capture stamps a
+        // snapshot so later collects can pin the totals the shopper paid.
         $paymentStatus   = $data['paymentStatus'] ?? null;
+        // False when the window was priced from browser totals because
+        // getquotedata failed. Older checkout JS does not send it.
+        $windowPricedByServer = $data['windowPricedByServer'] ?? null;
 
         if (!$payerId || !$quoteIdIncoming) {
             $this->logger->error('SAVEPAYMENTDATA >>>>>> Missing payerId or quote');
@@ -183,6 +193,9 @@ class SavePaymentData extends Action
                 ]);
             }
             $realQuoteId = (int)$quote->getId();
+
+            // Before the payment id lands: clearing checks for one.
+            $this->dropSnapshotFromEarlierOpen($quote, $windowPricedByServer, $paymentId);
 
             // 3) Check if paystand adjustment is enabled
             $isAdjustmentEnabled = $this->scopeConfig->isSetFlag(
@@ -249,8 +262,8 @@ class SavePaymentData extends Action
             }
 
             // Recorded only for a confirmed capture, and only alongside a payment id.
-            // Freezing totals on anything weaker would strand a cart whose payment
-            // never completed, since the quote's totals could then never recollect.
+            // Weaker statuses must not stamp a snapshot: a payment that never
+            // completed would then pin stale totals onto a still-live cart.
             $captureStatus = $this->captureStatusFor($paymentId, $paymentStatus);
             if ($captureStatus !== null) {
                 $quote->setData('paystand_capture_status', $captureStatus);
@@ -276,11 +289,9 @@ class SavePaymentData extends Action
                 // CloudLogger failure — silently ignored to protect payment flow
             }
 
-            // Saving recollects totals, which can clear the shipping method + rate on
-            // this paid quote and later fail placeOrder with "shipping method is
-            // missing". Recollect through the guard so the persisted quote keeps the
-            // selection the shopper paid for.
-            $this->quoteShipping->recollectPreservingShipping($quote, 'savepaymentdata');
+            // Copy paid money first. Recollect can drop shipping and rewrite
+            // grand_total; the snapshot must keep the captured amount.
+            $this->captureSnapshot->copyPaidRecollectAndStamp($quote, 'savepaymentdata');
 
             $this->cartRepository->save($quote);
 
@@ -382,8 +393,8 @@ class SavePaymentData extends Action
     }
 
     /**
-     * The status to freeze a quote's totals on, or null when this is not a confirmed
-     * capture. A payment id is required too, so a status without one cannot freeze.
+     * The status to record as a confirmed capture, or null when this is not one.
+     * A payment id is required too, so a status without one cannot stamp a snapshot.
      *
      * @param string|null $paymentId
      * @param string|null $paymentStatus
@@ -401,9 +412,29 @@ class SavePaymentData extends Action
     }
 
     /**
+     * getquotedata did not price the window that took this payment, so the
+     * snapshot on the quote is from an earlier open and may describe another
+     * cart. Drop it, and the paid cart is stamped instead. Older checkout JS
+     * sends no flag and changes nothing. A quote holding another payment is
+     * untouched; one holding this payment is not, because Paystand's webhook can
+     * record the payment before the browser reports it.
+     *
+     * @param \Magento\Quote\Model\Quote $quote
+     * @param mixed $windowPricedByServer
+     * @param mixed $paymentId The payment this request reports
+     * @return void
+     */
+    private function dropSnapshotFromEarlierOpen($quote, $windowPricedByServer, $paymentId)
+    {
+        if ($windowPricedByServer === false) {
+            $this->captureSnapshot->clearCheckoutIntent($quote, (string)$paymentId);
+        }
+    }
+
+    /**
      * Carries a capture status recorded since this quote was loaded back onto the
      * in-memory copy, so saving a request that has no capture of its own cannot
-     * persist a null over it and unfreeze a cart that was already charged.
+     * persist a null over it and drop a snapshot a later collect needs.
      *
      * @param \Magento\Quote\Model\Quote $quote
      * @param int|string $quoteId

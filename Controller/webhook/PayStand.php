@@ -10,6 +10,8 @@ use Magento\Framework\Lock\LockManagerInterface;
 use \stdClass;
 use Magento\Sales\Model\Order\Payment\Transaction\BuilderInterface as BuilderInterface;
 use Magento\Sales\Model\Order;
+use PayStand\PayStandMagento\Exception\CapturedCartChangedException;
+use PayStand\PayStandMagento\Helper\CaptureSnapshot;
 use PayStand\PayStandMagento\Helper\CloudLogger;
 use PayStand\PayStandMagento\Model\Config\Source\PaymentStatus;
 
@@ -100,6 +102,9 @@ class Paystand extends \Magento\Framework\App\Action\Action
     /** @var \PayStand\PayStandMagento\Helper\QuoteShipping */
     private $quoteShipping;
 
+    /** @var \PayStand\PayStandMagento\Helper\CaptureSnapshot */
+    private $captureSnapshot;
+
     /**
      * Why the last createOrderFromQuote() failed. 'terminal' means Magento rejected
      * the cart itself, so retrying the same cart fails the same way.
@@ -129,7 +134,8 @@ class Paystand extends \Magento\Framework\App\Action\Action
         CartRepositoryInterface $cartRepository,
         CartManagementInterface $cartManagement,
         LockManagerInterface $lockManager,
-        \PayStand\PayStandMagento\Helper\QuoteShipping $quoteShipping
+        \PayStand\PayStandMagento\Helper\QuoteShipping $quoteShipping,
+        \PayStand\PayStandMagento\Helper\CaptureSnapshot $captureSnapshot
     ) {
         $this->_logger = $logger;
         $this->_request = $request;
@@ -147,6 +153,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
         $this->cartManagement = $cartManagement;
         $this->lockManager = $lockManager;
         $this->quoteShipping = $quoteShipping;
+        $this->captureSnapshot = $captureSnapshot;
         $this->updateOrderOn = $this->scopeConfig->getValue(self::UPDATE_ORDER_ON, self::STORE_SCOPE);
         parent::__construct($context);
     }
@@ -332,11 +339,15 @@ class Paystand extends \Magento\Framework\App\Action\Action
                     . ' after ' . self::RESCUE_ABANDON_AFTER_HOURS . 'h; cart cannot be placed: ' . $reason
                 );
                 try {
+                    $abandonMessage = 'Paid but unplaceable for >' . self::RESCUE_ABANDON_AFTER_HOURS
+                        . 'h; needs manual resolution. Last error: ' . $reason;
+                    if (!empty($this->lastRescueFailure['refused'])) {
+                        $abandonMessage = 'captured_cart_refused: ' . $abandonMessage;
+                    }
                     CloudLogger::ship(CloudLogger::EVENT_RESCUE_ABANDONED, [
                         'quote_id'      => (string)$quote->getId(),
                         'payment_id'    => $json->resource->id ?? '',
-                        'error_message' => 'Paid but unplaceable for >' . self::RESCUE_ABANDON_AFTER_HOURS
-                            . 'h; needs manual resolution. Last error: ' . $reason,
+                        'error_message' => $abandonMessage,
                     ]);
                 } catch (\Throwable $e) {
                     // CloudLogger failure — silently ignored to protect payment flow
@@ -935,8 +946,9 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 return $existing;
             }
 
-            // Reload the quote fresh so is_active reflects any placeOrder that
-            // committed while we waited on the lock.
+            // Magento hands back the copy this request loaded on arrival, before the
+            // wait above (QuoteRepository caches per request). findOrder() and the
+            // capture-status re-read below go to the database for what can change.
             try {
                 $quote = $this->cartRepository->get($quoteId);
             } catch (\Exception $e) {
@@ -999,12 +1011,22 @@ class Paystand extends \Magento\Framework\App\Action\Action
             $quote->setCustomerEmail($email);
 
             // placeOrder below reloads the quote from the database and collects its
-            // totals, which re-adjudicates cart price rules and can drop a discount
-            // the shopper already paid on. The client-side save that normally records
-            // these markers is exactly what failed in a rescue, so record them here.
+            // totals. Record the capture markers and a snapshot of the paid cart so
+            // CapturedQuoteTotals can restore shipping + pin grand total after that
+            // collect, and CapturedQuoteSubmit can refuse a cart that changed.
             $captureId = $quote->getData('paystand_payment_id') ?: ($json->resource->id ?? null);
             $captureStatus = strtolower(trim((string)$psPaymentStatus));
-            if ($captureId && in_array($captureStatus, PaymentStatus::CAPTURED_STATUSES, true)) {
+            if ($captureId && in_array($captureStatus, PaymentStatus::PLACE_ORDER_STATUSES, true)) {
+                // The browser can record the payment while this delivery waits. Rank the
+                // row's status too: saving this copy as processing over the browser's paid
+                // would let CapturedQuoteSubmit skip a changed cart.
+                $captureStatus = PaymentStatus::keepStrongerStatus(
+                    PaymentStatus::keepStrongerStatus(
+                        (string)$quote->getData('paystand_capture_status'),
+                        $this->persistedCaptureStatus($quote, $quoteId)
+                    ),
+                    $captureStatus
+                );
                 $quote->setData('paystand_payment_id', $captureId);
                 $quote->setData('paystand_capture_status', $captureStatus);
                 $this->_logger->debug(
@@ -1025,11 +1047,22 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 // CloudLogger failure — silently ignored to protect payment flow
             }
 
-            // Persist the shipping selection through the guard before placing: placeOrder
-            // reloads the quote and recollects, and a bare recollect on this rescued
-            // quote drops the method + rate and fails with "shipping method is missing".
-            // Saving the restored method + rate row makes the reloaded quote place cleanly.
-            $this->quoteShipping->recollectPreservingShipping($quote, 'webhook-createorder');
+            // Checkout can restamp the cart while this delivery waits: when the window
+            // was priced from browser totals, the payment save replaces the snapshot of
+            // an earlier open. Judge the cart by the row's snapshot, and do not save this
+            // copy's older one back over it.
+            $this->captureSnapshot->adoptPersistedSnapshot($quote);
+
+            // Copy paid money first. Recollect can drop shipping and rewrite
+            // grand_total; the snapshot must keep the captured amount. A restored
+            // rate row can merge in at stamp time. Marked as rescue-stamped: this
+            // runs when the browser never stamped, so the cart here is whatever
+            // the shopper left, not provably the cart that was paid for.
+            $this->captureSnapshot->copyPaidRecollectAndStamp(
+                $quote,
+                'webhook-createorder',
+                CaptureSnapshot::SOURCE_RESCUE
+            );
 
             $this->cartRepository->save($quote);
 
@@ -1054,6 +1087,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
             // minimum). Anything else is infrastructure and worth retrying.
             $this->lastRescueFailure = [
                 'terminal' => $e instanceof \Magento\Framework\Exception\LocalizedException,
+                'refused'  => $e instanceof CapturedCartChangedException,
                 'message'  => $e->getMessage(),
             ];
             $this->_logger->error('>>>>> PAYSTAND-ERROR: Server-side order creation failed for quote ' . $quoteId . ': ' . $e->getMessage());
@@ -1072,10 +1106,14 @@ class Paystand extends \Magento\Framework\App\Action\Action
             }
 
             try {
+                $errorMessage = 'Server-side placeOrder failed: ' . $e->getMessage();
+                if ($e instanceof CapturedCartChangedException) {
+                    $errorMessage = 'captured_cart_refused: ' . $errorMessage;
+                }
                 CloudLogger::ship(CloudLogger::EVENT_PLACEORDER_EXCEPTION, [
                     'quote_id'      => (string)$quoteId,
                     'payment_id'    => $json->resource->id ?? '',
-                    'error_message' => 'Server-side placeOrder failed: ' . $e->getMessage(),
+                    'error_message' => $errorMessage,
                 ]);
             } catch (\Throwable $inner) {
                 // CloudLogger failure — silently ignored
@@ -1096,7 +1134,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
     /**
      * Carries a capture status recorded since this quote was loaded back onto the
      * in-memory copy, so saving a delivery that has no capture of its own cannot
-     * persist a null over it and unfreeze a cart that was already charged.
+     * persist a null over it and drop a snapshot a later collect needs.
      *
      * @param \Magento\Quote\Model\Quote $quote
      * @param int|string $quoteId
@@ -1104,11 +1142,30 @@ class Paystand extends \Magento\Framework\App\Action\Action
      */
     protected function preserveCaptureStatus($quote, $quoteId)
     {
-        try {
-            if (!empty($quote->getData('paystand_capture_status'))) {
-                return;
-            }
+        if (!empty($quote->getData('paystand_capture_status'))) {
+            return;
+        }
 
+        $persisted = $this->persistedCaptureStatus($quote, $quoteId);
+        if ($persisted !== '') {
+            $quote->setData('paystand_capture_status', $persisted);
+            $this->_logger->debug(
+                '>>>>> PAYSTAND-WEBHOOK: Kept capture status ' . $persisted
+                . ' recorded for quote ' . $quoteId . ' since it was loaded'
+            );
+        }
+    }
+
+    /**
+     * paystand_capture_status as the quote row holds it now, '' when it holds none.
+     *
+     * @param mixed $quote
+     * @param int $quoteId
+     * @return string
+     */
+    private function persistedCaptureStatus($quote, $quoteId): string
+    {
+        try {
             // Uses the connection the quote itself is saved through, so this needs no
             // extra dependency and cannot drift from that table.
             $resource = $quote->getResource();
@@ -1116,19 +1173,12 @@ class Paystand extends \Magento\Framework\App\Action\Action
             $select = $connection->select()
                 ->from($resource->getMainTable(), 'paystand_capture_status')
                 ->where('entity_id = ?', $quoteId);
-            $persisted = $connection->fetchOne($select);
-
-            if (!empty($persisted)) {
-                $quote->setData('paystand_capture_status', $persisted);
-                $this->_logger->debug(
-                    '>>>>> PAYSTAND-WEBHOOK: Kept capture status ' . $persisted
-                    . ' recorded for quote ' . $quoteId . ' since it was loaded'
-                );
-            }
+            return strtolower(trim((string)$connection->fetchOne($select)));
         } catch (\Throwable $e) {
             // A failed read must not stop the rescue; the worst case is the status
             // this delivery already held being saved as it was loaded.
             $this->_logger->error('>>>>> PAYSTAND-WEBHOOK: Could not re-read capture status: ' . $e->getMessage());
+            return '';
         }
     }
 

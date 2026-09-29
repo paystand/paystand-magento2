@@ -48,7 +48,7 @@ define(
                     customer_id:     CF_CUSTOMER_ID,
                     publishable_key: CF_PUBLISHABLE_KEY,
                     event_type:      eventType,
-                    plugin_version:  '3.7.2',
+                    plugin_version:  '3.7.3',
                     quote_id:        quoteId  || '',
                     payment_id:      paymentId || '',
                     error_message:   message  || '',
@@ -427,9 +427,15 @@ define(
         // unbounded hang here would be worse than the bug it guards.
         const QUOTE_PAYMENT_STATUS_TIMEOUT_MS = 8000;
 
+        // Whether getquotedata priced the window that is open now. Only that
+        // response stamps the cart on the server, so a window priced from the
+        // browser's own totals must not be judged against an older stamp.
+        let windowPricedByServer = false;
+
         // Terminal fallback so checkout is never left without a config.
         // isServerFetchFailure separates a network failure from a config-build bug.
         function fallbackToClientSnapshot(error, isServerFetchFailure) {
+            windowPricedByServer = false;
             console.error('[Paystand] Falling back to client snapshot:', error);
             cfLog(
                 isServerFetchFailure ? 'getquotedata_fallback' : 'build_config_error',
@@ -510,6 +516,7 @@ define(
                 }
                 try {
                     initCheckout(buildPaystandCheckoutConfig(serverQuote));
+                    windowPricedByServer = true;
                 } catch (buildError) {
                     fallbackToClientSnapshot(buildError, false);
                 }
@@ -534,7 +541,7 @@ define(
         const ORDER_CONFIRM_MAX_ATTEMPTS = 15;
         const ORDER_CONFIRM_INTERVAL_MS = 2000;
 
-        async function confirmOrderPlaced(quoteId, paymentId, onFailure) {
+        async function confirmOrderPlaced(quoteId, paymentId, onFailure, onRefused) {
             for (let attempt = 1; attempt <= ORDER_CONFIRM_MAX_ATTEMPTS; attempt++) {
                 await new Promise(function (resolve) {
                     setTimeout(resolve, ORDER_CONFIRM_INTERVAL_MS);
@@ -569,6 +576,19 @@ define(
                 }
             }
 
+            // Magento already refused this captured cart. The order will not appear.
+            // Do not tell the shopper we are still finalizing it.
+            const checkoutError = magentoCheckoutErrorText();
+            if (magentoRefusedCapturedCart(checkoutError)) {
+                cfLog('order_confirm_refused', quoteId, paymentId,
+                    'Magento refused placeOrder after capture: ' + checkoutError
+                );
+                if (typeof onRefused === 'function') {
+                    onRefused(checkoutError);
+                }
+                return;
+            }
+
             // No order yet: the webhook may still create it, so reassure rather
             // than report an error — and tell them not to pay again.
             cfLog('order_confirm_timeout', quoteId, paymentId,
@@ -576,6 +596,22 @@ define(
                 ' attempts; payment captured, order pending server-side creation'
             );
             onFailure();
+        }
+
+        function magentoCheckoutErrorText() {
+            try {
+                return ($('.message-error, .message.error').text() || '').trim();
+            } catch (e) {
+                return '';
+            }
+        }
+
+        // Matches the untranslated code from CapturedCartChangedException::CODE,
+        // not the sentence around it, which a store may translate or reword.
+        const CAPTURED_CART_REFUSED_CODE = 'PS-CART-CHANGED';
+
+        function magentoRefusedCapturedCart(text) {
+            return (text || '').indexOf(CAPTURED_CART_REFUSED_CODE) !== -1;
         }
         // ────────────────────────────────────────────────────────────────────
 
@@ -636,9 +672,12 @@ define(
                     // Recorded on the quote so the re-charge guard can detect an
                     // already-paid cart even if placeOrder fails to create the order.
                     paymentId: pid,
-                    // Gates the totals freeze: only a confirmed capture stops the
-                    // quote recollecting and re-adjudicating its cart price rules.
-                    paymentStatus: data.status
+                    // Gates the capture snapshot: only a confirmed capture pins
+                    // paid totals after Magento collects on placeOrder.
+                    paymentStatus: data.status,
+                    // False when this window was priced from browser totals.
+                    // The snapshot on the quote is then from an earlier open.
+                    windowPricedByServer: windowPricedByServer
                 };
 
                 try {
@@ -693,7 +732,7 @@ define(
                 // quote and, if it never appears within the window, reassure the
                 // shopper their order is being finalized (and not to pay again).
                 // On success Magento redirects and this is aborted.
-                confirmOrderPlaced(qid, pid, showFinalizingModal);
+                confirmOrderPlaced(qid, pid, showFinalizingModal, showErrorModal);
             });
         }
 
