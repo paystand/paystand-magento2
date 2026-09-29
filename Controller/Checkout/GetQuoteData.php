@@ -15,6 +15,7 @@ use Magento\Customer\Model\Session as CustomerSession;
 use Magento\Customer\Api\CustomerRepositoryInterface;
 use Magento\Framework\Exception\NoSuchEntityException;
 use Magento\Framework\Exception\LocalizedException;
+use PayStand\PayStandMagento\Helper\CaptureSnapshot;
 use PayStand\PayStandMagento\Helper\CloudLogger;
 use PayStand\PayStandMagento\Helper\QuoteShipping;
 use Psr\Log\LoggerInterface;
@@ -27,6 +28,7 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
     private CustomerRepositoryInterface $customerRepository;
     private LoggerInterface $logger;
     private QuoteShipping $quoteShipping;
+    private CaptureSnapshot $captureSnapshot;
 
     public function __construct(
         JsonFactory $resultJsonFactory,
@@ -34,7 +36,8 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
         CustomerSession $customerSession,
         CustomerRepositoryInterface $customerRepository,
         LoggerInterface $logger,
-        QuoteShipping $quoteShipping
+        QuoteShipping $quoteShipping,
+        CaptureSnapshot $captureSnapshot
     ) {
         $this->resultJsonFactory = $resultJsonFactory;
         $this->checkoutSession = $checkoutSession;
@@ -42,6 +45,7 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
         $this->customerRepository = $customerRepository;
         $this->logger = $logger;
         $this->quoteShipping = $quoteShipping;
+        $this->captureSnapshot = $captureSnapshot;
     }
 
     /**
@@ -95,6 +99,12 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
                     ]
                 ]);
             }
+
+            // A snapshot from an earlier window open describes a cart the shopper
+            // may have changed since. Drop it before pricing: if this request
+            // fails, the browser opens the window from its own totals and
+            // nothing restamps.
+            $this->captureSnapshot->clearCheckoutIntent($quote);
 
             // Force a fresh totals recalculation rather than trusting whatever was
             // last collected on the quote (e.g. before an address/shipping change
@@ -205,6 +215,12 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
                 'billing' => $billingData,
                 'customer' => $customerData
             ];
+
+            // The Paystand window locks the amount this response returns. Record
+            // that cart now, before another browser can change the quote. The
+            // payment save keeps this snapshot instead of photographing the
+            // quote again after the window has already charged.
+            $this->captureSnapshot->stampCheckoutIntent($quote);
 
             return $result->setData($response);
 

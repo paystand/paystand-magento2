@@ -4,6 +4,9 @@
         <plugin name="paystand_quote_submit_logger"
                 type="PayStand\PayStandMagento\Plugin\QuoteSubmitLoggerPlugin"
                 sortOrder="10" />
+        <plugin name="paystand_captured_quote_submit"
+                type="PayStand\PayStandMagento\Plugin\CapturedQuoteSubmit"
+                sortOrder="20" />
     </type>
     <type name="Magento\Quote\Model\Quote">
         <plugin name="paystand_captured_quote_totals"

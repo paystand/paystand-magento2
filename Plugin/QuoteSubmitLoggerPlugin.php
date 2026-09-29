@@ -42,7 +42,7 @@ class QuoteSubmitLoggerPlugin
      */
     protected $cloudShipper;
 
-    public function __construct(LoggerInterface $logger, callable $cloudShipper = null)
+    public function __construct(LoggerInterface $logger, ?callable $cloudShipper = null)
     {
         $this->logger = $logger;
         $this->cloudShipper = $cloudShipper ?? [CloudLogger::class, 'ship'];

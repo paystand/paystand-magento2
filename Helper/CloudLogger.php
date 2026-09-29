@@ -16,7 +16,7 @@ use Magento\Store\Model\ScopeInterface;
 class CloudLogger
 {
     const INGEST_URL     = 'https://magento-plugin-logs.paystand-core-services.workers.dev/ingest';
-    const PLUGIN_VERSION = '3.7.2';
+    const PLUGIN_VERSION = '3.7.3';
 
     // Config paths
     const CONFIG_PUBLISHABLE_KEY = 'payment/paystandmagento/publishable_key';
@@ -53,6 +53,17 @@ class CloudLogger
     // The confirmation page was about to redirect, but the order for the
     // session's own quote was found and the missing session values restored.
     const EVENT_SUCCESS_PAGE_REPAIRED = 'success_page_repaired';
+    // Magento live grand_total after collect differs from the paid snapshot.
+    const EVENT_CAPTURE_TOTAL_DRIFT = 'capture_total_drift';
+    // paystand_capture_snapshot on the quote is not valid JSON.
+    const EVENT_CAPTURE_SNAPSHOT_CORRUPT = 'capture_snapshot_corrupt';
+    // Magento refused placeOrder because the cart no longer matches the capture.
+    const EVENT_CAPTURED_CART_REFUSED = 'captured_cart_refused';
+    // First stamp threw after capture markers were already on the quote.
+    const EVENT_CAPTURE_SNAPSHOT_STAMP_FAILED = 'capture_snapshot_stamp_failed';
+    // Totals were pinned from a snapshot the webhook rescue wrote, which is the
+    // cart the rescue found rather than a cart proven to be the one paid for.
+    const EVENT_CAPTURE_PIN_UNVERIFIED = 'capture_pin_unverified';
 
     /**
      * Resolve the merchant's customer ID from store config.
@@ -107,9 +118,16 @@ class CloudLogger
      */
     public static function ship(string $eventType, array $context = []): void
     {
+        // The Worker answers a keyless event with 401, so sending one buys
+        // nothing and still costs the caller a blocking request.
+        $publishableKey = (string)($context['publishable_key'] ?? self::getPublishableKey());
+        if ($publishableKey === '') {
+            return;
+        }
+
         $payload = json_encode([
             'customer_id'     => $context['customer_id'] ?? self::getMerchantId(),
-            'publishable_key' => $context['publishable_key'] ?? self::getPublishableKey(),
+            'publishable_key' => $publishableKey,
             'event_type'      => $eventType,
             'quote_id'        => $context['quote_id'] ?? '',
             'payment_id'      => $context['payment_id'] ?? '',

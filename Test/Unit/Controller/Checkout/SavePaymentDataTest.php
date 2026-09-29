@@ -3,6 +3,7 @@
 namespace PayStand\PayStandMagento\Test\Unit\Controller\Checkout;
 
 use PayStand\PayStandMagento\Controller\Checkout\SavePaymentData;
+use PayStand\PayStandMagento\Helper\CaptureSnapshot;
 use PayStand\PayStandMagento\Model\Config\Source\PaymentStatus;
 use PHPUnit\Framework\TestCase;
 
@@ -101,5 +102,109 @@ class SavePaymentDataTest extends TestCase
         foreach (PaymentStatus::CAPTURED_STATUSES as $status) {
             $this->assertSame($status, $this->gate('nlvsnvr0ska9i7ugvoab9917', $status));
         }
+
+        $this->assertNotContains('processing', PaymentStatus::CAPTURED_STATUSES);
+        $this->assertContains('processing', PaymentStatus::PLACE_ORDER_STATUSES);
+    }
+
+    public function testProcessingDoesNotReplaceACapturedStatus(): void
+    {
+        $this->assertSame('paid', PaymentStatus::keepStrongerStatus('paid', 'processing'));
+        $this->assertSame('posted', PaymentStatus::keepStrongerStatus('posted', 'processing'));
+        $this->assertSame('paid', PaymentStatus::keepStrongerStatus('processing', 'paid'));
+        $this->assertSame('posted', PaymentStatus::keepStrongerStatus('paid', 'posted'));
+
+        $webhook = file_get_contents(__DIR__ . '/../../../../Controller/webhook/PayStand.php');
+        $this->assertStringContainsString('PaymentStatus::keepStrongerStatus(', $webhook);
+    }
+
+    /**
+     * @param mixed $windowPricedByServer
+     * @param int $clears Times clearCheckoutIntent must run
+     * @param mixed $paymentId The payment the request reports
+     */
+    private function dropFor($windowPricedByServer, int $clears, $paymentId = 'pay0123456789abcdef'): void
+    {
+        $quote = $this->getMockBuilder(\Magento\Quote\Model\Quote::class)
+            ->disableOriginalConstructor()
+            ->getMock();
+        $snapshot = $this->getMockBuilder(CaptureSnapshot::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['clearCheckoutIntent'])
+            ->getMock();
+        $snapshot->expects($this->exactly($clears))->method('clearCheckoutIntent')
+            ->with($quote, (string)$paymentId);
+
+        $property = new \ReflectionProperty(SavePaymentData::class, 'captureSnapshot');
+        $property->setAccessible(true);
+        $property->setValue($this->controller, $snapshot);
+
+        $method = new \ReflectionMethod(SavePaymentData::class, 'dropSnapshotFromEarlierOpen');
+        $method->setAccessible(true);
+        $method->invoke($this->controller, $quote, $windowPricedByServer, $paymentId);
+    }
+
+    /**
+     * getquotedata failed, so the window charged the browser's totals. The
+     * snapshot on the quote is from an earlier open and must not judge it.
+     */
+    public function testWindowPricedByTheBrowserDropsTheEarlierSnapshot(): void
+    {
+        $this->dropFor(false, 1);
+    }
+
+    /**
+     * Paystand's webhook can record the payment before the browser reports it.
+     * The drop names this payment, so a quote already holding it is still cleared.
+     */
+    public function testTheDropNamesThePaymentThisRequestReports(): void
+    {
+        $this->dropFor(false, 1, 'otff1duzi52yjudijnifi8fy');
+    }
+
+    public function testWindowPricedByTheServerKeepsItsSnapshot(): void
+    {
+        $this->dropFor(true, 0);
+    }
+
+    /**
+     * Checkout JS cached from before this release sends no flag at all.
+     */
+    public function testNoFlagFromOlderCheckoutJsKeepsTheSnapshot(): void
+    {
+        $this->dropFor(null, 0);
+    }
+
+    /**
+     * The drop runs before this request records its own payment id, and names that
+     * payment, so only a quote holding a different payment keeps its snapshot.
+     */
+    public function testEarlierSnapshotIsDroppedBeforeThePaymentIdIsRecorded(): void
+    {
+        $source = file_get_contents(__DIR__ . '/../../../../Controller/Checkout/SavePaymentData.php');
+
+        $drop = strpos($source, '$this->dropSnapshotFromEarlierOpen($quote, $windowPricedByServer, $paymentId)');
+        $record = strpos($source, "\$quote->setData('paystand_payment_id', \$paymentId)");
+        $this->assertNotFalse($drop);
+        $this->assertNotFalse($record);
+        $this->assertLessThan($record, $drop);
+    }
+
+    /**
+     * SavePaymentData must stamp through the helper so paidBag, recollect, and
+     * ensureStamped stay in one order. A naive paidBag substring would also
+     * match comments; assert the live call and the three old call sites only.
+     */
+    public function testSavePaymentDataUsesCopyPaidHelper(): void
+    {
+        $source = file_get_contents(__DIR__ . '/../../../../Controller/Checkout/SavePaymentData.php');
+
+        $this->assertStringContainsString(
+            "copyPaidRecollectAndStamp(\$quote, 'savepaymentdata')",
+            $source
+        );
+        $this->assertStringNotContainsString('$this->captureSnapshot->paidBag', $source);
+        $this->assertStringNotContainsString('$this->captureSnapshot->ensureStamped', $source);
+        $this->assertStringNotContainsString('$this->quoteShipping->recollectPreservingShipping', $source);
     }
 }

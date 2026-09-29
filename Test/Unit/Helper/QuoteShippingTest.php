@@ -108,6 +108,57 @@ class QuoteShippingTest extends TestCase
     }
 
     /**
+     * The shopper picked a faster method after paying. Writing the paid amount
+     * and description onto it would ship one service and charge for another,
+     * so the paid method goes back with them.
+     */
+    public function testRestoreRevertsAMethodChangedAfterCapture(): void
+    {
+        // Next-day is selected now; the paid flat-rate row is gone with it.
+        $address = $this->buildAddress('ups_NEXT_DAY', 120.00, 'UPS Next Day', null, null);
+        $address->expects($this->once())->method('setShippingMethod')->with('flatrate_flatrate');
+        $address->expects($this->once())->method('setShippingDescription')->with('Flat Rate - Fixed');
+        $address->expects($this->once())->method('setShippingAmount')->with(77.00);
+
+        $quote = $this->buildQuote(false, $address);
+        $snapshot = [
+            'method'      => 'flatrate_flatrate',
+            'amount'      => 77.00,
+            'baseAmount'  => 77.00,
+            'description' => 'Flat Rate - Fixed',
+            'rate'        => [
+                'code' => 'flatrate_flatrate', 'carrier' => 'flatrate', 'carrierTitle' => 'Flat Rate',
+                'method' => 'flatrate', 'methodTitle' => 'Fixed', 'price' => 77.00,
+            ],
+        ];
+
+        $this->assertTrue($this->helper->restore($quote, $snapshot, 'test'));
+    }
+
+    /**
+     * A changed method is reverted even when its own rate row is still there,
+     * which is the case restore() used to walk away from.
+     */
+    public function testRestoreRevertsAChangedMethodThatStillHasARate(): void
+    {
+        $rate = $this->buildReadableRate('flatrate_flatrate', 77.00);
+        $address = $this->buildAddress('ups_NEXT_DAY', 120.00, 'UPS Next Day', null, $rate);
+        $address->expects($this->once())->method('setShippingMethod')->with('flatrate_flatrate');
+        $address->expects($this->never())->method('addShippingRate');
+
+        $quote = $this->buildQuote(false, $address);
+        $snapshot = [
+            'method'      => 'flatrate_flatrate',
+            'amount'      => 77.00,
+            'baseAmount'  => 77.00,
+            'description' => 'Flat Rate - Fixed',
+            'rate'        => ['code' => 'flatrate_flatrate'],
+        ];
+
+        $this->assertTrue($this->helper->restore($quote, $snapshot, 'test'));
+    }
+
+    /**
      * Both method and its rate row survived, so there is nothing to do.
      */
     public function testRestoreLeavesASurvivingSelectionUntouched(): void

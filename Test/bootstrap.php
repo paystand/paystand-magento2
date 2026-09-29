@@ -1,6 +1,6 @@
 <?php
 $magentoRoot = '/var/www/html';
-$moduleRoot  = '/var/www/html/app/code/PayStand/PayStandMagento';
+$moduleRoot  = dirname(__DIR__);
 
 require_once $magentoRoot . '/vendor/autoload.php';
 
