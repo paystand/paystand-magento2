@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace PayStand\PayStandMagento\Plugin;
 
 use Magento\Framework\App\Config\ScopeConfigInterface;
-use Magento\Framework\Event\ManagerInterface;
 use Magento\Framework\Exception\LocalizedException;
 use Magento\Framework\Phrase;
 use PayStand\PayStandMagento\Exception\CapturedCartChangedException;
@@ -43,19 +42,14 @@ class CapturedQuoteSubmit
     /** @var ScopeConfigInterface */
     private $scopeConfig;
 
-    /** @var ManagerInterface */
-    private $eventManager;
-
     public function __construct(
         LoggerInterface $logger,
         CaptureSnapshot $snapshot,
-        ScopeConfigInterface $scopeConfig,
-        ManagerInterface $eventManager
+        ScopeConfigInterface $scopeConfig
     ) {
         $this->logger = $logger;
         $this->snapshot = $snapshot;
         $this->scopeConfig = $scopeConfig;
-        $this->eventManager = $eventManager;
     }
 
     /**
@@ -181,25 +175,18 @@ class CapturedQuoteSubmit
             return;
         }
 
-        $exception = new CapturedCartChangedException(
+        // Thrown before QuoteManagement::submit runs, so Magento has taken no stock
+        // and its submit-failure listeners have nothing to give back. Dispatching
+        // that event here made CatalogInventory add stock that was never deducted,
+        // once per refusal (stores without MSI). QuoteSubmitLoggerPlugin wraps this
+        // plugin and still logs the refusal.
+        throw new CapturedCartChangedException(
             new Phrase(
                 'The cart changed after payment was captured. Do not place this order.'
                 . ' Contact support. Payment ID: %1 (%2)',
                 [$paymentId !== '' ? $paymentId : 'unknown', CapturedCartChangedException::CODE]
             )
         );
-
-        try {
-            $this->eventManager->dispatch('sales_model_service_quote_submit_failure', [
-                'order' => null,
-                'quote' => $quote,
-                'exception' => $exception,
-            ]);
-        } catch (\Throwable $ignored) {
-            // Magento event failure must not hide the refuse.
-        }
-
-        throw $exception;
     }
 
     private function guardMode(): string

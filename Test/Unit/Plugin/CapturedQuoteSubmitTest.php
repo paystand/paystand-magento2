@@ -3,7 +3,6 @@
 namespace PayStand\PayStandMagento\Test\Unit\Plugin;
 
 use Magento\Framework\App\Config\ScopeConfigInterface;
-use Magento\Framework\Event\ManagerInterface;
 use Magento\Framework\Exception\LocalizedException;
 use Magento\Quote\Model\Quote;
 use Magento\Quote\Model\QuoteManagement;
@@ -158,21 +157,18 @@ class CapturedQuoteSubmitTest extends TestCase
         $this->assertNull($plugin->beforeSubmit($this->subject, $quote));
     }
 
-    public function testRefuseDispatchesMagentoSubmitFailure(): void
+    /**
+     * The refuse runs before QuoteManagement::submit, so Magento has taken no stock.
+     * Its submit-failure listeners give stock back: on a store without MSI,
+     * CatalogInventory's revert added stock that was never deducted, once per refusal
+     * and per webhook retry of it.
+     */
+    public function testRefusalDoesNotRunMagentoSubmitFailureListeners(): void
     {
-        $events = $this->getMockBuilder(ManagerInterface::class)
-            ->getMockForAbstractClass();
-        $events->expects($this->once())->method('dispatch')->with(
-            'sales_model_service_quote_submit_failure',
-            $this->callback(function ($data) {
-                return isset($data['quote'], $data['exception'])
-                    && $data['exception'] instanceof LocalizedException;
-            })
-        );
+        $source = file_get_contents(__DIR__ . '/../../../Plugin/CapturedQuoteSubmit.php');
 
-        $plugin = $this->plugin(CapturedQuoteSubmit::MODE_REFUSE, null, $events);
-        $this->expectException(LocalizedException::class);
-        $plugin->beforeSubmit($this->subject, $this->capturedQuote('2'));
+        $this->assertStringNotContainsString("dispatch('sales_model_service_quote_submit_failure'", $source);
+        $this->assertStringNotContainsString('ManagerInterface', $source);
     }
 
     public function testRefuseMessageIncludesPaymentId(): void
@@ -180,17 +176,6 @@ class CapturedQuoteSubmitTest extends TestCase
         $plugin = $this->plugin(CapturedQuoteSubmit::MODE_REFUSE);
         $this->expectExceptionMessage('0an3zfttt9p7jm1v9xdqc2tq');
         $plugin->beforeSubmit($this->subject, $this->capturedQuote('2'));
-    }
-
-    public function testMismatchLogOnlyDoesNotDispatchSubmitFailure(): void
-    {
-        $events = $this->getMockBuilder(ManagerInterface::class)
-            ->getMockForAbstractClass();
-        $events->expects($this->never())->method('dispatch');
-
-        $plugin = $this->plugin(CapturedQuoteSubmit::MODE_LOG_ONLY, null, $events);
-
-        $this->assertNull($plugin->beforeSubmit($this->subject, $this->capturedQuote('2')));
     }
 
     public function testMismatchLogsStampedAndCurrentHash(): void
@@ -310,26 +295,20 @@ class CapturedQuoteSubmitTest extends TestCase
 
     private function plugin(
         string $mode = CapturedQuoteSubmit::MODE_LOG_ONLY,
-        ?LoggerInterface $logger = null,
-        $eventManager = null
+        ?LoggerInterface $logger = null
     ): CapturedQuoteSubmit {
         $config = $this->getMockBuilder(ScopeConfigInterface::class)->getMockForAbstractClass();
         $config->method('getValue')->with(
             CapturedQuoteSubmit::CONFIG_PATH,
             ScopeInterface::SCOPE_STORE
         )->willReturn($mode);
-        if ($eventManager === null) {
-            $eventManager = $this->getMockBuilder(ManagerInterface::class)
-                ->getMockForAbstractClass();
-        }
         return new CapturedQuoteSubmit(
             $logger ?: $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass(),
             new CaptureSnapshot(
                 $this->getMockBuilder(QuoteShipping::class)->disableOriginalConstructor()->getMock(),
                 $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass()
             ),
-            $config,
-            $eventManager
+            $config
         );
     }
 
