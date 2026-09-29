@@ -734,6 +734,40 @@ class CreateOrderFromQuoteTest extends TestCase
     }
 
     /**
+     * The copy was loaded before the wait. The row's snapshot must be taken before
+     * stamping and saving, or an older snapshot is judged against and written back.
+     */
+    public function testRescueTakesTheRowsSnapshotBeforeStampingAndSaving(): void
+    {
+        $quote = $this->buildInitialQuote(42);
+        $this->lockManagerMock->method('lock')->willReturn(true);
+        $reloaded = $this->buildReloadedQuote([]);
+        $this->cartRepositoryMock->method('get')->willReturn($reloaded);
+        $this->controller->method('findOrder')->willReturn(null);
+
+        $sequence = [];
+        $this->captureSnapshotMock->expects($this->once())->method('adoptPersistedSnapshot')->with($reloaded)
+            ->willReturnCallback(function () use (&$sequence) {
+                $sequence[] = 'adopt';
+            });
+        $this->captureSnapshotMock->method('copyPaidRecollectAndStamp')->willReturnCallback(function () use (&$sequence) {
+            $sequence[] = 'stamp';
+        });
+        $this->cartRepositoryMock->method('save')->willReturnCallback(function () use (&$sequence) {
+            $sequence[] = 'save';
+        });
+        $this->cartManagementMock->method('placeOrder')->willReturnCallback(function () use (&$sequence) {
+            $sequence[] = 'placeOrder';
+            return 77;
+        });
+        $this->orderRepositoryMock->method('get')->willReturn($this->buildOrder(77, 'W000000077'));
+
+        $this->invoke($quote, 'processing', 'pay-webhook-999');
+
+        $this->assertSame(['adopt', 'stamp', 'save', 'placeOrder'], $sequence);
+    }
+
+    /**
      * failed never maps to Magento STATE_PROCESSING, so createOrderFromQuote
      * returns before markers or Magento placeOrder.
      */

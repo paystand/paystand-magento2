@@ -121,8 +121,9 @@ class SavePaymentDataTest extends TestCase
     /**
      * @param mixed $windowPricedByServer
      * @param int $clears Times clearCheckoutIntent must run
+     * @param mixed $paymentId The payment the request reports
      */
-    private function dropFor($windowPricedByServer, int $clears): void
+    private function dropFor($windowPricedByServer, int $clears, $paymentId = 'pay0123456789abcdef'): void
     {
         $quote = $this->getMockBuilder(\Magento\Quote\Model\Quote::class)
             ->disableOriginalConstructor()
@@ -131,7 +132,8 @@ class SavePaymentDataTest extends TestCase
             ->disableOriginalConstructor()
             ->onlyMethods(['clearCheckoutIntent'])
             ->getMock();
-        $snapshot->expects($this->exactly($clears))->method('clearCheckoutIntent')->with($quote);
+        $snapshot->expects($this->exactly($clears))->method('clearCheckoutIntent')
+            ->with($quote, (string)$paymentId);
 
         $property = new \ReflectionProperty(SavePaymentData::class, 'captureSnapshot');
         $property->setAccessible(true);
@@ -139,7 +141,7 @@ class SavePaymentDataTest extends TestCase
 
         $method = new \ReflectionMethod(SavePaymentData::class, 'dropSnapshotFromEarlierOpen');
         $method->setAccessible(true);
-        $method->invoke($this->controller, $quote, $windowPricedByServer);
+        $method->invoke($this->controller, $quote, $windowPricedByServer, $paymentId);
     }
 
     /**
@@ -149,6 +151,15 @@ class SavePaymentDataTest extends TestCase
     public function testWindowPricedByTheBrowserDropsTheEarlierSnapshot(): void
     {
         $this->dropFor(false, 1);
+    }
+
+    /**
+     * Paystand's webhook can record the payment before the browser reports it.
+     * The drop names this payment, so a quote already holding it is still cleared.
+     */
+    public function testTheDropNamesThePaymentThisRequestReports(): void
+    {
+        $this->dropFor(false, 1, 'otff1duzi52yjudijnifi8fy');
     }
 
     public function testWindowPricedByTheServerKeepsItsSnapshot(): void
@@ -165,14 +176,14 @@ class SavePaymentDataTest extends TestCase
     }
 
     /**
-     * clearCheckoutIntent leaves any quote that already has a payment id alone,
-     * so the drop must run before this request records its own.
+     * The drop runs before this request records its own payment id, and names that
+     * payment, so only a quote holding a different payment keeps its snapshot.
      */
     public function testEarlierSnapshotIsDroppedBeforeThePaymentIdIsRecorded(): void
     {
         $source = file_get_contents(__DIR__ . '/../../../../Controller/Checkout/SavePaymentData.php');
 
-        $drop = strpos($source, '$this->dropSnapshotFromEarlierOpen($quote, $windowPricedByServer)');
+        $drop = strpos($source, '$this->dropSnapshotFromEarlierOpen($quote, $windowPricedByServer, $paymentId)');
         $record = strpos($source, "\$quote->setData('paystand_payment_id', \$paymentId)");
         $this->assertNotFalse($drop);
         $this->assertNotFalse($record);

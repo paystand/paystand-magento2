@@ -477,19 +477,27 @@ class CaptureSnapshot
      * block an order paid at the right amount. With no snapshot, the payment
      * save stamps from the paid cart instead.
      *
-     * A quote row that already carries a Paystand payment id is never cleared:
-     * its snapshot is the record of what was charged.
+     * A quote row that already carries a Paystand payment id is not cleared:
+     * its snapshot is the record of what was charged. The one exception is the
+     * payment the caller is reporting, which Paystand's webhook can record before
+     * the browser does (the payment save passes it; a window open never does).
      *
      * @param mixed $quote Magento quote
+     * @param string $reportedPaymentId The payment the caller is reporting, if any
      */
-    public function clearCheckoutIntent($quote): void
+    public function clearCheckoutIntent($quote, string $reportedPaymentId = ''): void
     {
         try {
-            if (!$quote || !$quote->getId() || !empty($quote->getData('paystand_payment_id'))) {
+            if (!$quote || !$quote->getId()) {
                 return;
             }
 
-            $this->writeUnpaidSnapshot($quote, null);
+            $recorded = (string)$quote->getData('paystand_payment_id');
+            if ($recorded !== '' && $recorded !== $reportedPaymentId) {
+                return;
+            }
+
+            $this->writeUnpaidSnapshot($quote, null, $reportedPaymentId);
             $quote->setData(self::QUOTE_FIELD, null);
         } catch (\Throwable $e) {
             $quoteId = 'unknown';
@@ -507,25 +515,58 @@ class CaptureSnapshot
 
     /**
      * Write only the snapshot column, and only while the row has no Paystand
-     * payment id. The condition is on the row, not on this in-memory quote, so
-     * a payment another request recorded since this quote was loaded still wins.
+     * payment id, or has the one the caller is reporting. The condition is on the
+     * row, not on this in-memory quote, so any other payment recorded since this
+     * quote was loaded still wins.
      *
      * @param mixed $quote Magento quote
+     * @param string $reportedPaymentId The payment the caller is reporting, if any
      * @return int Rows changed
      */
-    private function writeUnpaidSnapshot($quote, ?string $snapshot): int
+    private function writeUnpaidSnapshot($quote, ?string $snapshot, string $reportedPaymentId = ''): int
     {
         $resource = $quote->getResource();
         $connection = $resource->getConnection();
 
-        return (int)$connection->update(
-            $resource->getMainTable(),
-            [self::QUOTE_FIELD => $snapshot],
-            [
-                'entity_id = ?' => (int)$quote->getId(),
-                "paystand_payment_id IS NULL OR paystand_payment_id = ''",
-            ]
-        );
+        $where = ['entity_id = ?' => (int)$quote->getId()];
+        if ($reportedPaymentId !== '') {
+            $where["paystand_payment_id IS NULL OR paystand_payment_id = '' OR paystand_payment_id = ?"]
+                = $reportedPaymentId;
+        } else {
+            $where[] = "paystand_payment_id IS NULL OR paystand_payment_id = ''";
+        }
+
+        return (int)$connection->update($resource->getMainTable(), [self::QUOTE_FIELD => $snapshot], $where);
+    }
+
+    /**
+     * Replace the snapshot on this in-memory quote with the one its row holds now,
+     * or with none if the row has none. A copy loaded before checkout restamped the
+     * cart would otherwise be judged against, and saved back over, the newer
+     * snapshot. The in-memory snapshot stays when the row cannot be read.
+     *
+     * @param mixed $quote Magento quote
+     */
+    public function adoptPersistedSnapshot($quote): void
+    {
+        try {
+            $id = $quote ? $quote->getId() : null;
+            if (!$id) {
+                return;
+            }
+            $resource = $quote->getResource();
+            $connection = $resource->getConnection();
+            $raw = $connection->fetchOne(
+                $connection->select()
+                    ->from($resource->getMainTable(), self::QUOTE_FIELD)
+                    ->where('entity_id = ?', $id)
+            );
+            $quote->setData(self::QUOTE_FIELD, is_string($raw) && $raw !== '' ? $raw : null);
+        } catch (\Throwable $e) {
+            $this->logger->error(
+                'PAYSTAND-CAPTURE-SNAPSHOT: could not re-read snapshot, keeping the loaded one: ' . $e->getMessage()
+            );
+        }
     }
 
     /**

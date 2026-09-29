@@ -1047,6 +1047,12 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 // CloudLogger failure — silently ignored to protect payment flow
             }
 
+            // Checkout can restamp the cart while this delivery waits: when the window
+            // was priced from browser totals, the payment save replaces the snapshot of
+            // an earlier open. Judge the cart by the row's snapshot, and do not save this
+            // copy's older one back over it.
+            $this->captureSnapshot->adoptPersistedSnapshot($quote);
+
             // Copy paid money first. Recollect can drop shipping and rewrite
             // grand_total; the snapshot must keep the captured amount. A restored
             // rate row can merge in at stamp time. Marked as rescue-stamped: this

@@ -892,6 +892,81 @@ class CaptureSnapshotTest extends TestCase
     }
 
     /**
+     * Paystand's webhook can record the payment before the browser reports it. The
+     * payment save names that payment, and a quote holding it is still cleared, on
+     * the row as well as in memory (PROD-16503: staging refused a correctly paid cart).
+     */
+    public function testClearCheckoutIntentClearsAQuoteHoldingTheReportedPayment(): void
+    {
+        $quote = $this->quoteWith('pay1', 'processing');
+        $updates = [];
+        $quote->method('getResource')->willReturn($this->unpaidRowResource(1, false, $updates));
+        $quote->expects($this->once())->method('setData')->with(CaptureSnapshot::QUOTE_FIELD, null);
+
+        $this->makeSnapshot()->clearCheckoutIntent($quote, 'pay1');
+
+        $this->assertSame([[
+            'quote',
+            [CaptureSnapshot::QUOTE_FIELD => null],
+            [
+                'entity_id = ?' => 770001,
+                "paystand_payment_id IS NULL OR paystand_payment_id = '' OR paystand_payment_id = ?" => 'pay1',
+            ],
+        ]], $updates);
+    }
+
+    public function testClearCheckoutIntentLeavesAQuoteHoldingAnotherPaymentAlone(): void
+    {
+        $quote = $this->quoteWith('pay1', 'processing');
+        $updates = [];
+        $quote->method('getResource')->willReturn($this->unpaidRowResource(1, false, $updates));
+        $quote->expects($this->never())->method('setData');
+
+        $this->makeSnapshot()->clearCheckoutIntent($quote, 'pay2');
+
+        $this->assertSame([], $updates);
+    }
+
+    /**
+     * The webhook rescue's copy was loaded before its wait. Checkout may have
+     * restamped the cart since; the row's snapshot is the one to judge by and keep.
+     */
+    public function testAdoptPersistedSnapshotTakesTheRowsSnapshot(): void
+    {
+        $quote = $this->quoteWith('pay1', 'posted');
+        $quote->method('getResource')->willReturn($this->unpaidRowResource(0, '{"hash":"row"}'));
+        $quote->expects($this->once())->method('setData')->with(CaptureSnapshot::QUOTE_FIELD, '{"hash":"row"}');
+
+        $this->makeSnapshot()->adoptPersistedSnapshot($quote);
+    }
+
+    /** Checkout dropped the snapshot and had none to stamp (a bank payment still processing). */
+    public function testAdoptPersistedSnapshotClearsWhenTheRowHasNone(): void
+    {
+        $quote = $this->quoteWith('pay1', 'processing');
+        $quote->method('getResource')->willReturn($this->unpaidRowResource(0, false));
+        $quote->expects($this->once())->method('setData')->with(CaptureSnapshot::QUOTE_FIELD, null);
+
+        $this->makeSnapshot()->adoptPersistedSnapshot($quote);
+    }
+
+    /** An unreadable row is not evidence the snapshot changed, so the loaded one stays. */
+    public function testAdoptPersistedSnapshotKeepsTheLoadedOneWhenTheRowCannotBeRead(): void
+    {
+        $quote = $this->quoteWith('pay1', 'posted');
+        $quote->method('getResource')->willThrowException(new \RuntimeException('db down'));
+        $quote->expects($this->never())->method('setData');
+        $logger = $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass();
+        $logger->expects($this->once())->method('error')
+            ->with($this->stringContains('keeping the loaded one'));
+
+        (new CaptureSnapshot(
+            $this->getMockBuilder(QuoteShipping::class)->disableOriginalConstructor()->getMock(),
+            $logger
+        ))->adoptPersistedSnapshot($quote);
+    }
+
+    /**
      * A failed clear must not stop the window opening. It is logged, and the
      * stamp that follows it still overwrites the old snapshot.
      */
