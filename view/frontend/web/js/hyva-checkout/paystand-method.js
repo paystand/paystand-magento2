@@ -333,7 +333,7 @@
         
         if (customer.isLoggedIn && config.accessToken) {
             delete config.presetCustom;
-            delete config.publishableKey;
+            // Keep publishableKey: checkout authenticates its bank login calls with it.
             config.checkoutType = 'checkout_magento2';
             config.customerId = window.paystandConfig.customerId;
             config.paymentMeta.extCustomerId = customer.id;
