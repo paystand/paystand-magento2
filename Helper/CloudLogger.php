@@ -64,6 +64,12 @@ class CloudLogger
     // Totals were pinned from a snapshot the webhook rescue wrote, which is the
     // cart the rescue found rather than a cart proven to be the one paid for.
     const EVENT_CAPTURE_PIN_UNVERIFIED = 'capture_pin_unverified';
+    // The webhook rescue placed no order: Paystand reports the payment failed or
+    // canceled since the delivery was sent.
+    const EVENT_RESCUE_PAYMENT_FAILED = 'rescue_payment_failed';
+    // The webhook rescue could not read the payment's current status from
+    // Paystand and placed the order on the delivery's own status.
+    const EVENT_RESCUE_STATUS_UNVERIFIED = 'rescue_status_unverified';
 
     /**
      * Resolve the merchant's customer ID from store config.

@@ -18,6 +18,12 @@ class PaymentStatus implements \Magento\Framework\Option\ArrayInterface
     const PLACE_ORDER_STATUSES = ['paid', 'posted', 'processing'];
 
     /**
+     * Statuses after which Paystand does not take the money. The webhook rescue
+     * must not place an order for a payment in one of them.
+     */
+    const FAILED_STATUSES = ['failed', 'canceled'];
+
+    /**
      * paid and posted both mean the money was taken. processing is weaker.
      * A later processing delivery must not replace a status that already arms
      * the captured-cart guard.

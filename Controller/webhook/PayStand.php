@@ -39,6 +39,12 @@ class Paystand extends \Magento\Framework\App\Action\Action
      */
     const RESCUE_ABANDON_AFTER_HOURS = 24;
 
+    /**
+     * Longest wait for Paystand's current payment status. The read runs while
+     * the place-order lock is held.
+     */
+    const PAYMENT_STATUS_TIMEOUT_SECONDS = 5;
+
     /** @var \Psr\Log\LoggerInterface */
     protected $_logger;
 
@@ -107,11 +113,20 @@ class Paystand extends \Magento\Framework\App\Action\Action
 
     /**
      * Why the last createOrderFromQuote() failed. 'terminal' means Magento rejected
-     * the cart itself, so retrying the same cart fails the same way.
+     * the cart itself, so retrying the same cart fails the same way. 'paymentFailed'
+     * means Paystand reports the payment failed, so no delivery can place an order.
      *
-     * @var array{terminal: bool, message: string}|null
+     * @var array{terminal: bool, refused?: bool, paymentFailed?: bool, message: string}|null
      */
     private $lastRescueFailure = null;
+
+    /**
+     * Token this delivery was verified with. The rescue reuses it to read the
+     * payment's current status.
+     *
+     * @var string|null
+     */
+    private $paystandAccessToken = null;
 
     /**
      * @param \Magento\Framework\App\Action\Context $context ,
@@ -223,6 +238,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
             );
             return $result;
         }
+        $this->paystandAccessToken = $access_token;
 
         // Verify received Event is valid with Paystand
         if (!$this->verifyPaystandEvent($access_token, $json)) {
@@ -330,6 +346,15 @@ class Paystand extends \Magento\Framework\App\Action\Action
 
         // Server-side creation also failed (or was not possible).
         if (!$order || !$order->getId()) {
+            // A redelivery cannot bring back a failed payment, so stop it.
+            if (!empty($this->lastRescueFailure['paymentFailed'])) {
+                $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
+                $result->setData(
+                    ['success_message' => __('Payment failed at Paystand, no order created')]
+                );
+                return $result;
+            }
+
             // Give up only when the failure is terminal AND the event has outlived
             // the window; a transient blip must still get its retries.
             if ($this->isRescueTerminalAndExpired($json)) {
@@ -657,6 +682,45 @@ class Paystand extends \Magento\Framework\App\Action\Action
         }
     }
 
+    /**
+     * Returns the payment's current status at Paystand, lowercased, or null when
+     * it cannot be read.
+     * Declared protected (not private) to allow PHPUnit partial mocking in unit tests.
+     * See note on getPaystandAccessToken() for rationale.
+     * NOTE: do not override this in production Magento extensions.
+     *
+     * @param string $paymentId
+     * @return string|null
+     */
+    protected function fetchPaystandPaymentStatus(string $paymentId): ?string
+    {
+        if (!$this->paystandAccessToken || $paymentId === '') {
+            return null;
+        }
+
+        $curl = $this->_objectManager->create(\Magento\Framework\HTTP\Client\Curl::class);
+        $curl->setHeaders([
+            'Accept'        => 'application/json',
+            'Authorization' => 'Bearer ' . $this->paystandAccessToken,
+            'x-customer-id' => (string)$this->scopeConfig->getValue(self::CUSTOMER_ID, self::STORE_SCOPE),
+        ]);
+        $curl->setTimeout(self::PAYMENT_STATUS_TIMEOUT_SECONDS);
+        $curl->get($this->getBaseUrl() . '/payments/' . rawurlencode($paymentId));
+
+        if ((int)$curl->getStatus() !== 200) {
+            return null;
+        }
+        $payment = json_decode((string)$curl->getBody());
+        if (!is_object($payment) || !isset($payment->status) || !is_string($payment->status)) {
+            return null;
+        }
+        if (isset($payment->id) && (string)$payment->id !== $paymentId) {
+            return null;
+        }
+        $status = strtolower(trim($payment->status));
+        return $status === '' ? null : $status;
+    }
+
     private function getBaseUrl()
     {
         if ($this->scopeConfig->getValue(self::USE_SANDBOX, self::STORE_SCOPE)) {
@@ -876,7 +940,8 @@ class Paystand extends \Magento\Framework\App\Action\Action
 
     /**
      * Create an order server-side from a paid-but-unconverted quote, so a captured
-     * payment always yields one. Any failure returns null and the caller 404s.
+     * payment always yields one. Any failure returns null, and lastRescueFailure
+     * tells the caller whether a redelivery can help.
      *
      * @param \Magento\Quote\Model\Quote $quote
      * @param \stdClass $json
@@ -944,6 +1009,10 @@ class Paystand extends \Magento\Framework\App\Action\Action
             $existing = $this->findOrder($quote);
             if ($existing && $existing->getId()) {
                 return $existing;
+            }
+
+            if ($this->paymentFailedSinceDelivery($json, $quoteId)) {
+                return null;
             }
 
             // Magento hands back the copy this request loaded on arrival, before the
@@ -1129,6 +1198,68 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 $this->_logger->error('>>>>> PAYSTAND-WEBHOOK: Failed to release place-order lock ' . $lockName . ': ' . $e->getMessage());
             }
         }
+    }
+
+    /**
+     * A card can fail seconds after its processing delivery, and this delivery has
+     * waited for the browser since then, so Paystand's current status decides.
+     * When that status cannot be read, the order is placed on the delivery's own
+     * status, as before, so a bank payment still in processing gets its order.
+     *
+     * @param \stdClass $json
+     * @param int|string $quoteId
+     * @return bool true when Paystand now reports the payment failed or canceled
+     */
+    private function paymentFailedSinceDelivery($json, $quoteId): bool
+    {
+        $deliveryStatus = strtolower(trim((string)($json->resource->status ?? '')));
+        if (in_array($deliveryStatus, PaymentStatus::CAPTURED_STATUSES, true)) {
+            return false;
+        }
+
+        $paymentId = (string)($json->resource->id ?? '');
+        try {
+            $currentStatus = $this->fetchPaystandPaymentStatus($paymentId);
+        } catch (\Throwable $e) {
+            $currentStatus = null;
+        }
+
+        if ($currentStatus === null) {
+            $this->_logger->warning('>>>>> PAYSTAND-WEBHOOK: Could not read the current status of payment ' . $paymentId . ' for quote ' . $quoteId . '; placing on delivery status ' . $deliveryStatus);
+            try {
+                CloudLogger::ship(CloudLogger::EVENT_RESCUE_STATUS_UNVERIFIED, [
+                    'quote_id'      => (string)$quoteId,
+                    'payment_id'    => $paymentId,
+                    'error_message' => 'Current payment status not read; placing on delivery status ' . $deliveryStatus,
+                ]);
+            } catch (\Throwable $e) {
+                // CloudLogger failure — silently ignored
+            }
+            return false;
+        }
+
+        if (!in_array($currentStatus, PaymentStatus::FAILED_STATUSES, true)) {
+            return false;
+        }
+
+        $message = 'Delivery status ' . $deliveryStatus . ', Paystand now reports ' . $currentStatus . '; order not placed';
+        $this->lastRescueFailure = [
+            'terminal'      => false,
+            'refused'       => false,
+            'paymentFailed' => true,
+            'message'       => $message,
+        ];
+        $this->_logger->warning('>>>>> PAYSTAND-WEBHOOK: Not creating order for quote ' . $quoteId . ': ' . $message);
+        try {
+            CloudLogger::ship(CloudLogger::EVENT_RESCUE_PAYMENT_FAILED, [
+                'quote_id'      => (string)$quoteId,
+                'payment_id'    => $paymentId,
+                'error_message' => $message,
+            ]);
+        } catch (\Throwable $e) {
+            // CloudLogger failure — silently ignored
+        }
+        return true;
     }
 
     /**
