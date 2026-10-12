@@ -5,5 +5,12 @@ var config = {
     //"paystand-sandbox": "https://checkout.paystand.biz/v4/js/paystand.checkout.js?env=development",
     //"paystand-sandbox": "https://checkout.paystand.io/v4/js/paystand.checkout.js?env=staging",
     "paystand-sandbox": "https://checkout.paystand.co/v4/js/paystand.checkout.js?env=sandbox"
+  },
+  config: {
+    mixins: {
+      "Magento_Checkout/js/action/redirect-on-success": {
+        "PayStand_PayStandMagento/js/action/redirect-on-success-mixin": true
+      }
+    }
   }
 };
