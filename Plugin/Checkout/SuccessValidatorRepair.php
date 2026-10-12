@@ -111,9 +111,20 @@ class SuccessValidatorRepair
      */
     private function isRecent($order): bool
     {
+        $age = $this->orderAgeSeconds($order);
+
+        return $age !== null && $age <= self::MAX_ORDER_AGE_SECONDS;
+    }
+
+    /**
+     * @param Order $order
+     * @return int|null seconds since the order was placed, null without created_at
+     */
+    private function orderAgeSeconds($order): ?int
+    {
         $createdAt = $order->getCreatedAt();
         if (!$createdAt) {
-            return false;
+            return null;
         }
 
         // Order timestamps are stored in UTC; read them as such rather than
@@ -121,13 +132,10 @@ class SuccessValidatorRepair
         $placed = new \DateTime($createdAt, new \DateTimeZone('UTC'));
         $now = new \DateTime('now', new \DateTimeZone('UTC'));
 
-        return ($now->getTimestamp() - $placed->getTimestamp()) <= self::MAX_ORDER_AGE_SECONDS;
+        return $now->getTimestamp() - $placed->getTimestamp();
     }
 
     /**
-     * Names the values the validator found missing, so a bounce with no
-     * recoverable order is still distinguishable from an unplaced order.
-     *
      * @param int $quoteId
      * @param Order|null $order
      * @return void
@@ -137,34 +145,93 @@ class SuccessValidatorRepair
         try {
             $lastSuccessQuoteId = $this->checkoutSession->getLastSuccessQuoteId();
             $lastQuoteId = $this->checkoutSession->getLastQuoteId();
-            $lastOrderId = $this->checkoutSession->getLastOrderId();
-
-            $missing = [];
-            if (!$lastSuccessQuoteId) {
-                $missing[] = 'last_success_quote_id';
-            }
-            if (!$lastQuoteId) {
-                $missing[] = 'last_quote_id';
-            }
-            if (!$lastOrderId) {
-                $missing[] = 'last_order_id';
-            }
-
-            $reason = 'no order for session quote';
-            if ($order && $order->getId()) {
-                $reason = 'order ' . $order->getIncrementId() . ($order->getCreatedAt()
-                    ? ' too old to restore'
-                    : ' has no created_at');
-            }
 
             CloudLogger::ship(CloudLogger::EVENT_SUCCESS_PAGE_BOUNCED, [
                 'quote_id'      => (string)($quoteId ?: ($lastSuccessQuoteId ?: $lastQuoteId ?: '')),
-                'error_message' => 'success page redirected to cart; ' . $reason
-                    . '; missing[' . implode(',', $missing) . ']'
-                    . ' last_real_order_id=' . ($this->checkoutSession->getLastRealOrderId() ?: '(none)'),
+                'error_message' => $this->bounceMessage($quoteId, $order),
             ]);
         } catch (\Throwable $e) {
             // Telemetry must never disturb the checkout flow.
         }
+    }
+
+    /**
+     * Names the values the validator found missing, so a bounce with no
+     * recoverable order is still distinguishable from an unplaced order.
+     *
+     * kind sorts the bounces:
+     * - revisit: the session still names its last order. The confirmation page
+     *   clears last_success_quote_id and keeps last_order_id, so a reload or a
+     *   second request after the confirmation lands here. last_order_age is the
+     *   age of that order.
+     * - stale_order: the session's quote has an order outside the repair window.
+     * - no_order: the session has a quote with no order.
+     * - no_session: the session has no quote and no last order.
+     *
+     * @param int $quoteId
+     * @param Order|null $order
+     * @return string
+     */
+    private function bounceMessage(int $quoteId, $order): string
+    {
+        $lastSuccessQuoteId = $this->checkoutSession->getLastSuccessQuoteId();
+        $lastQuoteId = (int)$this->checkoutSession->getLastQuoteId();
+        $lastOrderId = $this->checkoutSession->getLastOrderId();
+
+        $missing = [];
+        if (!$lastSuccessQuoteId) {
+            $missing[] = 'last_success_quote_id';
+        }
+        if (!$lastQuoteId) {
+            $missing[] = 'last_quote_id';
+        }
+        if (!$lastOrderId) {
+            $missing[] = 'last_order_id';
+        }
+
+        $hasOrder = $order && $order->getId();
+        $reason = 'no order for session quote';
+        if ($hasOrder) {
+            $reason = 'order ' . $order->getIncrementId() . ($order->getCreatedAt()
+                ? ' too old to restore'
+                : ' has no created_at');
+        }
+
+        $lastOrderAge = '';
+        if ($lastOrderId) {
+            $kind = 'revisit';
+            $lastOrderAge = ' last_order_age=' . $this->lastOrderAge($lastQuoteId, $quoteId, $order);
+        } elseif ($hasOrder) {
+            $kind = 'stale_order';
+        } elseif ($quoteId) {
+            $kind = 'no_order';
+        } else {
+            $kind = 'no_session';
+        }
+
+        return 'success page redirected to cart; kind=' . $kind . '; ' . $reason
+            . '; missing[' . implode(',', $missing) . ']'
+            . ' last_real_order_id=' . ($this->checkoutSession->getLastRealOrderId() ?: '(none)')
+            . $lastOrderAge;
+    }
+
+    /**
+     * @param int $lastQuoteId
+     * @param int $quoteId
+     * @param Order|null $order the order already looked up for $quoteId
+     * @return string
+     */
+    private function lastOrderAge(int $lastQuoteId, int $quoteId, $order): string
+    {
+        try {
+            $lastOrder = $lastQuoteId === $quoteId
+                ? $order
+                : ($lastQuoteId ? $this->quoteAccess->findOrderByQuoteId($lastQuoteId) : null);
+            $age = $lastOrder && $lastOrder->getId() ? $this->orderAgeSeconds($lastOrder) : null;
+        } catch (\Throwable $e) {
+            $age = null;
+        }
+
+        return $age === null ? '(unknown)' : $age . 's';
     }
 }

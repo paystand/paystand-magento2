@@ -244,6 +244,104 @@ class SuccessValidatorRepairTest extends TestCase
         }
     }
 
+    // ── Bounce report ────────────────────────────────────────────────────────
+
+    /**
+     * The confirmation page keeps last_order_id and clears last_success_quote_id.
+     * A second request after it must report as a revisit with the age of that
+     * order, apart from a paid order that never got a confirmation.
+     */
+    public function testABounceAfterTheConfirmationIsARevisitWithTheOrderAge(): void
+    {
+        $this->checkoutSessionMock->method('getQuoteId')->willReturn(117);
+        $this->checkoutSessionMock->method('getLastQuoteId')->willReturn('116');
+        $this->checkoutSessionMock->method('getLastOrderId')->willReturn('99');
+        $this->checkoutSessionMock->method('getLastRealOrderId')->willReturn('000000099');
+        $this->quoteAccessMock->method('findOrderByQuoteId')->willReturnMap([
+            [117, null],
+            [116, $this->buildOrderMock(99, '000000099', 'pending', $this->agedBySeconds(40))],
+        ]);
+
+        $this->assertFalse($this->build()->afterIsValid($this->subjectMock, false));
+        $this->assertSame([], $this->restored);
+
+        $message = $this->bounceMessage(117, null);
+        $this->assertStringStartsWith('success page redirected to cart; kind=revisit; no order for session quote;', $message);
+        $this->assertStringContainsString('missing[last_success_quote_id] last_real_order_id=000000099', $message);
+        $this->assertMatchesRegularExpression('/ last_order_age=4[01]s$/', $message);
+    }
+
+    public function testARevisitOfTheSessionQuoteReusesItsOrder(): void
+    {
+        $this->checkoutSessionMock->method('getLastQuoteId')->willReturn('116');
+        $this->checkoutSessionMock->method('getLastOrderId')->willReturn('99');
+        $this->quoteAccessMock->expects($this->never())->method('findOrderByQuoteId');
+
+        $message = $this->bounceMessage(
+            116,
+            $this->buildOrderMock(99, '000000099', 'pending', $this->agedBySeconds(7200))
+        );
+
+        $this->assertStringContainsString('kind=revisit; order 000000099 too old to restore;', $message);
+        $this->assertMatchesRegularExpression('/ last_order_age=720[01]s$/', $message);
+    }
+
+    public function testARevisitWithoutItsOrderReportsAnUnknownAge(): void
+    {
+        $this->checkoutSessionMock->method('getLastQuoteId')->willReturn('116');
+        $this->checkoutSessionMock->method('getLastOrderId')->willReturn('99');
+        $this->quoteAccessMock->method('findOrderByQuoteId')->willReturn(null);
+
+        $this->assertStringEndsWith(' last_order_age=(unknown)', $this->bounceMessage(0, null));
+    }
+
+    /**
+     * The age is extra detail. A failed lookup must not lose the bounce report.
+     */
+    public function testARevisitAgeLookupFailureStillReportsTheBounce(): void
+    {
+        $this->checkoutSessionMock->method('getLastQuoteId')->willReturn('116');
+        $this->checkoutSessionMock->method('getLastOrderId')->willReturn('99');
+        $this->quoteAccessMock->method('findOrderByQuoteId')
+            ->willThrowException(new \RuntimeException('db gone'));
+
+        $message = $this->bounceMessage(0, null);
+        $this->assertStringContainsString('kind=revisit;', $message);
+        $this->assertStringEndsWith(' last_order_age=(unknown)', $message);
+    }
+
+    public function testAnOldOrderForTheSessionQuoteIsStale(): void
+    {
+        $message = $this->bounceMessage(
+            116,
+            $this->buildOrderMock(99, '000000099', 'pending', $this->agedBySeconds(7200))
+        );
+
+        $this->assertSame(
+            'success page redirected to cart; kind=stale_order; order 000000099 too old to restore;'
+            . ' missing[last_success_quote_id,last_quote_id,last_order_id] last_real_order_id=(none)',
+            $message
+        );
+    }
+
+    public function testAQuoteWithoutAnOrderIsNoOrder(): void
+    {
+        $this->assertSame(
+            'success page redirected to cart; kind=no_order; no order for session quote;'
+            . ' missing[last_success_quote_id,last_quote_id,last_order_id] last_real_order_id=(none)',
+            $this->bounceMessage(116, null)
+        );
+    }
+
+    public function testASessionWithNoQuoteAndNoLastOrderIsNoSession(): void
+    {
+        $this->assertSame(
+            'success page redirected to cart; kind=no_session; no order for session quote;'
+            . ' missing[last_success_quote_id,last_quote_id,last_order_id] last_real_order_id=(none)',
+            $this->bounceMessage(0, null)
+        );
+    }
+
     // ── Failure containment ──────────────────────────────────────────────────
 
     /**
@@ -279,6 +377,18 @@ class SuccessValidatorRepairTest extends TestCase
             $this->quoteAccessMock,
             $this->memo
         );
+    }
+
+    /**
+     * @param int $quoteId
+     * @param Order|null $order
+     * @return string the success_page_bounced message for this session state
+     */
+    private function bounceMessage(int $quoteId, $order): string
+    {
+        $method = new \ReflectionMethod(SuccessValidatorRepair::class, 'bounceMessage');
+        $method->setAccessible(true);
+        return $method->invoke($this->build(), $quoteId, $order);
     }
 
     /**
