@@ -131,14 +131,21 @@ class CaptureSnapshot
      * values fall through). Unknown, empty, and read failures are log_only.
      *
      * @param ScopeConfigInterface $config
+     * @param int|string|null $storeId Quote store. Null uses the request store.
      */
-    public function resolveGuardMode(ScopeConfigInterface $config): string
+    public function resolveGuardMode(ScopeConfigInterface $config, $storeId = null): string
     {
         try {
-            $mode = strtolower(trim((string)$config->getValue(
-                CapturedQuoteSubmit::CONFIG_PATH,
-                ScopeInterface::SCOPE_STORE
-            )));
+            $mode = strtolower(trim((string)($storeId === null || $storeId === ''
+                ? $config->getValue(
+                    CapturedQuoteSubmit::CONFIG_PATH,
+                    ScopeInterface::SCOPE_STORE
+                )
+                : $config->getValue(
+                    CapturedQuoteSubmit::CONFIG_PATH,
+                    ScopeInterface::SCOPE_STORE,
+                    $storeId
+                ))));
         } catch (\Throwable $e) {
             $this->logger->error(
                 'PAYSTAND-CAPTURED-GUARD: could not read captured_cart_guard, using log_only: '

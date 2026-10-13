@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace PayStand\PayStandMagento\Plugin;
 
 use Magento\Framework\App\Config\ScopeConfigInterface;
+use Magento\Quote\Model\Quote;
 use Magento\Quote\Model\Quote\Address;
 use PayStand\PayStandMagento\Helper\CaptureSnapshot;
+use PayStand\PayStandMagento\Model\Directpost;
 use Psr\Log\LoggerInterface;
 
 /**
@@ -22,7 +24,9 @@ use Psr\Log\LoggerInterface;
  * match the capture snapshot, this plugin keeps the stored rows and skips the
  * carrier request. Magento's Shipping total then reads the paid price from
  * the kept row. A changed cart, a quote without a stored row for the method,
- * and captured_cart_guard off all collect as usual.
+ * and captured_cart_guard off all collect as usual. A quote with no usable
+ * snapshot collects as usual too, except during the stamp recollect, which
+ * has not written the snapshot yet. Only a Paystand quote is kept.
  */
 class CapturedShippingRates
 {
@@ -82,7 +86,13 @@ class CapturedShippingRates
             return false;
         }
 
-        if ($this->snapshot->resolveGuardMode($this->scopeConfig) === CapturedQuoteSubmit::MODE_OFF) {
+        if (!$this->isPaystandQuote($quote)) {
+            return false;
+        }
+
+        if ($this->snapshot->resolveGuardMode($this->scopeConfig, $this->storeId($quote))
+            === CapturedQuoteSubmit::MODE_OFF
+        ) {
             return false;
         }
 
@@ -91,21 +101,49 @@ class CapturedShippingRates
             return false;
         }
 
-        // A missing or unreadable stamp is not evidence that the cart changed.
+        // No usable stamp means the cart cannot be checked. Keep the stored
+        // rate only while the stamp recollect is still writing that stamp.
         $payload = $this->snapshot->read($quote);
-        if ($payload !== null
-            && $this->snapshot->stampedHash($payload) !== ''
-            && !$this->snapshot->matches($quote, $payload)
-        ) {
+        $usableStamp = $payload !== null && $this->snapshot->stampedHash($payload) !== '';
+        if ($usableStamp && !$this->snapshot->matches($quote, $payload)) {
+            return false;
+        }
+        if (!$usableStamp && !$this->snapshot->isStamping()) {
             return false;
         }
 
-        // getShippingRateByCode() also returns rows already marked deleted.
         foreach ($address->getAllShippingRates() as $rate) {
             if ((string)$rate->getCode() === $method) {
                 return true;
             }
         }
         return false;
+    }
+
+    /**
+     * @param Quote $quote
+     */
+    private function isPaystandQuote($quote): bool
+    {
+        try {
+            $payment = $quote->getPayment();
+            return $payment && $payment->getMethod() === Directpost::METHOD_CODE;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /**
+     * @param Quote $quote
+     * @return int|string|null
+     */
+    private function storeId($quote)
+    {
+        try {
+            $storeId = $quote->getStoreId();
+            return $storeId === null || $storeId === '' ? null : $storeId;
+        } catch (\Throwable $e) {
+            return null;
+        }
     }
 }

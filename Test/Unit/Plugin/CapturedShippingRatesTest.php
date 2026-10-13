@@ -4,6 +4,8 @@ namespace PayStand\PayStandMagento\Test\Unit\Plugin;
 
 use Magento\Framework\App\Config\ScopeConfigInterface;
 use Magento\Quote\Model\Quote;
+use Magento\Quote\Model\Quote\Payment;
+use Magento\Store\Model\ScopeInterface;
 use Magento\Quote\Model\Quote\Address;
 use Magento\Quote\Model\Quote\Address\Rate;
 use Magento\Quote\Model\Quote\Item;
@@ -30,15 +32,21 @@ class CapturedShippingRatesTest extends TestCase
 
     private function makePlugin(
         string $mode = CapturedQuoteSubmit::MODE_LOG_ONLY,
-        ?LoggerInterface $logger = null
+        ?LoggerInterface $logger = null,
+        ?CaptureSnapshot $snapshot = null,
+        ?ScopeConfigInterface $config = null
     ): CapturedShippingRates {
-        $config = $this->getMockBuilder(ScopeConfigInterface::class)->getMockForAbstractClass();
-        $config->method('getValue')->willReturn($mode);
+        if (!$config) {
+            $config = $this->getMockBuilder(ScopeConfigInterface::class)->getMockForAbstractClass();
+            $config->method('getValue')->willReturn($mode);
+        }
 
-        $snapshot = new CaptureSnapshot(
-            $this->getMockBuilder(QuoteShipping::class)->disableOriginalConstructor()->getMock(),
-            $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass()
-        );
+        if (!$snapshot) {
+            $snapshot = new CaptureSnapshot(
+                $this->getMockBuilder(QuoteShipping::class)->disableOriginalConstructor()->getMock(),
+                $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass()
+            );
+        }
 
         return new CapturedShippingRates(
             $snapshot,
@@ -76,7 +84,9 @@ class CapturedShippingRatesTest extends TestCase
         ?string $paymentId,
         ?string $captureStatus,
         ?string $snapshotJson = null,
-        bool $multiShipping = false
+        bool $multiShipping = false,
+        string $methodCode = 'paystandmagento',
+        $storeId = 1
     ): Quote {
         $item = $this->getMockBuilder(Item::class)
             ->disableOriginalConstructor()
@@ -85,13 +95,24 @@ class CapturedShippingRatesTest extends TestCase
         $item->method('getSku')->willReturn('SKU');
         $item->method('getQty')->willReturn('1');
 
+        $payment = $this->getMockBuilder(Payment::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['getMethod'])
+            ->getMock();
+        $payment->method('getMethod')->willReturn($methodCode);
+
         $quote = $this->getMockBuilder(Quote::class)
             ->disableOriginalConstructor()
-            ->onlyMethods(['getData', 'getId', 'getAllVisibleItems', 'isVirtual', 'getShippingAddress'])
+            ->onlyMethods([
+                'getData', 'getId', 'getAllVisibleItems', 'isVirtual', 'getShippingAddress',
+                'getPayment', 'getStoreId',
+            ])
             ->addMethods(['getIsMultiShipping'])
             ->getMock();
         $quote->method('getId')->willReturn(770001);
         $quote->method('getIsMultiShipping')->willReturn($multiShipping);
+        $quote->method('getPayment')->willReturn($payment);
+        $quote->method('getStoreId')->willReturn($storeId);
         $quote->method('isVirtual')->willReturn(false);
         $quote->method('getAllVisibleItems')->willReturn([$item]);
         $quote->method('getData')->willReturnCallback(
@@ -202,16 +223,65 @@ class CapturedShippingRatesTest extends TestCase
     }
 
     /**
+     * A missing stamp cannot prove the cart is unchanged. Ask the carriers,
+     * as 3.7.4 did. The stamp recollect is the exception: the snapshot is not
+     * written yet, and the stored row is the rate being stamped.
+     *
      * @dataProvider unusableStamps
      */
-    public function testKeepsThePaidRateWhenNoStampCanProveTheCartChanged(?string $snapshotJson): void
+    public function testAsksTheCarriersWhenNoStampCanProveTheCartChanged(?string $snapshotJson): void
     {
-        $address = $this->addressOn($this->quoteWith(self::PAYMENT_ID, 'posted', $snapshotJson));
+        $this->assertAsksTheCarriers($this->addressOn(
+            $this->quoteWith(self::PAYMENT_ID, 'posted', $snapshotJson)
+        ));
+    }
+
+    public function testKeepsThePaidRateWhileTheSnapshotIsBeingStamped(): void
+    {
+        $snapshot = new CaptureSnapshot(
+            $this->getMockBuilder(QuoteShipping::class)->disableOriginalConstructor()->getMock(),
+            $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass()
+        );
+        $depth = new \ReflectionProperty(CaptureSnapshot::class, 'stampDepth');
+        $depth->setAccessible(true);
+        $depth->setValue($snapshot, 1);
+
+        $address = $this->addressOn($this->quoteWith(self::PAYMENT_ID, 'posted', null));
         $address->expects($this->once())->method('setCollectShippingRates')->with(false);
 
-        $this->makePlugin()->aroundCollectShippingRates($address, $this->proceedFor($address));
+        $this->makePlugin(CapturedQuoteSubmit::MODE_LOG_ONLY, null, $snapshot)
+            ->aroundCollectShippingRates($address, $this->proceedFor($address));
 
         $this->assertSame(0, $this->proceedCalls);
+    }
+
+    public function testAsksTheCarriersForADifferentPaymentMethod(): void
+    {
+        $this->assertAsksTheCarriers($this->addressOn(
+            $this->quoteWith(self::PAYMENT_ID, 'posted', $this->matchingSnapshot(), false, 'checkmo')
+        ));
+    }
+
+    public function testReadsTheGuardModeAtTheQuoteStore(): void
+    {
+        $config = $this->getMockBuilder(ScopeConfigInterface::class)->getMockForAbstractClass();
+        $config->expects($this->once())->method('getValue')->with(
+            CapturedQuoteSubmit::CONFIG_PATH,
+            ScopeInterface::SCOPE_STORE,
+            7
+        )->willReturn(CapturedQuoteSubmit::MODE_OFF);
+
+        $this->assertAsksTheCarriers(
+            $this->addressOn($this->quoteWith(
+                self::PAYMENT_ID,
+                'posted',
+                $this->matchingSnapshot(),
+                false,
+                'paystandmagento',
+                7
+            )),
+            $this->makePlugin(CapturedQuoteSubmit::MODE_LOG_ONLY, null, null, $config)
+        );
     }
 
     public static function changedCarts(): array
