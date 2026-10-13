@@ -121,6 +121,13 @@ class Paystand extends \Magento\Framework\App\Action\Action
     private $lastRescueFailure = null;
 
     /**
+     * Why the last status read returned null. Included in rescue_status_unverified.
+     *
+     * @var string|null
+     */
+    private $lastStatusReadReason = null;
+
+    /**
      * Token this delivery was verified with. The rescue reuses it to read the
      * payment's current status.
      *
@@ -697,6 +704,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
      */
     protected function fetchPaystandPaymentStatus(string $paymentId): ?string
     {
+        $this->lastStatusReadReason = null;
         if (!$this->paystandAccessToken || $paymentId === '') {
             $this->logStatusReadFailure($paymentId, $this->paystandAccessToken ? 'no_payment_id' : 'no_token');
             return null;
@@ -744,6 +752,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
      */
     private function logStatusReadFailure(string $paymentId, string $reason): void
     {
+        $this->lastStatusReadReason = $reason;
         $this->_logger->warning(
             '>>>>> PAYSTAND-WEBHOOK: Could not read payment ' . $paymentId . ' status: ' . $reason
         );
@@ -1040,6 +1049,18 @@ class Paystand extends \Magento\Framework\App\Action\Action
             }
 
             if ($this->paymentFailedSinceDelivery($json, $quoteId)) {
+                // The browser can place the order during the read. Do not clear
+                // the quote out from under that order.
+                $placedDuringRead = $this->findOrder($quote);
+                if ($placedDuringRead && $placedDuringRead->getId()) {
+                    $this->shipRescue(
+                        CloudLogger::EVENT_RESCUE_FAILED_ORDER_EXISTS,
+                        $quoteId,
+                        (string)($json->resource->id ?? ''),
+                        'order=' . $placedDuringRead->getIncrementId() . ' exists; quote not cleared'
+                    );
+                    return $placedDuringRead;
+                }
                 // savepaymentdata records the id before this read. Leaving it
                 // makes the next checkout say the cart is already paid.
                 $this->releaseFailedPayment($quote, $quoteId, (string)($json->resource->id ?? ''));
@@ -1263,12 +1284,16 @@ class Paystand extends \Magento\Framework\App\Action\Action
         }
 
         if ($currentStatus === null) {
-            $this->_logger->warning('>>>>> PAYSTAND-WEBHOOK: Could not read the current status of payment ' . $paymentId . ' for quote ' . $quoteId . '; placing on delivery status ' . $deliveryStatus);
+            $reason = $this->lastStatusReadReason ?: 'unknown';
+            $this->_logger->warning(
+                '>>>>> PAYSTAND-WEBHOOK: Could not read the current status of payment ' . $paymentId
+                . ' for quote ' . $quoteId . ' (' . $reason . '); placing on delivery status ' . $deliveryStatus
+            );
             try {
                 CloudLogger::ship(CloudLogger::EVENT_RESCUE_STATUS_UNVERIFIED, [
                     'quote_id'      => (string)$quoteId,
                     'payment_id'    => $paymentId,
-                    'error_message' => 'Current payment status not read; placing on delivery status ' . $deliveryStatus,
+                    'error_message' => 'Current payment status not read (' . $reason . '); placing on delivery status ' . $deliveryStatus,
                 ]);
             } catch (\Throwable $e) {
                 // CloudLogger failure — silently ignored
@@ -1280,7 +1305,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
             return false;
         }
 
-        $message = 'Delivery status ' . $deliveryStatus . ', Paystand now reports ' . $currentStatus . '; order not placed';
+        $message = 'Delivery status ' . $deliveryStatus . ', Paystand now reports ' . $currentStatus;
         $this->lastRescueFailure = [
             'terminal'      => false,
             'refused'       => false,
@@ -1288,22 +1313,14 @@ class Paystand extends \Magento\Framework\App\Action\Action
             'message'       => $message,
         ];
         $this->_logger->warning('>>>>> PAYSTAND-WEBHOOK: Not creating order for quote ' . $quoteId . ': ' . $message);
-        try {
-            CloudLogger::ship(CloudLogger::EVENT_RESCUE_PAYMENT_FAILED, [
-                'quote_id'      => (string)$quoteId,
-                'payment_id'    => $paymentId,
-                'error_message' => $message,
-            ]);
-        } catch (\Throwable $e) {
-            // CloudLogger failure — silently ignored
-        }
         return true;
     }
 
     /**
      * Drop this failed payment off the quote so the shopper can pay again.
-     * The row is updated only when it still holds this payment id. A different
-     * id is left alone. A failed update does not place the order.
+     * The row is updated only when it still holds this payment id and the
+     * capture status is empty or processing. A paid or posted status is left
+     * alone: that row can hold a later payment's markers under the first id.
      *
      * @param \Magento\Quote\Model\Quote $quote
      * @param int|string $quoteId
@@ -1313,12 +1330,39 @@ class Paystand extends \Magento\Framework\App\Action\Action
     private function releaseFailedPayment($quote, $quoteId, string $paymentId): void
     {
         if ($paymentId === '' || !$quote) {
+            $this->shipRescue(
+                CloudLogger::EVENT_RESCUE_PAYMENT_FAILED,
+                $quoteId,
+                $paymentId,
+                'release=error missing payment id or quote'
+            );
             return;
         }
+
+        $statusGuard = "paystand_capture_status IS NULL OR paystand_capture_status IN ('', 'processing')";
 
         try {
             $resource = $quote->getResource();
             $connection = $resource->getConnection();
+            $row = $connection->fetchRow(
+                $connection->select()
+                    ->from($resource->getMainTable(), ['paystand_payment_id', 'paystand_capture_status'])
+                    ->where('entity_id = ?', $quoteId)
+            );
+            $storedId = is_array($row) ? (string)($row['paystand_payment_id'] ?? '') : '';
+            $storedStatus = is_array($row)
+                ? strtolower(trim((string)($row['paystand_capture_status'] ?? '')))
+                : '';
+
+            if ($storedId !== $paymentId) {
+                $this->recordRelease($quoteId, $paymentId, 'not_matched', 'stored=' . $storedId);
+                return;
+            }
+            if ($storedStatus === 'paid' || $storedStatus === 'posted') {
+                $this->recordRelease($quoteId, $paymentId, 'skipped_captured', 'status=' . $storedStatus);
+                return;
+            }
+
             $cleared = $connection->update(
                 $resource->getMainTable(),
                 [
@@ -1329,6 +1373,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 [
                     'entity_id = ?' => $quoteId,
                     'paystand_payment_id = ?' => $paymentId,
+                    $statusGuard,
                 ]
             );
         } catch (\Throwable $e) {
@@ -1336,10 +1381,17 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 '>>>>> PAYSTAND-WEBHOOK: Could not clear failed payment ' . $paymentId
                 . ' from quote ' . $quoteId . ': ' . $e->getMessage()
             );
+            $this->shipRescue(
+                CloudLogger::EVENT_RESCUE_PAYMENT_FAILED,
+                $quoteId,
+                $paymentId,
+                'release=error ' . $e->getMessage()
+            );
             return;
         }
 
         if ((int)$cleared < 1) {
+            $this->recordRelease($quoteId, $paymentId, 'not_matched', 'update matched no row');
             return;
         }
 
@@ -1353,13 +1405,47 @@ class Paystand extends \Magento\Framework\App\Action\Action
             // The row is already clear. This copy is the one loaded before the wait.
         }
 
-        if (is_array($this->lastRescueFailure)) {
+        $this->recordRelease($quoteId, $paymentId, 'cleared', '');
+    }
+
+    /**
+     * @param int|string $quoteId
+     */
+    private function recordRelease($quoteId, string $paymentId, string $outcome, string $detail): void
+    {
+        $message = 'release=' . $outcome . ' payment=' . $paymentId;
+        if ($detail !== '') {
+            $message .= ' ' . $detail;
+        }
+        if ($outcome === 'cleared' && is_array($this->lastRescueFailure)) {
             $this->lastRescueFailure['message'] .= '; cleared the payment id from the quote';
         }
-        $this->_logger->warning(
-            '>>>>> PAYSTAND-WEBHOOK: Cleared failed payment ' . $paymentId
-            . ' from quote ' . $quoteId . ' so the shopper can pay again'
-        );
+        if ($outcome === 'skipped_captured') {
+            $this->_logger->warning(
+                '>>>>> PAYSTAND-WEBHOOK: Did not clear quote ' . $quoteId . ': ' . $message
+            );
+        } else {
+            $this->_logger->warning(
+                '>>>>> PAYSTAND-WEBHOOK: Failed-payment release for quote ' . $quoteId . ': ' . $message
+            );
+        }
+        $this->shipRescue(CloudLogger::EVENT_RESCUE_PAYMENT_FAILED, $quoteId, $paymentId, $message);
+    }
+
+    /**
+     * @param int|string $quoteId
+     */
+    private function shipRescue(string $event, $quoteId, string $paymentId, string $message): void
+    {
+        try {
+            CloudLogger::ship($event, [
+                'quote_id'      => (string)$quoteId,
+                'payment_id'    => $paymentId,
+                'error_message' => $message,
+            ]);
+        } catch (\Throwable $e) {
+            // CloudLogger failure — silently ignored
+        }
     }
 
     /**

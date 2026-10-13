@@ -511,10 +511,8 @@ class CreateOrderFromQuoteTest extends TestCase
         $tableName = null;
         $cleared = null;
         $where = null;
-        $connection = $this->getMockBuilder(\stdClass::class)
-            ->addMethods(['update'])
-            ->getMock();
-        $connection->expects($this->once())->method('update')->willReturnCallback(
+        $connection = $this->quoteConnection(
+            ['paystand_payment_id' => 'pay-test-123', 'paystand_capture_status' => null],
             function ($table, $data, $conditions) use (&$tableName, &$cleared, &$where) {
                 $tableName = $table;
                 $cleared = $data;
@@ -570,11 +568,10 @@ class CreateOrderFromQuoteTest extends TestCase
             ],
             $cleared
         );
-        $this->assertSame(
-            [
-                'entity_id = ?' => 42,
-                'paystand_payment_id = ?' => 'pay-test-123',
-            ],
+        $this->assertSame(42, $where['entity_id = ?']);
+        $this->assertSame('pay-test-123', $where['paystand_payment_id = ?']);
+        $this->assertContains(
+            "paystand_capture_status IS NULL OR paystand_capture_status IN ('', 'processing')",
             $where
         );
         $this->assertNull($memory['paystand_payment_id']);
@@ -583,20 +580,16 @@ class CreateOrderFromQuoteTest extends TestCase
     }
 
     /**
-     * The row holds a different payment. The update matches zero rows, so that
-     * id stays, and the in-memory quote is not wiped.
+     * The row holds a different payment. That id stays, and the in-memory quote
+     * is not wiped.
      */
     public function testStoppedPaymentDoesNotClearADifferentPaymentId(): void
     {
-        $connection = $this->getMockBuilder(\stdClass::class)
-            ->addMethods(['update'])
-            ->getMock();
-        $connection->expects($this->once())->method('update')->willReturn(0);
-        $resource = $this->getMockBuilder(\stdClass::class)
-            ->addMethods(['getConnection', 'getMainTable'])
-            ->getMock();
-        $resource->method('getConnection')->willReturn($connection);
-        $resource->method('getMainTable')->willReturn('quote');
+        $connection = $this->quoteConnection(
+            ['paystand_payment_id' => 'pay-other', 'paystand_capture_status' => 'paid'],
+            null
+        );
+        $resource = $this->quoteResource($connection);
 
         $quote = $this->getMockBuilder(Quote::class)
             ->disableOriginalConstructor()
@@ -616,6 +609,59 @@ class CreateOrderFromQuoteTest extends TestCase
         $failure = $this->read('lastRescueFailure');
         $this->assertTrue($failure['paymentFailed']);
         $this->assertStringNotContainsString('cleared the payment id', $failure['message']);
+    }
+
+    /**
+     * Payment A is the stored id. Payment B has already written paid and a
+     * snapshot onto that same row. A's failed read must not clear B's markers.
+     */
+    public function testStoppedPaymentDoesNotClearAPaidCapture(): void
+    {
+        $connection = $this->quoteConnection(
+            ['paystand_payment_id' => 'pay-test-123', 'paystand_capture_status' => 'paid'],
+            null
+        );
+        $quote = $this->getMockBuilder(Quote::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['getId', 'getResource', 'setData'])
+            ->getMock();
+        $quote->method('getId')->willReturn(42);
+        $quote->method('getResource')->willReturn($this->quoteResource($connection));
+        $quote->expects($this->never())->method('setData');
+
+        $this->lockManagerMock->method('lock')->willReturn(true);
+        $this->controller->method('findOrder')->willReturn(null);
+        $this->controller->method('fetchPaystandPaymentStatus')->willReturn('failed');
+        $this->cartManagementMock->expects($this->never())->method('placeOrder');
+
+        $this->assertNull($this->invoke($quote, 'processing'));
+        $this->assertStringNotContainsString('cleared the payment id', $this->read('lastRescueFailure')['message']);
+    }
+
+    /**
+     * The browser placed the order while the status read was in flight. The
+     * failed read must keep that order and must not clear the quote.
+     */
+    public function testFailedReadDoesNotClearAQuoteThatAlreadyHasAnOrder(): void
+    {
+        $connection = $this->quoteConnection(
+            ['paystand_payment_id' => 'pay-test-123', 'paystand_capture_status' => null],
+            null
+        );
+        $quote = $this->getMockBuilder(Quote::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['getId', 'getResource'])
+            ->getMock();
+        $quote->method('getId')->willReturn(42);
+        $quote->method('getResource')->willReturn($this->quoteResource($connection));
+
+        $order = $this->buildOrder(7, 'W000000007');
+        $this->lockManagerMock->method('lock')->willReturn(true);
+        $this->controller->method('findOrder')->willReturnOnConsecutiveCalls(null, $order);
+        $this->controller->method('fetchPaystandPaymentStatus')->willReturn('failed');
+        $this->cartManagementMock->expects($this->never())->method('placeOrder');
+
+        $this->assertSame($order, $this->invoke($quote, 'processing'));
     }
 
     /**
@@ -1250,6 +1296,45 @@ class CreateOrderFromQuoteTest extends TestCase
      * @param string $status
      * @return object
      */
+    /**
+     * @param array<string, mixed> $row
+     * @param callable|null $onUpdate null = update must not run
+     * @return \PHPUnit\Framework\MockObject\MockObject
+     */
+    private function quoteConnection(array $row, $onUpdate)
+    {
+        $select = $this->getMockBuilder(\stdClass::class)
+            ->addMethods(['from', 'where'])
+            ->getMock();
+        $select->method('from')->willReturnSelf();
+        $select->method('where')->willReturnSelf();
+        $connection = $this->getMockBuilder(\stdClass::class)
+            ->addMethods(['select', 'fetchRow', 'update'])
+            ->getMock();
+        $connection->method('select')->willReturn($select);
+        $connection->method('fetchRow')->willReturn($row);
+        if ($onUpdate === null) {
+            $connection->expects($this->never())->method('update');
+        } else {
+            $connection->expects($this->once())->method('update')->willReturnCallback($onUpdate);
+        }
+        return $connection;
+    }
+
+    /**
+     * @param \PHPUnit\Framework\MockObject\MockObject $connection
+     * @return \PHPUnit\Framework\MockObject\MockObject
+     */
+    private function quoteResource($connection)
+    {
+        $resource = $this->getMockBuilder(\stdClass::class)
+            ->addMethods(['getConnection', 'getMainTable'])
+            ->getMock();
+        $resource->method('getConnection')->willReturn($connection);
+        $resource->method('getMainTable')->willReturn('quote');
+        return $resource;
+    }
+
     private function quoteRowWithStatus(string $status)
     {
         $select = $this->getMockBuilder(\stdClass::class)

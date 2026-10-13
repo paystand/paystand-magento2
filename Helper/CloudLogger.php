@@ -65,8 +65,14 @@ class CloudLogger
     // cart the rescue found rather than a cart proven to be the one paid for.
     const EVENT_CAPTURE_PIN_UNVERIFIED = 'capture_pin_unverified';
     // The webhook rescue placed no order: Paystand reports the payment failed or
-    // canceled since the delivery was sent.
+    // canceled since the delivery was sent. Paystand can mark a payment failed
+    // even when money has moved, so this event is the queue to alert on.
+    // error_message starts with release=cleared, not_matched, skipped_captured,
+    // or error.
     const EVENT_RESCUE_PAYMENT_FAILED = 'rescue_payment_failed';
+    // The payment failed after the browser had already placed the order. The
+    // quote is not cleared. Alert on this: an order exists for a failed payment.
+    const EVENT_RESCUE_FAILED_ORDER_EXISTS = 'rescue_failed_order_exists';
     // The webhook rescue could not read the payment's current status from
     // Paystand and placed the order on the delivery's own status.
     const EVENT_RESCUE_STATUS_UNVERIFIED = 'rescue_status_unverified';
