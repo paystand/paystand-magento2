@@ -13,5 +13,10 @@
                 type="PayStand\PayStandMagento\Plugin\CapturedQuoteTotals"
                 sortOrder="10" />
     </type>
+    <type name="Magento\Quote\Model\Quote\Address">
+        <plugin name="paystand_captured_shipping_rates"
+                type="PayStand\PayStandMagento\Plugin\CapturedShippingRates"
+                sortOrder="10" />
+    </type>
 </config>
 

@@ -48,7 +48,7 @@ define(
                     customer_id:     CF_CUSTOMER_ID,
                     publishable_key: CF_PUBLISHABLE_KEY,
                     event_type:      eventType,
-                    plugin_version:  '3.7.4',
+                    plugin_version:  '3.7.5',
                     quote_id:        quoteId  || '',
                     payment_id:      paymentId || '',
                     error_message:   message  || '',
@@ -540,6 +540,34 @@ define(
         // have created. Window outlasts the webhook fallback so its order is seen.
         const ORDER_CONFIRM_MAX_ATTEMPTS = 15;
         const ORDER_CONFIRM_INTERVAL_MS = 2000;
+        // Magento leaves checkout only when its own placeOrder call succeeds. When
+        // the webhook placed the order, the shopper stays on checkout, and a reload
+        // shows the empty cart. The grace lets Magento's own redirect go first.
+        const SUCCESS_REDIRECT_GRACE_MS = 5000;
+
+        function redirectToSuccessUnlessStarted(quoteId, paymentId) {
+            setTimeout(function () {
+                require(['Magento_Checkout/js/action/redirect-on-success'], function (redirectOnSuccess) {
+                    // Undefined when the redirect-on-success mixin did not load. A
+                    // redirect Magento already started is then not visible, and a
+                    // second one would land on the cart.
+                    if (redirectOnSuccess.paystandRedirectStarted === undefined) {
+                        cfLog('order_confirmed_no_redirect', quoteId, paymentId,
+                            'redirect-on-success mixin not loaded; not redirecting'
+                        );
+                        return;
+                    }
+                    if (redirectOnSuccess.paystandRedirectStarted) {
+                        return;
+                    }
+                    cfLog('order_confirmed_redirect', quoteId, paymentId,
+                        'Magento did not redirect within ' + SUCCESS_REDIRECT_GRACE_MS +
+                        'ms of the confirmed order; redirecting to the success page'
+                    );
+                    redirectOnSuccess.execute();
+                });
+            }, SUCCESS_REDIRECT_GRACE_MS);
+        }
 
         async function confirmOrderPlaced(quoteId, paymentId, onFailure, onRefused) {
             for (let attempt = 1; attempt <= ORDER_CONFIRM_MAX_ATTEMPTS; attempt++) {
@@ -572,6 +600,7 @@ define(
                     cfLog('order_confirmed', quoteId, paymentId,
                         'Order confirmed present after placeOrder (attempt ' + attempt + ')'
                     );
+                    redirectToSuccessUnlessStarted(quoteId, paymentId);
                     return;
                 }
             }
@@ -731,7 +760,8 @@ define(
                 // actually placed an order. Confirm the order exists for the paid
                 // quote and, if it never appears within the window, reassure the
                 // shopper their order is being finalized (and not to pay again).
-                // On success Magento redirects and this is aborted.
+                // On success Magento redirects and this is aborted. When the webhook
+                // placed the order instead, the poll redirects.
                 confirmOrderPlaced(qid, pid, showFinalizingModal, showErrorModal);
             });
         }

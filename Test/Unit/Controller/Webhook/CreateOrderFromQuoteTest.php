@@ -9,7 +9,10 @@ use PayStand\PayStandMagento\Model\Directpost;
 use PHPUnit\Framework\TestCase;
 use PHPUnit\Framework\MockObject\MockObject;
 use Psr\Log\LoggerInterface;
+use Magento\Framework\App\Config\ScopeConfigInterface;
+use Magento\Framework\HTTP\Client\Curl;
 use Magento\Framework\Lock\LockManagerInterface;
+use Magento\Framework\ObjectManagerInterface;
 use Magento\Quote\Api\CartManagementInterface;
 use Magento\Quote\Api\CartRepositoryInterface;
 use Magento\Quote\Model\Quote;
@@ -23,11 +26,13 @@ use Magento\Sales\Model\Order;
  * order-creation fallback that rescues a paid-but-orderless quote.
  *
  * Unlike PaystandTest (which stubs this method to test execute()'s routing),
- * these tests run the REAL method: only findOrder (DB) is stubbed, and the
- * lock manager, cart repository/management, and order repository are mocks.
+ * these tests run the REAL method: only findOrder (DB) and the Paystand status
+ * read are stubbed, and the lock manager, cart repository/management, and order
+ * repository are mocks.
  * Covered behaviours: locking, idempotent short-circuits, the
  * inactive-converted vs inactive-unconverted disambiguation, reactivation,
- * payment-method and guest-email backfill, and failure paths.
+ * payment-method and guest-email backfill, the current-status re-check, and
+ * failure paths.
  */
 class CreateOrderFromQuoteTest extends TestCase
 {
@@ -66,10 +71,11 @@ class CreateOrderFromQuoteTest extends TestCase
         $this->orderRepositoryMock = $this->getMockBuilder(OrderRepositoryInterface::class)
             ->getMockForAbstractClass();
 
-        // Keep createOrderFromQuote REAL; stub only the DB-backed findOrder.
+        // Keep createOrderFromQuote REAL; stub the DB-backed findOrder and the
+        // Paystand status read, which answers null (not read) unless a test says.
         $this->controller = $this->getMockBuilder(Paystand::class)
             ->disableOriginalConstructor()
-            ->onlyMethods(['findOrder'])
+            ->onlyMethods(['findOrder', 'fetchPaystandPaymentStatus'])
             ->getMock();
 
         $this->set('_logger',          $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass());
@@ -490,6 +496,407 @@ class CreateOrderFromQuoteTest extends TestCase
         $this->assertNull($this->invoke($quote));
     }
 
+    // ── current payment status ───────────────────────────────────────────────
+
+    /**
+     * A card can fail seconds after its processing delivery, and the delivery the
+     * rescue holds still says processing. No order is placed. The payment id
+     * savepaymentdata stored is cleared, and only when the row still holds
+     * this payment, so the shopper can pay again.
+     *
+     * @dataProvider stoppedPaymentStatuses
+     */
+    public function testProcessingDeliveryForAStoppedPaymentPlacesNoOrder(string $current): void
+    {
+        $tableName = null;
+        $cleared = null;
+        $where = null;
+        $connection = $this->quoteConnection(
+            ['paystand_payment_id' => 'pay-test-123', 'paystand_capture_status' => null],
+            function ($table, $data, $conditions) use (&$tableName, &$cleared, &$where) {
+                $tableName = $table;
+                $cleared = $data;
+                $where = $conditions;
+                return 1;
+            }
+        );
+        $resource = $this->getMockBuilder(\stdClass::class)
+            ->addMethods(['getConnection', 'getMainTable'])
+            ->getMock();
+        $resource->method('getConnection')->willReturn($connection);
+        $resource->method('getMainTable')->willReturn('quote');
+
+        $quote = $this->getMockBuilder(Quote::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['getId', 'getResource', 'getData', 'setData'])
+            ->getMock();
+        $quote->method('getId')->willReturn(42);
+        $quote->method('getResource')->willReturn($resource);
+        $quote->method('getData')->willReturnCallback(function ($key = '') {
+            return $key === 'paystand_payment_id' ? 'pay-test-123' : 'processing';
+        });
+        $memory = [];
+        $quote->expects($this->exactly(3))->method('setData')->willReturnCallback(
+            function ($key, $value = null) use (&$memory, $quote) {
+                $memory[$key] = $value;
+                return $quote;
+            }
+        );
+
+        $this->lockManagerMock->method('lock')->willReturn(true);
+        $this->lockManagerMock->expects($this->once())->method('unlock');
+        $this->cartRepositoryMock->expects($this->never())->method('save');
+        $this->controller->method('findOrder')->willReturn(null);
+        $this->controller->expects($this->once())->method('fetchPaystandPaymentStatus')
+            ->with('pay-test-123')
+            ->willReturn($current);
+        $this->cartManagementMock->expects($this->never())->method('placeOrder');
+
+        $this->assertNull($this->invoke($quote, 'processing'));
+
+        $failure = $this->read('lastRescueFailure');
+        $this->assertTrue($failure['paymentFailed']);
+        $this->assertFalse($failure['terminal']);
+        $this->assertStringContainsString($current, $failure['message']);
+        $this->assertStringContainsString('cleared the payment id', $failure['message']);
+        $this->assertSame('quote', $tableName);
+        $this->assertSame(
+            [
+                'paystand_payment_id' => null,
+                'paystand_capture_status' => null,
+                'paystand_capture_snapshot' => null,
+            ],
+            $cleared
+        );
+        $this->assertSame(42, $where['entity_id = ?']);
+        $this->assertSame('pay-test-123', $where['paystand_payment_id = ?']);
+        $this->assertContains(
+            "paystand_capture_status IS NULL OR paystand_capture_status IN ('', 'processing')",
+            $where
+        );
+        $this->assertNull($memory['paystand_payment_id']);
+        $this->assertNull($memory['paystand_capture_status']);
+        $this->assertNull($memory['paystand_capture_snapshot']);
+    }
+
+    /**
+     * The row holds a different payment. That id stays, and the in-memory quote
+     * is not wiped.
+     */
+    public function testStoppedPaymentDoesNotClearADifferentPaymentId(): void
+    {
+        $connection = $this->quoteConnection(
+            ['paystand_payment_id' => 'pay-other', 'paystand_capture_status' => 'paid'],
+            null
+        );
+        $resource = $this->quoteResource($connection);
+
+        $quote = $this->getMockBuilder(Quote::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['getId', 'getResource', 'setData'])
+            ->getMock();
+        $quote->method('getId')->willReturn(42);
+        $quote->method('getResource')->willReturn($resource);
+        $quote->expects($this->never())->method('setData');
+
+        $this->lockManagerMock->method('lock')->willReturn(true);
+        $this->controller->method('findOrder')->willReturn(null);
+        $this->controller->method('fetchPaystandPaymentStatus')->willReturn('failed');
+        $this->cartManagementMock->expects($this->never())->method('placeOrder');
+
+        $this->assertNull($this->invoke($quote, 'processing'));
+
+        $failure = $this->read('lastRescueFailure');
+        $this->assertTrue($failure['paymentFailed']);
+        $this->assertStringNotContainsString('cleared the payment id', $failure['message']);
+    }
+
+    /**
+     * Payment A is the stored id. Payment B has already written paid and a
+     * snapshot onto that same row. A's failed read must not clear B's markers.
+     */
+    public function testStoppedPaymentDoesNotClearAPaidCapture(): void
+    {
+        $connection = $this->quoteConnection(
+            ['paystand_payment_id' => 'pay-test-123', 'paystand_capture_status' => 'paid'],
+            null
+        );
+        $quote = $this->getMockBuilder(Quote::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['getId', 'getResource', 'setData'])
+            ->getMock();
+        $quote->method('getId')->willReturn(42);
+        $quote->method('getResource')->willReturn($this->quoteResource($connection));
+        $quote->expects($this->never())->method('setData');
+
+        $this->lockManagerMock->method('lock')->willReturn(true);
+        $this->controller->method('findOrder')->willReturn(null);
+        $this->controller->method('fetchPaystandPaymentStatus')->willReturn('failed');
+        $this->cartManagementMock->expects($this->never())->method('placeOrder');
+
+        $this->assertNull($this->invoke($quote, 'processing'));
+        $this->assertStringNotContainsString('cleared the payment id', $this->read('lastRescueFailure')['message']);
+    }
+
+    /**
+     * The browser placed the order while the status read was in flight. The
+     * failed read must keep that order and must not clear the quote.
+     */
+    public function testFailedReadDoesNotClearAQuoteThatAlreadyHasAnOrder(): void
+    {
+        $connection = $this->quoteConnection(
+            ['paystand_payment_id' => 'pay-test-123', 'paystand_capture_status' => null],
+            null
+        );
+        $quote = $this->getMockBuilder(Quote::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['getId', 'getResource'])
+            ->getMock();
+        $quote->method('getId')->willReturn(42);
+        $quote->method('getResource')->willReturn($this->quoteResource($connection));
+
+        $order = $this->buildOrder(7, 'W000000007');
+        $this->lockManagerMock->method('lock')->willReturn(true);
+        $this->controller->method('findOrder')->willReturnOnConsecutiveCalls(null, $order);
+        $this->controller->method('fetchPaystandPaymentStatus')->willReturn('failed');
+        $this->cartManagementMock->expects($this->never())->method('placeOrder');
+
+        $this->assertSame($order, $this->invoke($quote, 'processing'));
+    }
+
+    /**
+     * A failed clear must not place the order. The cart can stay locked, and
+     * the failure is logged.
+     */
+    public function testStoppedPaymentStillPlacesNoOrderWhenTheClearFails(): void
+    {
+        $quote = $this->getMockBuilder(Quote::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['getId', 'getResource'])
+            ->getMock();
+        $quote->method('getId')->willReturn(42);
+        $quote->method('getResource')->willThrowException(new \RuntimeException('quote table unavailable'));
+
+        $this->lockManagerMock->method('lock')->willReturn(true);
+        $this->controller->method('findOrder')->willReturn(null);
+        $this->controller->method('fetchPaystandPaymentStatus')->willReturn('failed');
+        $this->cartManagementMock->expects($this->never())->method('placeOrder');
+
+        $this->assertNull($this->invoke($quote, 'processing'));
+
+        $failure = $this->read('lastRescueFailure');
+        $this->assertTrue($failure['paymentFailed']);
+        $this->assertStringNotContainsString('cleared the payment id', $failure['message']);
+    }
+
+    /**
+     * @return array<string, array{0: string}>
+     */
+    public static function stoppedPaymentStatuses(): array
+    {
+        return [
+            'failed'   => ['failed'],
+            'canceled' => ['canceled'],
+        ];
+    }
+
+    /**
+     * A bank payment stays in processing for days and must still get its order.
+     * A status that cannot be read keeps the old behaviour.
+     *
+     * @dataProvider livePaymentStatuses
+     */
+    public function testProcessingDeliveryForALivePaymentPlacesTheOrder(?string $current): void
+    {
+        $quote = $this->buildInitialQuote(42);
+        $this->lockManagerMock->method('lock')->willReturn(true);
+        $this->cartRepositoryMock->method('get')->willReturn($this->buildReloadedQuote([]));
+        $this->controller->method('findOrder')->willReturn(null);
+        $this->controller->expects($this->once())->method('fetchPaystandPaymentStatus')->willReturn($current);
+
+        $order = $this->buildOrder(77, 'W000000077');
+        $this->cartManagementMock->expects($this->once())->method('placeOrder')->willReturn(77);
+        $this->orderRepositoryMock->method('get')->willReturn($order);
+
+        $this->assertSame($order, $this->invoke($quote, 'processing'));
+        $this->assertNull($this->read('lastRescueFailure'));
+    }
+
+    /**
+     * @return array<string, array{0: string|null}>
+     */
+    public static function livePaymentStatuses(): array
+    {
+        return [
+            'still processing' => ['processing'],
+            'posted since'     => ['posted'],
+            'paid since'       => ['paid'],
+            'other status'     => ['created'],
+            'status not read'  => [null],
+        ];
+    }
+
+    public function testStatusReadThatThrowsPlacesTheOrder(): void
+    {
+        $quote = $this->buildInitialQuote(42);
+        $this->lockManagerMock->method('lock')->willReturn(true);
+        $this->cartRepositoryMock->method('get')->willReturn($this->buildReloadedQuote([]));
+        $this->controller->method('findOrder')->willReturn(null);
+        $this->controller->method('fetchPaystandPaymentStatus')
+            ->willThrowException(new \RuntimeException('Operation timed out'));
+
+        $order = $this->buildOrder(77, 'W000000077');
+        $this->cartManagementMock->expects($this->once())->method('placeOrder')->willReturn(77);
+        $this->orderRepositoryMock->method('get')->willReturn($order);
+
+        $this->assertSame($order, $this->invoke($quote, 'processing'));
+    }
+
+    /**
+     * A captured delivery cannot be stale in the way that matters, so it costs
+     * no extra call.
+     *
+     * @dataProvider capturedDeliveryStatuses
+     */
+    public function testCapturedDeliverySkipsTheStatusRead(string $delivery): void
+    {
+        $quote = $this->buildInitialQuote(42);
+        $this->lockManagerMock->method('lock')->willReturn(true);
+        $this->cartRepositoryMock->method('get')->willReturn($this->buildReloadedQuote([]));
+        $this->controller->method('findOrder')->willReturn(null);
+        $this->controller->expects($this->never())->method('fetchPaystandPaymentStatus');
+
+        $order = $this->buildOrder(77, 'W000000077');
+        $this->cartManagementMock->expects($this->once())->method('placeOrder')->willReturn(77);
+        $this->orderRepositoryMock->method('get')->willReturn($order);
+
+        $this->assertSame($order, $this->invoke($quote, $delivery));
+    }
+
+    /**
+     * @return array<string, array{0: string}>
+     */
+    public static function capturedDeliveryStatuses(): array
+    {
+        return [
+            'posted' => ['posted'],
+            'paid'   => ['paid'],
+        ];
+    }
+
+    /**
+     * The browser can place the order while the status read is in flight.
+     * The rescue must use that order and must not place a second one.
+     */
+    public function testOrderPlacedDuringTheStatusReadIsNotPlacedAgain(): void
+    {
+        $quote = $this->buildInitialQuote(42);
+        $this->lockManagerMock->method('lock')->willReturn(true);
+        $order = $this->buildOrder(7, 'W000000007');
+        $this->controller->method('findOrder')->willReturnOnConsecutiveCalls(null, $order);
+        $this->controller->expects($this->once())->method('fetchPaystandPaymentStatus')->willReturn('processing');
+        $this->cartManagementMock->expects($this->never())->method('placeOrder');
+        $this->cartRepositoryMock->expects($this->never())->method('get');
+
+        $this->assertSame($order, $this->invoke($quote, 'processing'));
+    }
+
+    public function testExistingOrderSkipsTheStatusRead(): void
+    {
+        $quote = $this->buildInitialQuote(42);
+        $this->lockManagerMock->method('lock')->willReturn(true);
+
+        $order = $this->buildOrder(7, 'W000000007');
+        $this->controller->method('findOrder')->willReturn($order);
+        $this->controller->expects($this->never())->method('fetchPaystandPaymentStatus');
+
+        $this->assertSame($order, $this->invoke($quote, 'processing'));
+    }
+
+    // ── reading the current status from Paystand ─────────────────────────────
+
+    public function testStatusReadSendsTheTokenAndCustomerIdToTheLiveApi(): void
+    {
+        $curl = $this->statusCurl(200, '{"id":"pay-1","status":"Failed"}');
+        $curl->expects($this->once())->method('setHeaders')->with($this->callback(
+            function (array $headers): bool {
+                return $headers['Authorization'] === 'Bearer tok-1'
+                    && $headers['x-customer-id'] === 'cust-1';
+            }
+        ));
+        $curl->expects($this->once())->method('setTimeout')->with(Paystand::PAYMENT_STATUS_TIMEOUT_SECONDS);
+        $curl->expects($this->once())->method('get')->with('https://api.paystand.com/v3/payments/pay-1');
+
+        $this->assertSame('failed', $this->readStatus($curl, 'pay-1'));
+    }
+
+    public function testStatusReadUsesTheSandboxApi(): void
+    {
+        $curl = $this->statusCurl(200, '{"id":"pay-1","status":"processing"}');
+        $curl->expects($this->once())->method('get')->with('https://api.paystand.co/v3/payments/pay-1');
+
+        $this->assertSame('processing', $this->readStatus($curl, 'pay-1', true));
+    }
+
+    public function testStatusReadEncodesThePaymentId(): void
+    {
+        $curl = $this->statusCurl(200, '{"id":"pay/1?x","status":"failed"}');
+        $curl->expects($this->once())->method('get')->with('https://api.paystand.com/v3/payments/pay%2F1%3Fx');
+
+        $this->assertSame('failed', $this->readStatus($curl, 'pay/1?x'));
+    }
+
+    /**
+     * @dataProvider unusableStatusResponses
+     */
+    public function testStatusReadReturnsNullForAnUnusableResponse(int $httpStatus, string $body): void
+    {
+        $this->assertNull($this->readStatus($this->statusCurl($httpStatus, $body), 'pay-1'));
+    }
+
+    /**
+     * @return array<string, array{0: int, 1: string}>
+     */
+    public static function unusableStatusResponses(): array
+    {
+        return [
+            'refused'             => [401, '{"error":{"code":"unauthorized"}}'],
+            'server error'        => [500, '{"id":"pay-1","status":"failed"}'],
+            'error body'          => [200, '{"error":{"code":"not_found"}}'],
+            'no status'           => [200, '{"id":"pay-1"}'],
+            'status not a string' => [200, '{"id":"pay-1","status":3}'],
+            'blank status'        => [200, '{"id":"pay-1","status":" "}'],
+            'another payment'     => [200, '{"id":"pay-2","status":"failed"}'],
+            'not json'            => [200, '<html>Bad gateway</html>'],
+        ];
+    }
+
+    public function testStatusReadLogsTheHttpStatusWhenPaystandRefuses(): void
+    {
+        $logger = $this->getMockBuilder(\Psr\Log\LoggerInterface::class)->getMockForAbstractClass();
+        $logger->expects($this->once())->method('warning')->with($this->callback(function ($message) {
+            return is_string($message) && str_contains($message, 'http_401');
+        }));
+
+        $this->assertNull($this->readStatus(
+            $this->statusCurl(401, '{"error":{"code":"unauthorized"}}'),
+            'pay-1',
+            false,
+            'tok-1',
+            $logger
+        ));
+    }
+
+    public function testStatusReadNeedsAToken(): void
+    {
+        $this->assertNull($this->readStatus(null, 'pay-1', false, null));
+    }
+
+    public function testStatusReadNeedsAPaymentId(): void
+    {
+        $this->assertNull($this->readStatus(null, ''));
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────
 
     /**
@@ -889,6 +1296,45 @@ class CreateOrderFromQuoteTest extends TestCase
      * @param string $status
      * @return object
      */
+    /**
+     * @param array<string, mixed> $row
+     * @param callable|null $onUpdate null = update must not run
+     * @return \PHPUnit\Framework\MockObject\MockObject
+     */
+    private function quoteConnection(array $row, $onUpdate)
+    {
+        $select = $this->getMockBuilder(\stdClass::class)
+            ->addMethods(['from', 'where'])
+            ->getMock();
+        $select->method('from')->willReturnSelf();
+        $select->method('where')->willReturnSelf();
+        $connection = $this->getMockBuilder(\stdClass::class)
+            ->addMethods(['select', 'fetchRow', 'update'])
+            ->getMock();
+        $connection->method('select')->willReturn($select);
+        $connection->method('fetchRow')->willReturn($row);
+        if ($onUpdate === null) {
+            $connection->expects($this->never())->method('update');
+        } else {
+            $connection->expects($this->once())->method('update')->willReturnCallback($onUpdate);
+        }
+        return $connection;
+    }
+
+    /**
+     * @param \PHPUnit\Framework\MockObject\MockObject $connection
+     * @return \PHPUnit\Framework\MockObject\MockObject
+     */
+    private function quoteResource($connection)
+    {
+        $resource = $this->getMockBuilder(\stdClass::class)
+            ->addMethods(['getConnection', 'getMainTable'])
+            ->getMock();
+        $resource->method('getConnection')->willReturn($connection);
+        $resource->method('getMainTable')->willReturn('quote');
+        return $resource;
+    }
+
     private function quoteRowWithStatus(string $status)
     {
         $select = $this->getMockBuilder(\stdClass::class)
@@ -958,5 +1404,79 @@ class CreateOrderFromQuoteTest extends TestCase
             }
         }
         throw new \RuntimeException("Property '{$name}' not found on " . get_class($this->controller));
+    }
+
+    /**
+     * @param string $name
+     * @return mixed
+     */
+    private function read(string $name)
+    {
+        $prop = new \ReflectionProperty(Paystand::class, $name);
+        $prop->setAccessible(true);
+        return $prop->getValue($this->controller);
+    }
+
+    /**
+     * Run the real fetchPaystandPaymentStatus() against a mocked HTTP client.
+     *
+     * @param Curl|MockObject|null $curl null = the client must not be created
+     * @param string $paymentId
+     * @param bool $sandbox
+     * @param string|null $token
+     * @return string|null
+     */
+    private function readStatus($curl, string $paymentId, bool $sandbox = false, ?string $token = 'tok-1', $logger = null): ?string
+    {
+        $this->controller = $this->getMockBuilder(Paystand::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['findOrder'])
+            ->getMock();
+
+        $objectManager = $this->getMockBuilder(ObjectManagerInterface::class)->getMockForAbstractClass();
+        if ($curl) {
+            $objectManager->method('create')->with(Curl::class)->willReturn($curl);
+        } else {
+            $objectManager->expects($this->never())->method('create');
+        }
+        $scopeConfig = $this->getMockBuilder(ScopeConfigInterface::class)->getMockForAbstractClass();
+        $scopeConfig->method('getValue')->willReturnCallback(
+            function ($path) use ($sandbox) {
+                if ($path === Paystand::CUSTOMER_ID) {
+                    return 'cust-1';
+                }
+                if ($path === Paystand::USE_SANDBOX) {
+                    return $sandbox ? '1' : '0';
+                }
+                return null;
+            }
+        );
+        $this->set('_objectManager', $objectManager);
+        $this->set('scopeConfig', $scopeConfig);
+        $this->set('paystandAccessToken', $token);
+        $this->set(
+            '_logger',
+            $logger ?: $this->getMockBuilder(\Psr\Log\LoggerInterface::class)->getMockForAbstractClass()
+        );
+
+        $method = new \ReflectionMethod(Paystand::class, 'fetchPaystandPaymentStatus');
+        $method->setAccessible(true);
+        return $method->invoke($this->controller, $paymentId);
+    }
+
+    /**
+     * @param int $httpStatus
+     * @param string $body
+     * @return Curl|MockObject
+     */
+    private function statusCurl(int $httpStatus, string $body)
+    {
+        $curl = $this->getMockBuilder(Curl::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['setHeaders', 'setTimeout', 'get', 'getStatus', 'getBody'])
+            ->getMock();
+        $curl->method('getStatus')->willReturn($httpStatus);
+        $curl->method('getBody')->willReturn($body);
+        return $curl;
     }
 }
