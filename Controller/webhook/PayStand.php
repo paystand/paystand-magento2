@@ -39,6 +39,12 @@ class Paystand extends \Magento\Framework\App\Action\Action
      */
     const RESCUE_ABANDON_AFTER_HOURS = 24;
 
+    /**
+     * Longest wait for Paystand's current payment status. The read runs while
+     * the place-order lock is held.
+     */
+    const PAYMENT_STATUS_TIMEOUT_SECONDS = 5;
+
     /** @var \Psr\Log\LoggerInterface */
     protected $_logger;
 
@@ -107,11 +113,27 @@ class Paystand extends \Magento\Framework\App\Action\Action
 
     /**
      * Why the last createOrderFromQuote() failed. 'terminal' means Magento rejected
-     * the cart itself, so retrying the same cart fails the same way.
+     * the cart itself, so retrying the same cart fails the same way. 'paymentFailed'
+     * means Paystand reports the payment failed, so no delivery can place an order.
      *
-     * @var array{terminal: bool, message: string}|null
+     * @var array{terminal: bool, refused?: bool, paymentFailed?: bool, message: string}|null
      */
     private $lastRescueFailure = null;
+
+    /**
+     * Why the last status read returned null. Included in rescue_status_unverified.
+     *
+     * @var string|null
+     */
+    private $lastStatusReadReason = null;
+
+    /**
+     * Token this delivery was verified with. The rescue reuses it to read the
+     * payment's current status.
+     *
+     * @var string|null
+     */
+    private $paystandAccessToken = null;
 
     /**
      * @param \Magento\Framework\App\Action\Context $context ,
@@ -223,6 +245,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
             );
             return $result;
         }
+        $this->paystandAccessToken = $access_token;
 
         // Verify received Event is valid with Paystand
         if (!$this->verifyPaystandEvent($access_token, $json)) {
@@ -330,6 +353,18 @@ class Paystand extends \Magento\Framework\App\Action\Action
 
         // Server-side creation also failed (or was not possible).
         if (!$order || !$order->getId()) {
+            // The payment failed, so another delivery cannot place an order.
+            // Answer 200 when the sender is still waiting. This rescue runs
+            // after the 19 second wait above. A sender that already timed out
+            // does not see this answer, and its own retry cap still applies.
+            if (!empty($this->lastRescueFailure['paymentFailed'])) {
+                $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
+                $result->setData(
+                    ['success_message' => __('Payment failed at Paystand, no order created')]
+                );
+                return $result;
+            }
+
             // Give up only when the failure is terminal AND the event has outlived
             // the window; a transient blip must still get its retries.
             if ($this->isRescueTerminalAndExpired($json)) {
@@ -657,6 +692,72 @@ class Paystand extends \Magento\Framework\App\Action\Action
         }
     }
 
+    /**
+     * Returns the payment's current status at Paystand, lowercased, or null when
+     * it cannot be read.
+     * Declared protected (not private) to allow PHPUnit partial mocking in unit tests.
+     * See note on getPaystandAccessToken() for rationale.
+     * NOTE: do not override this in production Magento extensions.
+     *
+     * @param string $paymentId
+     * @return string|null
+     */
+    protected function fetchPaystandPaymentStatus(string $paymentId): ?string
+    {
+        $this->lastStatusReadReason = null;
+        if (!$this->paystandAccessToken || $paymentId === '') {
+            $this->logStatusReadFailure($paymentId, $this->paystandAccessToken ? 'no_payment_id' : 'no_token');
+            return null;
+        }
+
+        try {
+            $curl = $this->_objectManager->create(\Magento\Framework\HTTP\Client\Curl::class);
+            $curl->setHeaders([
+                'Accept'        => 'application/json',
+                'Authorization' => 'Bearer ' . $this->paystandAccessToken,
+                'x-customer-id' => (string)$this->scopeConfig->getValue(self::CUSTOMER_ID, self::STORE_SCOPE),
+            ]);
+            $curl->setTimeout(self::PAYMENT_STATUS_TIMEOUT_SECONDS);
+            $curl->get($this->getBaseUrl() . '/payments/' . rawurlencode($paymentId));
+        } catch (\Throwable $e) {
+            $this->logStatusReadFailure($paymentId, 'curl:' . $e->getMessage());
+            return null;
+        }
+
+        if ((int)$curl->getStatus() !== 200) {
+            $this->logStatusReadFailure($paymentId, 'http_' . (int)$curl->getStatus());
+            return null;
+        }
+        $payment = json_decode((string)$curl->getBody());
+        if (!is_object($payment) || !isset($payment->status) || !is_string($payment->status)) {
+            $this->logStatusReadFailure($paymentId, 'bad_body');
+            return null;
+        }
+        if (isset($payment->id) && (string)$payment->id !== $paymentId) {
+            $this->logStatusReadFailure($paymentId, 'id_mismatch');
+            return null;
+        }
+        $status = strtolower(trim($payment->status));
+        if ($status === '') {
+            $this->logStatusReadFailure($paymentId, 'bad_body');
+            return null;
+        }
+        return $status;
+    }
+
+    /**
+     * A status read that fails returns null, and the rescue then places the
+     * order on the delivery status. The reason has to be in the log, or a
+     * rejected token looks the same as a skipped check.
+     */
+    private function logStatusReadFailure(string $paymentId, string $reason): void
+    {
+        $this->lastStatusReadReason = $reason;
+        $this->_logger->warning(
+            '>>>>> PAYSTAND-WEBHOOK: Could not read payment ' . $paymentId . ' status: ' . $reason
+        );
+    }
+
     private function getBaseUrl()
     {
         if ($this->scopeConfig->getValue(self::USE_SANDBOX, self::STORE_SCOPE)) {
@@ -876,7 +977,8 @@ class Paystand extends \Magento\Framework\App\Action\Action
 
     /**
      * Create an order server-side from a paid-but-unconverted quote, so a captured
-     * payment always yields one. Any failure returns null and the caller 404s.
+     * payment always yields one. Any failure returns null, and lastRescueFailure
+     * tells the caller whether a redelivery can help.
      *
      * @param \Magento\Quote\Model\Quote $quote
      * @param \stdClass $json
@@ -941,6 +1043,32 @@ class Paystand extends \Magento\Framework\App\Action\Action
         try {
             // Idempotency: re-check right before creating, in case a concurrent
             // client-side placeOrder just succeeded.
+            $existing = $this->findOrder($quote);
+            if ($existing && $existing->getId()) {
+                return $existing;
+            }
+
+            if ($this->paymentFailedSinceDelivery($json, $quoteId)) {
+                // The browser can place the order during the read. Do not clear
+                // the quote out from under that order.
+                $placedDuringRead = $this->findOrder($quote);
+                if ($placedDuringRead && $placedDuringRead->getId()) {
+                    $this->shipRescue(
+                        CloudLogger::EVENT_RESCUE_FAILED_ORDER_EXISTS,
+                        $quoteId,
+                        (string)($json->resource->id ?? ''),
+                        'order=' . $placedDuringRead->getIncrementId() . ' exists; quote not cleared'
+                    );
+                    return $placedDuringRead;
+                }
+                // savepaymentdata records the id before this read. Leaving it
+                // makes the next checkout say the cart is already paid.
+                $this->releaseFailedPayment($quote, $quoteId, (string)($json->resource->id ?? ''));
+                return null;
+            }
+
+            // The status read can take 5 seconds. The browser can place the
+            // order during that time, after the check above.
             $existing = $this->findOrder($quote);
             if ($existing && $existing->getId()) {
                 return $existing;
@@ -1128,6 +1256,195 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 // leaking lock is visible in production diagnostics.
                 $this->_logger->error('>>>>> PAYSTAND-WEBHOOK: Failed to release place-order lock ' . $lockName . ': ' . $e->getMessage());
             }
+        }
+    }
+
+    /**
+     * A card can fail seconds after its processing delivery, and this delivery has
+     * waited for the browser since then, so Paystand's current status decides.
+     * When that status cannot be read, the order is placed on the delivery's own
+     * status, as before, so a bank payment still in processing gets its order.
+     *
+     * @param \stdClass $json
+     * @param int|string $quoteId
+     * @return bool true when Paystand now reports the payment failed or canceled
+     */
+    private function paymentFailedSinceDelivery($json, $quoteId): bool
+    {
+        $deliveryStatus = strtolower(trim((string)($json->resource->status ?? '')));
+        if (in_array($deliveryStatus, PaymentStatus::CAPTURED_STATUSES, true)) {
+            return false;
+        }
+
+        $paymentId = (string)($json->resource->id ?? '');
+        try {
+            $currentStatus = $this->fetchPaystandPaymentStatus($paymentId);
+        } catch (\Throwable $e) {
+            $currentStatus = null;
+        }
+
+        if ($currentStatus === null) {
+            $reason = $this->lastStatusReadReason ?: 'unknown';
+            $this->_logger->warning(
+                '>>>>> PAYSTAND-WEBHOOK: Could not read the current status of payment ' . $paymentId
+                . ' for quote ' . $quoteId . ' (' . $reason . '); placing on delivery status ' . $deliveryStatus
+            );
+            try {
+                CloudLogger::ship(CloudLogger::EVENT_RESCUE_STATUS_UNVERIFIED, [
+                    'quote_id'      => (string)$quoteId,
+                    'payment_id'    => $paymentId,
+                    'error_message' => 'Current payment status not read (' . $reason . '); placing on delivery status ' . $deliveryStatus,
+                ]);
+            } catch (\Throwable $e) {
+                // CloudLogger failure — silently ignored
+            }
+            return false;
+        }
+
+        if (!in_array($currentStatus, PaymentStatus::FAILED_STATUSES, true)) {
+            return false;
+        }
+
+        $message = 'Delivery status ' . $deliveryStatus . ', Paystand now reports ' . $currentStatus;
+        $this->lastRescueFailure = [
+            'terminal'      => false,
+            'refused'       => false,
+            'paymentFailed' => true,
+            'message'       => $message,
+        ];
+        $this->_logger->warning('>>>>> PAYSTAND-WEBHOOK: Not creating order for quote ' . $quoteId . ': ' . $message);
+        return true;
+    }
+
+    /**
+     * Drop this failed payment off the quote so the shopper can pay again.
+     * The row is updated only when it still holds this payment id and the
+     * capture status is empty or processing. A paid or posted status is left
+     * alone: that row can hold a later payment's markers under the first id.
+     *
+     * @param \Magento\Quote\Model\Quote $quote
+     * @param int|string $quoteId
+     * @param string $paymentId
+     * @return void
+     */
+    private function releaseFailedPayment($quote, $quoteId, string $paymentId): void
+    {
+        if ($paymentId === '' || !$quote) {
+            $this->shipRescue(
+                CloudLogger::EVENT_RESCUE_PAYMENT_FAILED,
+                $quoteId,
+                $paymentId,
+                'release=error missing payment id or quote'
+            );
+            return;
+        }
+
+        $statusGuard = "paystand_capture_status IS NULL OR paystand_capture_status IN ('', 'processing')";
+
+        try {
+            $resource = $quote->getResource();
+            $connection = $resource->getConnection();
+            $row = $connection->fetchRow(
+                $connection->select()
+                    ->from($resource->getMainTable(), ['paystand_payment_id', 'paystand_capture_status'])
+                    ->where('entity_id = ?', $quoteId)
+            );
+            $storedId = is_array($row) ? (string)($row['paystand_payment_id'] ?? '') : '';
+            $storedStatus = is_array($row)
+                ? strtolower(trim((string)($row['paystand_capture_status'] ?? '')))
+                : '';
+
+            if ($storedId !== $paymentId) {
+                $this->recordRelease($quoteId, $paymentId, 'not_matched', 'stored=' . $storedId);
+                return;
+            }
+            if ($storedStatus === 'paid' || $storedStatus === 'posted') {
+                $this->recordRelease($quoteId, $paymentId, 'skipped_captured', 'status=' . $storedStatus);
+                return;
+            }
+
+            $cleared = $connection->update(
+                $resource->getMainTable(),
+                [
+                    'paystand_payment_id' => null,
+                    'paystand_capture_status' => null,
+                    CaptureSnapshot::QUOTE_FIELD => null,
+                ],
+                [
+                    'entity_id = ?' => $quoteId,
+                    'paystand_payment_id = ?' => $paymentId,
+                    $statusGuard,
+                ]
+            );
+        } catch (\Throwable $e) {
+            $this->_logger->error(
+                '>>>>> PAYSTAND-WEBHOOK: Could not clear failed payment ' . $paymentId
+                . ' from quote ' . $quoteId . ': ' . $e->getMessage()
+            );
+            $this->shipRescue(
+                CloudLogger::EVENT_RESCUE_PAYMENT_FAILED,
+                $quoteId,
+                $paymentId,
+                'release=error ' . $e->getMessage()
+            );
+            return;
+        }
+
+        if ((int)$cleared < 1) {
+            $this->recordRelease($quoteId, $paymentId, 'not_matched', 'update matched no row');
+            return;
+        }
+
+        try {
+            if ((string)$quote->getData('paystand_payment_id') === $paymentId) {
+                $quote->setData('paystand_payment_id', null);
+                $quote->setData('paystand_capture_status', null);
+                $quote->setData(CaptureSnapshot::QUOTE_FIELD, null);
+            }
+        } catch (\Throwable $e) {
+            // The row is already clear. This copy is the one loaded before the wait.
+        }
+
+        $this->recordRelease($quoteId, $paymentId, 'cleared', '');
+    }
+
+    /**
+     * @param int|string $quoteId
+     */
+    private function recordRelease($quoteId, string $paymentId, string $outcome, string $detail): void
+    {
+        $message = 'release=' . $outcome . ' payment=' . $paymentId;
+        if ($detail !== '') {
+            $message .= ' ' . $detail;
+        }
+        if ($outcome === 'cleared' && is_array($this->lastRescueFailure)) {
+            $this->lastRescueFailure['message'] .= '; cleared the payment id from the quote';
+        }
+        if ($outcome === 'skipped_captured') {
+            $this->_logger->warning(
+                '>>>>> PAYSTAND-WEBHOOK: Did not clear quote ' . $quoteId . ': ' . $message
+            );
+        } else {
+            $this->_logger->warning(
+                '>>>>> PAYSTAND-WEBHOOK: Failed-payment release for quote ' . $quoteId . ': ' . $message
+            );
+        }
+        $this->shipRescue(CloudLogger::EVENT_RESCUE_PAYMENT_FAILED, $quoteId, $paymentId, $message);
+    }
+
+    /**
+     * @param int|string $quoteId
+     */
+    private function shipRescue(string $event, $quoteId, string $paymentId, string $message): void
+    {
+        try {
+            CloudLogger::ship($event, [
+                'quote_id'      => (string)$quoteId,
+                'payment_id'    => $paymentId,
+                'error_message' => $message,
+            ]);
+        } catch (\Throwable $e) {
+            // CloudLogger failure — silently ignored
         }
     }
 

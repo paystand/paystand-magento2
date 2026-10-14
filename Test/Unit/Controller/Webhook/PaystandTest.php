@@ -368,6 +368,39 @@ class PaystandTest extends TestCase
     }
 
     /**
+     * Paystand reports the payment failed, so no redelivery can place an order.
+     * Not terminal, so without the flag this would be a 404.
+     */
+    public function testStopsRetriesWhenThePaymentFailedBeforeTheRescue(): void
+    {
+        $this->requestMock->method('getContent')->willReturn($this->makeBody(['resource' => ['status' => 'processing']]));
+        $this->controller->method('getPaystandAccessToken')->willReturn('fake-token');
+        $this->controller->method('verifyPaystandEvent')->willReturn(true);
+        $this->setupQuoteIdMask();
+        $this->setupQuoteMock();
+
+        $this->controller->method('findOrder')->willReturn(null);
+        $this->controller->method('createOrderFromQuote')->willReturn(null);
+        $this->set('lastRescueFailure', [
+            'terminal'      => false,
+            'refused'       => false,
+            'paymentFailed' => true,
+            'message'       => 'Delivery status processing, Paystand now reports failed; order not placed',
+        ]);
+
+        $this->jsonResultMock->expects($this->once())
+            ->method('setHttpResponseCode')
+            ->with(200)
+            ->willReturnSelf();
+
+        $this->controller->execute();
+
+        $token = new \ReflectionProperty(Paystand::class, 'paystandAccessToken');
+        $token->setAccessible(true);
+        $this->assertSame('fake-token', $token->getValue($this->controller));
+    }
+
+    /**
      * Exercised directly rather than through execute(), which sleeps ~19s per call.
      *
      * @dataProvider rescueRetryScenarios
