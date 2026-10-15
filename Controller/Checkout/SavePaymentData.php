@@ -18,25 +18,9 @@ use Magento\Store\Model\ScopeInterface;
 use Magento\Framework\Webapi\Response;
 
 /**
- * SavePaymentData Controller
- *
- * Responsibilities:
- * - Accepts JSON payload from frontend with:
- *   - payerId (string)
- *   - quote (numeric ID or masked quote ID)
- *   - payerDiscount (float)
- *   - payerTotalFees (float)
- * - Resolves masked quote IDs (guest carts) to real numeric quote IDs.
- * - Computes and persists a "paystand_adjustment" custom field to the quote with the rule:
- *   - If payerDiscount != 0 => store NEGATIVE value.
- *   - Else if payerTotalFees != 0 => store POSITIVE value.
- *   - Else store 0.
- * - For guest quotes: returns success and type=guest without attempting to store payerId on customer.
- * - For customer quotes: stores payerId on the customer if not already present.
- *
- * Notes:
- * - Uses CartRepositoryInterface::get($id) instead of getActive() to support quotes that might be inactive after order placement.
- * - DECIMAL DB types support negative values unless defined as UNSIGNED; ensure your schema is not UNSIGNED.
+ * Saves the Paystand payment result on the quote: paystand_adjustment (negative for a
+ * payer discount, positive for payer fees), the payment id and the capture status.
+ * For a logged-in customer, it also stores the payer id on the customer.
  */
 class SavePaymentData extends Action
 {
@@ -70,16 +54,13 @@ class SavePaymentData extends Action
     const ENABLE_PAYSTAND_ADJUSTMENT = 'payment/paystandmagento/enable_paystand_adjustment';
 
     /**
-     * Paystand payment ids are opaque lowercase-alphanumeric tokens (observed
-     * length 24). Accept a sane range so a format change upstream doesn't break
-     * the flow, but reject anything that clearly isn't a payment id before it
-     * is persisted onto the quote.
+     * Paystand payment ids are alphanumeric, 24 chars today. The range allows a format
+     * change but rejects input that is not a payment id.
      */
     const PAYMENT_ID_PATTERN = '/^[a-z0-9]{16,64}$/i';
 
     /**
-     * Statuses that mark a confirmed capture. Shared with the webhook rescue path
-     * so both writers of paystand_capture_status agree on what a capture is.
+     * Statuses that mark a confirmed capture, shared with the webhook rescue.
      */
     const CAPTURED_STATUSES = PaymentStatus::CAPTURED_STATUSES;
 
@@ -137,8 +118,6 @@ class SavePaymentData extends Action
 
     /**
      * Controller entrypoint.
-     * Reads JSON, resolves quote, persists paystand_adjustment with sign rules,
-     * and optionally updates customer payerId for logged-in customers.
      *
      * @return \Magento\Framework\Controller\Result\Json
      */
@@ -166,11 +145,9 @@ class SavePaymentData extends Action
         $payerDiscount   = isset($data['payerDiscount']) ? (float)$data['payerDiscount'] : 0.0;
         $payerTotalFees  = isset($data['payerTotalFees']) ? (float)$data['payerTotalFees'] : 0.0;
         $initPayer       = $data['initPayer'] ?? false;
-        // Recorded on the quote so checkout can refuse to re-open the widget for a
-        // cart that has already been paid.
+        // Stops checkout from reopening the widget for a cart already paid.
         $paymentId       = $data['paymentId'] ?? null;
-        // Narrower than the payment id above: only a confirmed capture stamps a
-        // snapshot so later collects can pin the totals the shopper paid.
+        // Only a confirmed capture stamps the snapshot that pins the paid totals.
         $paymentStatus   = $data['paymentStatus'] ?? null;
         // False when the window was priced from browser totals because
         // getquotedata failed. Older checkout JS does not send it.
@@ -188,10 +165,7 @@ class SavePaymentData extends Action
         }
 
         try {
-            // 1+2) Resolve, load, and AUTHORIZE the quote against the current
-            // session (masked ids act as guest capability tokens; numeric ids
-            // require the session to own the quote). Fail closed: a caller who
-            // does not own the quote cannot write payment data onto it.
+            // Load the quote only if this session may write to it. QuoteAccess fails closed.
             $quote = $this->quoteAccess->getAuthorizedQuote($quoteIdIncoming);
             if (!$quote) {
                 $this->logger->warning('SAVEPAYMENTDATA >>>>>> Quote not found or not owned by session', [
@@ -218,15 +192,13 @@ class SavePaymentData extends Action
             // Before the payment id lands: clearing checks for one.
             $this->dropSnapshotFromEarlierOpen($quote, $windowPricedByServer, $paymentId);
 
-            // 3) Check if paystand adjustment is enabled
+            // Check if paystand adjustment is enabled
             $isAdjustmentEnabled = $this->scopeConfig->isSetFlag(
                 self::ENABLE_PAYSTAND_ADJUSTMENT,
                 ScopeInterface::SCOPE_STORE
             );
 
-            // 4) Compute paystand_adjustment with enforced signs (only if enabled):
-            //    - If payerDiscount != 0 -> NEGATIVE
-            //    - Else if payerTotalFees != 0 -> POSITIVE
+            // When enabled: a payer discount is stored negative, else payer fees positive.
             $paystandAdjustment = 0.0;
 
             if ($isAdjustmentEnabled) {
@@ -249,10 +221,8 @@ class SavePaymentData extends Action
                 $this->logger->info('SAVEPAYMENTDATA >>>>>> Paystand adjustment is disabled, not storing adjustment');
             }
 
-            // 5) Persist the adjustment on the quote; totals will be updated in the PayStand observer.
-            //    The payment id is format-checked and never overwritten — the first one
-            //    is the reconciliation anchor, and a second distinct id is the
-            //    duplicate-payment signal, so it is logged rather than stored.
+            // The observer adds the adjustment to the totals. The first payment id is kept; a
+            // second, different id signals a duplicate payment and is only logged.
             $quote->setData('paystand_adjustment', $paystandAdjustment);
             if (!empty($paymentId) && !preg_match(self::PAYMENT_ID_PATTERN, (string)$paymentId)) {
                 $this->logger->warning('SAVEPAYMENTDATA >>>>>> Ignoring malformed paymentId', [
@@ -282,9 +252,8 @@ class SavePaymentData extends Action
                 }
             }
 
-            // Recorded only for a confirmed capture, and only alongside a payment id.
-            // Weaker statuses must not stamp a snapshot: a payment that never
-            // completed would then pin stale totals onto a still-live cart.
+            // Only a confirmed capture with a payment id is recorded. A payment that never
+            // completed must not pin its totals onto a live cart.
             $captureStatus = $this->captureStatusFor($paymentId, $paymentStatus);
             if ($captureStatus !== null) {
                 $quote->setData('paystand_capture_status', $captureStatus);
@@ -322,7 +291,7 @@ class SavePaymentData extends Action
                 ]);
             }
 
-            // 6) Branch by guest vs. customer
+            // Branch by guest vs. customer
             $isGuest = (int)$quote->getCustomerIsGuest() === 1;
 
             if ($isGuest) {
@@ -412,8 +381,7 @@ class SavePaymentData extends Action
     }
 
     /**
-     * The status to record as a confirmed capture, or null when this is not one.
-     * A payment id is required too, so a status without one cannot stamp a snapshot.
+     * The confirmed capture status to record, or null. It needs a payment id too.
      *
      * @param string|null $paymentId
      * @param string|null $paymentStatus
@@ -431,12 +399,9 @@ class SavePaymentData extends Action
     }
 
     /**
-     * getquotedata did not price the window that took this payment, so the
-     * snapshot on the quote is from an earlier open and may describe another
-     * cart. Drop it, and the paid cart is stamped instead. Older checkout JS
-     * sends no flag and changes nothing. A quote holding another payment is
-     * untouched; one holding this payment is not, because Paystand's webhook can
-     * record the payment before the browser reports it.
+     * When getquotedata did not price this window, the snapshot is from an earlier open, so
+     * it is dropped and the paid cart is stamped instead. No flag (older JS) changes nothing,
+     * and a quote holding another payment is left as is.
      *
      * @param \Magento\Quote\Model\Quote $quote
      * @param mixed $windowPricedByServer
@@ -451,9 +416,7 @@ class SavePaymentData extends Action
     }
 
     /**
-     * Carries a capture status recorded since this quote was loaded back onto the
-     * in-memory copy, so saving a request that has no capture of its own cannot
-     * persist a null over it and drop a snapshot a later collect needs.
+     * Copies a capture status recorded since load onto this copy, so saving it keeps it.
      *
      * @param \Magento\Quote\Model\Quote $quote
      * @param int|string $quoteId
@@ -466,8 +429,7 @@ class SavePaymentData extends Action
                 return;
             }
 
-            // The quote's own connection, so this needs no extra dependency and
-            // cannot drift from the table the quote is about to be saved to.
+            // Uses the quote's own connection, so no extra dependency is needed.
             $resource = $quote->getResource();
             $connection = $resource->getConnection();
             $select = $connection->select()

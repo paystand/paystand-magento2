@@ -6,12 +6,8 @@ use Magento\Framework\App\Config\ScopeConfigInterface;
 use Magento\Store\Model\ScopeInterface;
 
 /**
- * Ships structured log events to the Cloudflare Analytics Engine ingest Worker.
- * Fire-and-forget — uses a non-blocking cURL call with a very short timeout.
- * If the Worker is unreachable, the call fails silently and Magento continues normally.
- *
- * The Worker validates each request by calling GET /v3/plugins/paystand/checkout/resources/public
- * on the Paystand API using the publishable key included in the payload.
+ * Sends log events to the Cloudflare ingest Worker with a short, non-blocking cURL call.
+ * A failed call is ignored. The Worker checks the publishable key with the Paystand API.
  */
 class CloudLogger
 {
@@ -34,18 +30,14 @@ class CloudLogger
     const EVENT_PLACEORDER_ENTERED      = 'placeorder_entered';
     const EVENT_PLACEORDER_COMPLETED    = 'placeorder_completed';
     const EVENT_PLACEORDER_NULL_RESULT  = 'placeorder_null_result';
-    // A second, distinct Paystand payment id was reported for a quote that
-    // already has one recorded — the duplicate-payment signal itself.
+    // A second, different payment id was reported for a quote that already has one.
     const EVENT_DUPLICATE_PAYMENT_RECORDED = 'duplicate_payment_recorded';
-    // The webhook could not acquire the per-quote place-order lock and fell
-    // back to search-only behaviour.
+    // The webhook could not get the place-order lock and fell back to search only.
     const EVENT_PLACEORDER_LOCK_FALLBACK = 'placeorder_lock_fallback';
-    // Shipping method/rate/amount observed on a quote at a point in the payment
-    // flow. Emitted only when the state changes, to pinpoint when a rate is lost.
+    // Shipping state on a quote, sent only when it changes, to show when a rate is lost.
     const EVENT_QUOTE_SHIPPING_STATE = 'quote_shipping_state';
-    // Server-side order recovery has given up on a paid quote: the cart is
-    // rejected for a business reason and has stayed that way past the retry
-    // window. Terminal — this is the queue support should work from.
+    // The rescue gave up on a paid quote that Magento kept rejecting past the retry
+    // window. Support works from this event.
     const EVENT_RESCUE_ABANDONED = 'rescue_abandoned';
     // The order confirmation page refused to render and redirected to the cart.
     // Names the checkout-session values it found missing.

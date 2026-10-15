@@ -22,11 +22,8 @@ use Magento\Quote\Model\Quote\Address\Rate;
 use Magento\Quote\Model\Quote\Address\RateFactory;
 
 /**
- * Unit tests for Controller\Checkout\GetQuoteData::execute().
- *
- * Covers the snapshot/recollect/restore bracket around the forced totals
- * recalculation. QuoteShipping itself is real here, not mocked, because the
- * sequencing between the two is what the tests are about.
+ * Tests for GetQuoteData::execute(). QuoteShipping is real, not mocked, because
+ * the order of snapshot, recollect and restore is what these tests check.
  */
 class GetQuoteDataTest extends TestCase
 {
@@ -99,12 +96,7 @@ class GetQuoteDataTest extends TestCase
         $this->set('addressRepository', $this->addressRepository);
     }
 
-    /**
-     * Builds rates the helper can write a restored selection onto. The setters are
-     * magic data accessors on Rate, so they need addMethods().
-     *
-     * @return RateFactory|MockObject
-     */
+    /** @return RateFactory|MockObject */
     private function buildRateFactory()
     {
         $factory = $this->getMockBuilder(RateFactory::class)
@@ -144,10 +136,6 @@ class GetQuoteDataTest extends TestCase
         $this->assertSame('NO_ACTIVE_QUOTE', $this->captured['error']['code']);
     }
 
-    /**
-     * The common case: the recollect leaves the selection alone, so nothing is
-     * restored and the quote is collected exactly once.
-     */
     public function testCollectsOnceWhenTheSelectionSurvives(): void
     {
         $address = $this->buildAddress('flatrate_flatrate', 5.00);
@@ -164,15 +152,11 @@ class GetQuoteDataTest extends TestCase
     }
 
     /**
-     * When the recollect clears the method, the retry must re-arm
-     * collect_shipping_rates. Without it the rates are never re-requested and
-     * the restored method collects at an amount of 0.
+     * Without collect_shipping_rates the rates are not requested again, and shipping collects at 0.
      */
     public function testRearmsRateCollectionWhenRestoringAfterAWipe(): void
     {
-        // Reads as chosen for the snapshot, empty once the first collectTotals()
-        // has wiped it, then chosen again after the restore — the production
-        // failure sequence as GetQuoteData walks it.
+        // getShippingMethod() per call: chosen, wiped by the first collect, then restored.
         $address = $this->buildAddress('flatrate_flatrate', 5.00, [
             'flatrate_flatrate', // snapshot
             'flatrate_flatrate', // describe (before)
@@ -194,8 +178,7 @@ class GetQuoteDataTest extends TestCase
     }
 
     /**
-     * When the re-requested rates come back empty too, the method is restored a
-     * second time — the state the RESTORED-NO-RATE breadcrumb reports.
+     * This is the state the RESTORED-NO-RATE log line reports.
      */
     public function testRestoresAgainWhenTheRetryAlsoComesBackEmpty(): void
     {
@@ -219,9 +202,7 @@ class GetQuoteDataTest extends TestCase
     }
 
     /**
-     * The snapshot an earlier open left is dropped before the cart is priced, and
-     * the cart this response hands the window is stamped after. Stamping first and
-     * clearing second would leave the window with no snapshot at all.
+     * Stamping first and clearing second would leave the window with no snapshot.
      */
     public function testClearsTheEarlierSnapshotBeforePricingAndStampsTheChargedCart(): void
     {
@@ -257,8 +238,7 @@ class GetQuoteDataTest extends TestCase
     }
 
     /**
-     * A snapshot that could not be written must not stop the window opening.
-     * With none on the row, the payment save stamps from the paid cart.
+     * With no snapshot on the row, the payment save stamps from the paid cart.
      */
     public function testStillReturnsQuoteDataWhenTheSnapshotIsNotWritten(): void
     {
@@ -273,10 +253,6 @@ class GetQuoteDataTest extends TestCase
         $this->assertSame(164.96, $this->captured['quote']['grand_total']);
     }
 
-    /**
-     * A virtual quote has nothing to snapshot, so the bracket must stay out of
-     * the way rather than erroring on a missing shipping address.
-     */
     public function testVirtualQuoteIsCollectedOnceAndNotRestored(): void
     {
         $quote = $this->buildQuote(null, 19.99, true);
@@ -411,8 +387,6 @@ class GetQuoteDataTest extends TestCase
 
     /**
      * @param Address|MockObject|null $address
-     * @param float $grandTotal
-     * @param bool $isVirtual
      * @return Quote|MockObject
      */
     private function buildQuote($address, float $grandTotal, bool $isVirtual = false)
@@ -443,23 +417,7 @@ class GetQuoteDataTest extends TestCase
         return $quote;
     }
 
-    /**
-     * Shipping amount/description accessors are magic data methods on Address,
-     * so they need addMethods() rather than onlyMethods().
-     *
-     * @param string $method
-     * @param float $amount
-     * @param array|null $methodSequence getShippingMethod() per consecutive call
-     * @return Address|MockObject
-     */
-    /**
-     * The rate row the snapshot captures. Its getters are magic data accessors on
-     * Rate, so they need addMethods().
-     *
-     * @param string $method
-     * @param float $amount
-     * @return Rate|MockObject
-     */
+    /** @return Rate|MockObject */
     private function buildSelectedRate(string $method, float $amount)
     {
         $rate = $this->getMockBuilder(Rate::class)
@@ -475,6 +433,10 @@ class GetQuoteDataTest extends TestCase
         return $rate;
     }
 
+    /**
+     * @param array|null $methodSequence getShippingMethod() per consecutive call
+     * @return Address|MockObject
+     */
     private function buildAddress(string $method, float $amount, array $methodSequence = null)
     {
         $address = $this->getMockBuilder(Address::class)
@@ -498,8 +460,7 @@ class GetQuoteDataTest extends TestCase
         $address->method('getBaseShippingAmount')->willReturn($amount);
         $address->method('getShippingDescription')->willReturn('Flat Rate - Fixed');
         $address->method('getAllShippingRates')->willReturn([]);
-        // The selected rate row survives here; these cases cover a cleared method,
-        // and the dropped-rate cases live in QuoteShippingTest.
+        // The rate row survives here. QuoteShippingTest covers dropped rates.
         $address->method('getShippingRateByCode')->willReturn($this->buildSelectedRate($method, $amount));
         $address->method('addShippingRate')->willReturnSelf();
         $address->method('getData')->willReturnCallback(function ($key = null) {
@@ -514,10 +475,7 @@ class GetQuoteDataTest extends TestCase
         return $address;
     }
 
-    /**
-     * @param string $name
-     * @param mixed $value
-     */
+    /** @param mixed $value */
     private function set(string $name, $value): void
     {
         $class = new \ReflectionClass($this->controller);

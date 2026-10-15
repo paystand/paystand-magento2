@@ -21,54 +21,34 @@ use PayStand\PayStandMagento\Model\PaymentAmountGate;
 
 class AfterOrderPlaceObserver implements ObserverInterface
 {
-    /**
-     * @var LoggerInterface
-     */
+    /** @var LoggerInterface */
     protected $_logger;
 
-    /**
-     * @var ScopeConfigInterface
-     */
+    /** @var ScopeConfigInterface */
     protected $scopeConfig;
 
-    /**
-     * @var BuilderInterface
-     */
+    /** @var BuilderInterface */
     protected $_builderInterface;
 
-    /**
-     * @var InvoiceService
-     */
+    /** @var InvoiceService */
     protected $_invoiceService;
 
-    /**
-     * @var TransactionFactory
-     */
+    /** @var TransactionFactory */
     protected $_transactionFactory;
 
-    /**
-     * @var InvoiceRepositoryInterface
-     */
+    /** @var InvoiceRepositoryInterface */
     protected $_invoiceRepository;
 
-    /**
-     * @var CollectionFactory
-     */
+    /** @var CollectionFactory */
     protected $_invoiceCollectionFactory;
 
-    /**
-     * @var QuoteFactory 
-     */
+    /** @var QuoteFactory */
     protected $_quoteFactory;
 
-    /**
-     * @var CartRepositoryInterface
-     */
+    /** @var CartRepositoryInterface */
     protected $_cartRepository;
 
-    /**
-     * @var OrderRepositoryInterface
-     */
+    /** @var OrderRepositoryInterface */
     protected $_orderRepository;
 
     /** @var PaymentAmountGate */
@@ -240,9 +220,8 @@ class AfterOrderPlaceObserver implements ObserverInterface
         if ($payment->getMethod() == Directpost::METHOD_CODE) {
             $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER: Payment method matches Paystand, continuing with processing");
 
-            // Default state for new PayStand orders
-            // CRITICAL: Set to pending and save immediately to prevent race condition with webhook
-            // This must complete before webhook can process the order
+            // New Paystand orders start pending and are saved at once, before the webhook can
+            // process them.
             $beforeSetStateTime = microtime(true);
             $order->setState('pending');
             $order->setStatus('pending');
@@ -367,13 +346,11 @@ class AfterOrderPlaceObserver implements ObserverInterface
                                                     $payment->setAdditionalInformation('paystand_currency', $paymentDataArray['currency']);
                                                 }
 
-                                                // DO NOT store the entire JSON string as it causes issues in OrderRepository
-                                                // $payment->setAdditionalInformation('paystand_payment_data', $paymentData);
+                                                // Do not store the raw JSON; it causes issues in OrderRepository.
                                             }
                                         }
 
-                                        // IMPORTANT: Save the order before creating transactions and invoices
-                                        // This ensures the order exists in the database before we create related records
+                                        // Save the order first, so it exists before its transaction and invoice.
                                         try {
                                             $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER: Saving order before creating transaction and invoice");
                                             $this->_orderRepository->save($order);
@@ -393,8 +370,7 @@ class AfterOrderPlaceObserver implements ObserverInterface
                                                     if ($transactionId) {
                                                         $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER: Transaction created with ID: " . $transactionId);
 
-                                                        // Only attempt to create invoice if transaction was successful
-                                                        // Create invoice
+                                                        // Invoice only after the transaction was created.
                                                         $invoice = $this->invoiceWhenAmountMatches($order, $paymentDataArray);
                     if ($invoice) {
                         $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER: Invoice created with ID: " . $invoice->getEntityId());
@@ -477,8 +453,7 @@ class AfterOrderPlaceObserver implements ObserverInterface
             $payment->setLastTransId($paymentData['id']);
             $payment->setTransactionId($paymentData['id']);
 
-            // Instead of setting the raw details as the entire payment data object,
-            // create a filtered array with only essential information
+            // Keep only the essential payment fields, not the whole payload.
             $essentialPaymentInfo = [];
             $essentialFields = ['id', 'status', 'amount', 'currency', 'settlementAmount', 'settlementCurrency'];
             foreach ($essentialFields as $field) {
@@ -658,9 +633,8 @@ class AfterOrderPlaceObserver implements ObserverInterface
                 $invoice->getOrder()->setIsInProcess(true);
                 $order->addStatusHistoryComment(__('Automatically INVOICED by Paystand'), false);
 
-                // The adjustment is added to the invoice above, before register(), so
-                // register() and pay() already carry it into total_invoiced, total_paid
-                // and the payment's amount_paid. Adding it again here would double it.
+                // The adjustment was added to the invoice before register(), and register() and pay()
+                // carry it into the totals. Adding it again here would double it.
 
                 // Create transaction to save invoice and order
                 $transactionSave = $this->_transactionFactory

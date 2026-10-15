@@ -31,7 +31,6 @@ define(
         const submitTrigger = '.submit-trigger';
         let countryISO3 = null;
 
-        // ── Cloudflare log helper ────────────────────────────────────────────
         const CF_INGEST_URL = 'https://magento-plugin-logs.paystand-core-services.workers.dev/ingest';
         const CF_CUSTOMER_ID = (window.checkoutConfig.payment.paystandmagento.customer_id) || '';
         const CF_PUBLISHABLE_KEY = (window.checkoutConfig.payment.paystandmagento.publishable_key) || '';
@@ -40,9 +39,7 @@ define(
             fetch(CF_INGEST_URL, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                // Without keepalive the redirect after placeOrder cancels any log
-                // still in flight, which is what makes the last events before a
-                // navigation go missing.
+                // Without keepalive, the redirect after placeOrder cancels logs still in flight.
                 keepalive: true,
                 body: JSON.stringify({
                     customer_id:     CF_CUSTOMER_ID,
@@ -57,9 +54,8 @@ define(
             }).catch(function() {});
         }
 
-        // ── Navigation trace ────────────────────────────────────────────────
-        // Hands the paid-quote context to the next page load, so the landing page
-        // can be reported by PayStand_PayStandMagento/js/paystand-nav-trace.
+        // Hands the paid-quote context to the next page load, so
+        // PayStand_PayStandMagento/js/paystand-nav-trace can report the landing page.
         const NAV_TRACE_KEY = 'ps_nav_trace';
 
         function markNavigation(quoteId, paymentId) {
@@ -89,22 +85,12 @@ define(
             }
             window.addEventListener('pagehide', onHide);
         }
-        // ────────────────────────────────────────────────────────────────────
 
-        // quote.totals() is a client-side knockout snapshot that can be read before
-        // Magento's tax recalculation has settled, producing a stale/pre-tax total.
-        // Fetch a fresh, authoritative quote snapshot from the server instead, so the
-        // amount shown in the widget matches what will actually be charged.
-        //
-        // A short timeout via AbortController prevents a hung backend request from
-        // leaving checkout stuck indefinitely — on timeout or any other failure we
-        // fall back to the client snapshot (see loadCheckout()'s .catch()).
+        // quote.totals() can be read before Magento's tax recalculation settles, so the amount
+        // comes from the server. On a timeout or error, loadCheckout() uses quote.totals().
         const GET_QUOTE_DATA_TIMEOUT_MS = 8000;
 
         function fetchServerQuoteData() {
-            // AbortController is used unconditionally here, consistent with the
-            // rest of this file's reliance on modern browser APIs (fetch, Promise,
-            // async/await) elsewhere — no feature-detection fallback needed.
             const controller = new AbortController();
             const timeoutId = setTimeout(function () { controller.abort(); }, GET_QUOTE_DATA_TIMEOUT_MS);
 
@@ -133,10 +119,7 @@ define(
                 });
         }
 
-        // Merge a server-side field (preferred, when present and non-null) with a
-        // client-side fallback field. Shared by both the top-level total resolution
-        // and the quoteDetails payload builder below, so the "prefer server, else
-        // client" precedence rule only lives in one place.
+        // The server value when present and non-null, else the client value.
         function preferValue(serverValue, clientValue) {
             return (serverValue !== undefined && serverValue !== null) ? serverValue : clientValue;
         }
@@ -149,9 +132,8 @@ define(
                 'tax_amount', 'subtotal_incl_tax', 'shipping_incl_tax',
                 'base_currency_code', 'quote_currency_code', 'items_qty'];
 
-            // Server totals arrive keyed by total code with a {value: ...} wrapper
-            // (e.g. {grand_total: {value: 37.09}}); flatten to plain values so it can
-            // be merged against the client knockout totals object shape below.
+            // Server totals arrive as {grand_total: {value: 37.09}}; flatten them to the shape of
+            // the client totals.
             const serverTotals = (serverQuote && serverQuote.totals)
                 ? Object.keys(serverQuote.totals).reduce(function (acc, code) {
                     const entry = serverQuote.totals[code];
@@ -168,10 +150,8 @@ define(
                 }
             });
 
-            // Ensure grand_total/base_grand_total always reflect the same
-            // authoritative value used for paymentAmount, regardless of what the
-            // per-key merge above picked (the server's totals map may omit codes
-            // that top-level serverQuote.grand_total/base_grand_total still has).
+            // grand_total and base_grand_total use the same value as paymentAmount, since the
+            // server's totals map can omit them.
             const grandTotal = preferValue(serverQuote && serverQuote.grand_total, clientTotals && clientTotals.grand_total);
             if (grandTotal !== undefined) {
                 details.grand_total = grandTotal;
@@ -183,16 +163,13 @@ define(
             return details;
         }
 
-        // Builds the full Paystand widget config (payment amount, currency, payer
-        // details, address, paymentMeta) given an optional fresh server-side quote
-        // snapshot. Named for what it produces (the widget config), not just the
-        // totals sub-piece — serverQuote may be null, in which case every field
-        // falls back to the client-side quote.totals()/billingAddress() snapshot.
+        // Builds the Paystand widget config. With no serverQuote, every field comes from
+        // quote.totals() and billingAddress().
         function buildPaystandCheckoutConfig(serverQuote) {
             const billing = quote.billingAddress();
             const clientTotals = quote.totals() || {};
 
-            // Determinate payer email and payer id
+            // Determine payer email and payer id
             let payerEmail = customer.isLoggedIn() ? customer.customerData.email : quote.guestEmail;
             let payerId = null;
             if (customer.isLoggedIn() && customer.customerData && customer.customerData.custom_attributes) {
@@ -202,10 +179,8 @@ define(
                 }
             }
 
-            // Prefer the fresh server-side grand total (authoritative, tax-inclusive) over
-            // the client-side knockout snapshot, which may be stale/pre-tax at button-click
-            // time. Fall back to the client snapshot only if the server call failed, so a
-            // transient network error doesn't block checkout entirely.
+            // The server grand total includes tax. The client total is used only if the server
+            // call failed.
             const baseGrandTotal = preferValue(
                 serverQuote && serverQuote.base_grand_total,
                 clientTotals.base_grand_total
@@ -215,9 +190,7 @@ define(
                 clientTotals.quote_currency_code
             );
 
-            // Neither source had a usable grand total (e.g. server call failed AND
-            // the client snapshot was never populated) — surface a clear error
-            // instead of throwing an unhandled TypeError on .toString() below.
+            // Neither source has a grand total, so fail with a clear error.
             if (baseGrandTotal === undefined || baseGrandTotal === null) {
                 const message = 'Unable to resolve a payment amount from either server or client quote totals';
                 cfLog('quote_totals_unavailable', quote.getQuoteId() || '', '', message);
@@ -399,9 +372,8 @@ define(
             }, 500);
         }
         
-        // ── Re-charge guard ─────────────────────────────────────────────────
-        // The widget captures payment before the order exists, so re-opening it on an
-        // already-paid cart would charge twice. Fails open on any check failure.
+        // The widget captures payment before the order exists, so reopening it on a paid cart
+        // would charge twice. A failed check lets the widget open.
         function showAlreadyPaidModal(status) {
             const supportEmail = (window.checkoutConfig.payment.paystandmagento.support_email) || '';
             const storeName = (window.checkoutConfig.payment.paystandmagento.store_name) || '';
@@ -423,13 +395,11 @@ define(
         // Blocks a second click while the first open is still in flight.
         let loadCheckoutInFlight = false;
 
-        // Bounded like fetchServerQuoteData(); this gates every widget-open, so an
-        // unbounded hang here would be worse than the bug it guards.
+        // Bounded like fetchServerQuoteData(), since every widget open waits on it.
         const QUOTE_PAYMENT_STATUS_TIMEOUT_MS = 8000;
 
-        // Whether getquotedata priced the window that is open now. Only that
-        // response stamps the cart on the server, so a window priced from the
-        // browser's own totals must not be judged against an older stamp.
+        // True when getquotedata priced the open window. Only that response stamps the cart,
+        // so a window priced from browser totals must not be judged against an older stamp.
         let windowPricedByServer = false;
 
         // Terminal fallback so checkout is never left without a config.
@@ -488,8 +458,7 @@ define(
             loadCheckoutInFlight = true;
             disableButton();
 
-            // Every exit must clear loadCheckoutInFlight, or the button stays
-            // permanently disabled — hence the try/finally around the whole body.
+            // The try/finally clears loadCheckoutInFlight on every exit, or the button stays off.
             let blocked = false;
             try {
                 const qid = quote.getQuoteId();
@@ -505,8 +474,7 @@ define(
                     return;
                 }
 
-                // Not already paid — resolve a fresh, tax-inclusive server-side
-                // total before building the widget config.
+                // Not paid yet: get the server total, with tax, before building the config.
                 let serverQuote = null;
                 try {
                     serverQuote = await fetchServerQuoteData();
@@ -528,16 +496,14 @@ define(
             } finally {
                 loadCheckoutInFlight = false;
                 if (!blocked) {
-                    // Single source of truth for "should the button be enabled".
-                    // A blocked (already-paid) cart deliberately stays disabled.
+                    // resolveButton() decides; a blocked (already paid) cart stays disabled.
                     resolveButton();
                 }
             }
         }
 
-        // ── Order-placement confirmation ────────────────────────────────────
-        // The submitTrigger click is fire-and-forget, so poll for the order it should
-        // have created. Window outlasts the webhook fallback so its order is seen.
+        // The submitTrigger click is fire-and-forget, so poll for the order. The window outlasts
+        // the webhook fallback, so its order is seen.
         const ORDER_CONFIRM_MAX_ATTEMPTS = 15;
         const ORDER_CONFIRM_INTERVAL_MS = 2000;
 
@@ -564,8 +530,7 @@ define(
                         orderExists = !!(result && result.orderExists);
                     }
                 } catch (error) {
-                    // Transient network error — treat as "not confirmed yet" and
-                    // keep polling until we either find the order or time out.
+                    // A network error counts as not confirmed yet; keep polling.
                 }
 
                 if (orderExists) {
@@ -613,7 +578,6 @@ define(
         function magentoRefusedCapturedCart(text) {
             return (text || '').indexOf(CAPTURED_CART_REFUSED_CODE) !== -1;
         }
-        // ────────────────────────────────────────────────────────────────────
 
         function onCompleteCheckout() {
             psCheckout.onComplete( async function (paymentData) {
@@ -669,11 +633,9 @@ define(
                     payerDiscount: data.feeSplit.payerDiscount,
                     payerTotalFees: data.feeSplit.payerTotalFees,
                     initPayer: data.meta.initPayer,
-                    // Recorded on the quote so the re-charge guard can detect an
-                    // already-paid cart even if placeOrder fails to create the order.
+                    // Lets the re-charge guard detect a paid cart even if placeOrder fails.
                     paymentId: pid,
-                    // Gates the capture snapshot: only a confirmed capture pins
-                    // paid totals after Magento collects on placeOrder.
+                    // Only a confirmed capture pins the paid totals on placeOrder.
                     paymentStatus: data.status,
                     // False when this window was priced from browser totals.
                     // The snapshot on the quote is then from an earlier open.
@@ -727,22 +689,11 @@ define(
                     return;
                 }
 
-                // The click above is fire-and-forget: it does not guarantee Magento
-                // actually placed an order. Confirm the order exists for the paid
-                // quote and, if it never appears within the window, reassure the
-                // shopper their order is being finalized (and not to pay again).
-                // On success Magento redirects and this is aborted.
+                // The click does not prove Magento placed the order, so confirm it. On success Magento
+                // redirects and this stops.
                 confirmOrderPlaced(qid, pid, showFinalizingModal, showErrorModal);
             });
         }
-
-        /*
-        function onCompleteCheckout() {
-            psCheckout.onComplete(function () {
-                $(submitTrigger).click();
-            });
-        }
-            */
 
         function disableButton() {
             $(psButtonSel).prop("disabled", true)
@@ -761,9 +712,7 @@ define(
                 if (hideCheckout) {
                     document.getElementById("ps_checkout").style.display = "none";
                 }
-                // Don't re-enable the button out from under an in-flight
-                // getquotedata fetch — loadCheckout()'s own .finally() is
-                // responsible for re-enabling once that resolves.
+                // During a getquotedata fetch, loadCheckout() re-enables the button itself.
                 if (areAllTermsSelected() && !loadCheckoutInFlight) {
                     $(psButtonSel).prop("disabled", false)
                 }
@@ -863,7 +812,7 @@ define(
                 template: 'PayStand_PayStandMagento/payment/paystandmagento-directpost'
             },
 
-            // this function ins binded to actual Paystand button to trigger checkout
+            // Bound to the Paystand button to open checkout.
             loadCheckout: function () {
                 // Same gate Magento's Place Order button runs, applied before we charge
                 // instead of after. The validators show their own inline messages.
@@ -880,7 +829,7 @@ define(
                 onCompleteCheckout();
             },
 
-            // this function ins binded to actual Paystand button to trigger checkout
+            // Runs after the terms block renders.
             watchAgreement: function () {
                 InitiateSpeedDetection()
                 watchAgreement();

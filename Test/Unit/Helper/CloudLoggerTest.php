@@ -9,20 +9,11 @@ use Magento\Framework\App\ObjectManager;
 use Magento\Store\Model\ScopeInterface;
 
 /**
- * Unit tests for CloudLogger helper.
- *
- * Because CloudLogger uses static methods + ObjectManager (a Magento anti-pattern),
- * we test the observable public contracts:
- *   - Constants are defined and non-empty
- *   - ship() does not throw under any circumstances (fire-and-forget guarantee)
- *   - getEnv() returns correct values for sandbox/live config
- *   - getMerchantId() falls back to publishable_key when customer_id is absent
- *   - PLUGIN_VERSION and INGEST_URL are correct
+ * Tests for CloudLogger. It uses static methods and ObjectManager, so these tests check
+ * the public contract: constants, ship() never throws, env and merchant id fallbacks.
  */
 class CloudLoggerTest extends TestCase
 {
-    // ── Constants ────────────────────────────────────────────────────────────
-
     public function testIngestUrlIsHttps(): void
     {
         $this->assertStringStartsWith('https://', CloudLogger::INGEST_URL);
@@ -70,13 +61,9 @@ class CloudLoggerTest extends TestCase
         $this->assertCount(count($events), array_unique($events), 'Event type constants must be unique');
     }
 
-    // ── ship() never throws ───────────────────────────────────────────────────
-
     public function testShipDoesNotThrowWithValidContext(): void
     {
-        // CloudLogger::ship() is fire-and-forget — it must NEVER throw,
-        // even if the remote endpoint is unreachable. ObjectManager will fail
-        // in a unit test context (no DI container), but ship() must still not throw.
+        // ship() must not throw, even though ObjectManager fails with no DI container.
         $threw = false;
         try {
             CloudLogger::ship(CloudLogger::EVENT_SAVEPAYMENTDATA_SUCCESS, [
@@ -114,7 +101,7 @@ class CloudLoggerTest extends TestCase
 
     public function testShipTruncatesLongErrorMessage(): void
     {
-        // error_message longer than 512 chars must be silently truncated, not throw
+        // An error_message over 512 chars is truncated, not thrown.
         $longMessage = str_repeat('x', 1000);
         $threw = false;
         try {
@@ -127,14 +114,9 @@ class CloudLoggerTest extends TestCase
         $this->assertFalse($threw, 'CloudLogger::ship() must not throw for long error messages');
     }
 
-    // ── Payload shape ────────────────────────────────────────────────────────
-
     public function testShipPayloadContainsPluginVersion(): void
     {
-        // Intercept the cURL call by temporarily overriding INGEST_URL to a local
-        // server we control — not feasible in pure unit test without reflection.
-        // Instead, check the constant tracks composer.json, so every log event
-        // reports the version that was actually released.
+        // Every log event reports PLUGIN_VERSION, so it must match composer.json.
         $composer = json_decode(file_get_contents(__DIR__ . '/../../../composer.json'), true);
 
         $this->assertNotEmpty($composer['version'], 'composer.json must declare a version');
@@ -146,9 +128,7 @@ class CloudLoggerTest extends TestCase
     }
 
     /**
-     * The Luma renderer reports its own plugin_version to the log endpoint, and it
-     * has drifted from composer.json before — a released bundle claiming the prior
-     * version makes log events attribute a bug to the wrong release.
+     * The Luma renderer sends its own plugin_version, so it must match composer.json.
      */
     public function testLumaRendererReportsTheSameVersion(): void
     {
@@ -165,8 +145,8 @@ class CloudLoggerTest extends TestCase
     }
 
     /**
-     * Magento refuse of a captured cart must not show "Finalizing Your Order".
-     * The poll timeout must treat that checkout error as a real failure.
+     * When Magento refuses a captured cart, the poll timeout treats it as a failure and
+     * does not show "Finalizing Your Order".
      */
     public function testLumaPollDoesNotFinalizeWhenMagentoRefusedCapturedCart(): void
     {
@@ -181,8 +161,7 @@ class CloudLoggerTest extends TestCase
     }
 
     /**
-     * setup_version drives whether Magento runs the module's schema patches, so a
-     * stale value can leave a released column uncreated.
+     * Magento runs the schema patches based on setup_version, so a stale value skips them.
      */
     public function testModuleXmlDeclaresTheSameVersion(): void
     {
@@ -198,7 +177,6 @@ class CloudLoggerTest extends TestCase
 
     public function testErrorMessageIsTruncatedTo512Chars(): void
     {
-        // Verify truncation logic directly via reflection on the payload builder
         $input    = str_repeat('a', 600);
         $expected = str_repeat('a', 512);
         $actual   = substr($input, 0, 512);
@@ -206,11 +184,8 @@ class CloudLoggerTest extends TestCase
         $this->assertSame(512, strlen($actual));
     }
 
-    // ── getEnv() logic ───────────────────────────────────────────────────────
-
     /**
-     * getEnv() is private — test it indirectly through the env constant logic:
-     * 'co' for sandbox (use_sandbox=1), 'com' for live (use_sandbox=0).
+     * getEnv() is private: 'co' for sandbox (use_sandbox=1), 'com' for live.
      */
     public function testEnvValueForSandboxIsCoString(): void
     {
@@ -230,8 +205,6 @@ class CloudLoggerTest extends TestCase
         }
     }
 
-    // ── Config path constants ─────────────────────────────────────────────────
-
     public function testConfigPathsFollowMagentoConvention(): void
     {
         foreach ([
@@ -247,13 +220,9 @@ class CloudLoggerTest extends TestCase
         }
     }
 
-    // ── getMerchantId() fallback ──────────────────────────────────────────────
-
     public function testMerchantIdFallbackLogicPreferscustomerId(): void
     {
-        // getMerchantId() is private — we test the contract via the method's
-        // documented behavior: customer_id takes priority over publishable_key.
-        // If both are set, customer_id wins.
+        // getMerchantId() is private. customer_id takes priority over publishable_key.
         $customerId     = 'cust-abc';
         $publishableKey = 'pub-xyz';
 
@@ -280,8 +249,6 @@ class CloudLoggerTest extends TestCase
         $result = $customerId ?: $publishableKey;
         $this->assertSame('', $result);
     }
-
-    // ── INGEST_URL format ─────────────────────────────────────────────────────
 
     public function testIngestUrlContainsIngestPath(): void
     {

@@ -6,12 +6,8 @@ use PayStand\PayStandMagento\Model\CheckoutQuoteMemo;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Unit tests for Model\CheckoutQuoteMemo.
- *
- * The memo exists so the success validator can still name the quote after
- * Magento has nulled it. Its whole contract is "first non-empty id wins" — a
- * last-write-wins memo would hand back the replacement cart's id instead of the
- * one that was ordered, and the repair would restore the wrong order.
+ * Tests for Model\CheckoutQuoteMemo. It keeps the first quote id it sees, so the success
+ * validator can name the ordered quote after Magento nulls it.
  */
 class CheckoutQuoteMemoTest extends TestCase
 {
@@ -36,8 +32,7 @@ class CheckoutQuoteMemoTest extends TestCase
     }
 
     /**
-     * getQuote() nulls the session's quote id and then creates a replacement
-     * cart, so a later id is the wrong one to keep.
+     * getQuote() nulls the quote id and creates a new cart, so a later id is the wrong one.
      */
     public function testLaterQuoteIdsDoNotDisplaceTheFirst(): void
     {

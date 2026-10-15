@@ -53,14 +53,10 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
     }
 
     /**
-     * Report the shipping selection either side of the recollection, so a live
-     * failure shows exactly when the rate disappeared.
+     * Logs the shipping selection before and after the recollect, to show when a rate is lost.
      *
      * @param \Magento\Quote\Model\Quote $quote
      * @param string $before describe() output taken before recollecting
-     * @param bool $restored Whether the selection had to be put back
-     * @param bool $retryFailed Whether the re-requested rates came back empty too
-     * @return void
      */
     private function shipShippingBreadcrumb($quote, string $before, bool $restored, bool $retryFailed): void
     {
@@ -153,23 +149,13 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
                 ]);
             }
 
-            // A snapshot from an earlier window open describes a cart the shopper
-            // may have changed since. Drop it before pricing: if this request
-            // fails, the browser opens the window from its own totals and
-            // nothing restamps.
+            // Drop the snapshot of an earlier open before pricing. If this request fails, the
+            // browser prices the window itself and nothing restamps.
             $this->captureSnapshot->clearCheckoutIntent($quote);
             $this->restoreOwnedCustomerAddress($quote);
 
-            // Force a fresh totals recalculation rather than trusting whatever was
-            // last collected on the quote (e.g. before an address/shipping change
-            // settled). collectTotals() short-circuits if the quote's
-            // totals_collected_flag is already set (see Quote::collectTotals()),
-            // so the flag must be cleared first or a quote that was already
-            // collected earlier in the request lifecycle would return stale data
-            // here despite this call.
-            //
-            // Bracketed because that recollection can clear the shipping selection
-            // when a rate re-request returns nothing (see QuoteShipping).
+            // Clear totals_collected_flag so collectTotals() recalculates. The recollect can
+            // clear the shipping selection, so QuoteShipping brackets it.
             $shipping = $this->quoteShipping->recollectPreservingShipping($quote, 'getquotedata');
 
             $this->shipShippingBreadcrumb(
@@ -270,10 +256,8 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
                 'customer' => $customerData
             ];
 
-            // The Paystand window locks the amount this response returns. Record
-            // that cart now, before another browser can change the quote. The
-            // payment save keeps this snapshot instead of photographing the
-            // quote again after the window has already charged.
+            // The window charges the amount this response returns, so the cart is stamped now,
+            // before another browser can change it. The payment save keeps this snapshot.
             $this->captureSnapshot->stampCheckoutIntent($quote);
 
             return $result->setData($response);
@@ -306,12 +290,7 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
                 ]
             ]);
         } catch (\Throwable $e) {
-            // Catches \Error/\TypeError/\DivisionByZeroError-class failures that
-            // \Exception above does not — e.g. from a misbehaving total collector
-            // invoked via collectTotals(), which iterates every registered
-            // collector rather than just this module's own code. Without this,
-            // such a failure would produce an uncaught fatal instead of the JSON
-            // error response the JS caller's .catch() depends on.
+            // \Error from any total collector, so the browser still gets a JSON error response.
             $this->logger->error('[Paystand] Unexpected throwable: ' . $e->getMessage());
             return $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_INTERNAL_ERROR)->setData([
                 'success' => false,
