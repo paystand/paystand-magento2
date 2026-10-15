@@ -14,6 +14,7 @@ use PayStand\PayStandMagento\Exception\CapturedCartChangedException;
 use PayStand\PayStandMagento\Helper\CaptureSnapshot;
 use PayStand\PayStandMagento\Helper\CloudLogger;
 use PayStand\PayStandMagento\Model\Config\Source\PaymentStatus;
+use PayStand\PayStandMagento\Model\PaymentAmountGate;
 
 /**
  * Webhook Receiver Controller for Paystand
@@ -105,6 +106,9 @@ class Paystand extends \Magento\Framework\App\Action\Action
     /** @var \PayStand\PayStandMagento\Helper\CaptureSnapshot */
     private $captureSnapshot;
 
+    /** @var PaymentAmountGate */
+    private $amountGate;
+
     /**
      * Why the last createOrderFromQuote() failed. 'terminal' means Magento rejected
      * the cart itself, so retrying the same cart fails the same way.
@@ -135,7 +139,8 @@ class Paystand extends \Magento\Framework\App\Action\Action
         CartManagementInterface $cartManagement,
         LockManagerInterface $lockManager,
         \PayStand\PayStandMagento\Helper\QuoteShipping $quoteShipping,
-        \PayStand\PayStandMagento\Helper\CaptureSnapshot $captureSnapshot
+        \PayStand\PayStandMagento\Helper\CaptureSnapshot $captureSnapshot,
+        PaymentAmountGate $amountGate
     ) {
         $this->_logger = $logger;
         $this->_request = $request;
@@ -154,6 +159,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
         $this->lockManager = $lockManager;
         $this->quoteShipping = $quoteShipping;
         $this->captureSnapshot = $captureSnapshot;
+        $this->amountGate = $amountGate;
         $this->updateOrderOn = $this->scopeConfig->getValue(self::UPDATE_ORDER_ON, self::STORE_SCOPE);
         parent::__construct($context);
     }
@@ -401,6 +407,18 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 return $result;
             }
 
+            // Do not release a hold or reopen a complete or closed order.
+            if (in_array($state, [Order::STATE_HOLDED, Order::STATE_COMPLETE, Order::STATE_CLOSED], true)) {
+                $this->_logger->debug(
+                    '>>>>> PAYSTAND-FINISH: Order is ' . $state . ', no further action needed'
+                );
+                $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
+                $result->setData([
+                    'success_message' => __('Order is %1, no further action needed', $state)
+                ]);
+                return $result;
+            }
+
             // If order is in processing and payment status is paid/posted, check if we need to create invoice
             if ($state == Order::STATE_PROCESSING && ($psPaymentStatus == $updateOrderOn || $psPaymentStatus == 'paid' || $psPaymentStatus == 'posted')) {
                 $this->_logger->debug(
@@ -424,12 +442,9 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 
                 // Invoice doesn't exist, create it
                 $this->_logger->debug('>>>>> PAYSTAND-PROCESSING: Creating transaction and invoice for paid order...');
-                
-                // Create Transaction for the Order
-                $this->createTransaction($order, json_decode($body, true)['resource']);
-                
-                // Automatically invoice order
-                $this->createInvoice($order);
+                $paymentResource = json_decode($body, true)['resource'];
+                $this->createTransaction($order, $paymentResource);
+                $this->invoiceWhenAmountMatches($order, $paymentResource);
                 
                 $this->_logger->debug('>>>>> PAYSTAND-PROCESSING: Transaction and invoice created successfully for order ' . $order->getIncrementId());
                 
@@ -484,12 +499,9 @@ class Paystand extends \Magento\Framework\App\Action\Action
             // Only create transaction and invoice when the payment is on paid/posted status
             if ($psPaymentStatus == $updateOrderOn) {
                 $this->_logger->debug(">>>>> PAYSTAND-PROCESSING: Payment status matches configured updateOrderOn ('{$updateOrderOn}'), creating transaction and invoice...");
-                
-                // Create Transaction for the Order
-                $this->createTransaction($order, json_decode($body, true)['resource']);
-                
-                // Automatically invoice order
-                $this->createInvoice($order);
+                $paymentResource = json_decode($body, true)['resource'];
+                $this->createTransaction($order, $paymentResource);
+                $this->invoiceWhenAmountMatches($order, $paymentResource);
                 
                 $this->_logger->debug(">>>>> PAYSTAND-PROCESSING: Transaction and invoice created successfully for order " . $order->getIncrementId());
             } else {
@@ -679,10 +691,9 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 [\Magento\Sales\Model\Order\Payment\Transaction::RAW_DETAILS => $paymentData]
             );
 
-            // Formated price
-            $formatedPrice = $order->getBaseCurrency()->formatTxt(
-                $order->getGrandTotal()
-            );
+            $charged = $this->amountGate->displayAmount($paymentData, $order->getGrandTotal());
+            $chargedCurrency = strtoupper(trim((string)($paymentData['currency'] ?? $order->getOrderCurrencyCode())));
+            $formatedPrice = trim($chargedCurrency . ' ' . number_format($charged, 2, '.', ''));
 
             $paystandPaymentInfo = $this->retrievePaystandPaymentInfo($paymentData);
             $message = sprintf(
@@ -741,6 +752,52 @@ class Paystand extends \Magento\Framework\App\Action\Action
             $paymentInfo = [];
         }
         return $paymentInfo;
+    }
+
+    /**
+     * Invoice only when Paystand's amount matches the order total. Otherwise hold.
+     *
+     * @param \Magento\Sales\Model\Order $order
+     * @param array<string, mixed> $paymentData
+     * @return \Magento\Sales\Model\Order\Invoice|null
+     */
+    private function invoiceWhenAmountMatches($order, array $paymentData)
+    {
+        if (!$order || !$order->getId() || (string)$order->getState() === Order::STATE_HOLDED) {
+            return null;
+        }
+
+        // An invoiced order skips the check. createInvoice() returns its invoice.
+        if ($this->hasInvoice($order)) {
+            return $this->createInvoice($order);
+        }
+
+        $decision = $this->amountGate->decide(
+            $order->getGrandTotal(),
+            $order->getBaseGrandTotal(),
+            $order->getOrderCurrencyCode(),
+            $order->getBaseCurrencyCode(),
+            $order->getData('paystand_adjustment'),
+            true,
+            $paymentData
+        );
+        if ($decision['action'] !== PaymentAmountGate::ACTION_INVOICE) {
+            $this->amountGate->hold($order, $decision, (string)($paymentData['id'] ?? ''));
+            $this->_logger->warning(
+                '>>>>> PAYSTAND-AMOUNT-GATE: ' . $this->amountGate->comment($decision, (string)($paymentData['id'] ?? ''))
+            );
+            return null;
+        }
+
+        return $this->createInvoice($order);
+    }
+
+    /** @param \Magento\Sales\Model\Order $order */
+    private function hasInvoice($order): bool
+    {
+        $invoices = $this->_invoiceCollectionFactory->create()
+            ->addAttributeToFilter('order_id', ['eq' => $order->getId()]);
+        return (int)$invoices->count() > 0;
     }
 
     private function createInvoice($order)

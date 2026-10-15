@@ -84,6 +84,27 @@ class SavePaymentData extends Action
     const CAPTURED_STATUSES = PaymentStatus::CAPTURED_STATUSES;
 
     /**
+     * Write only the Paystand columns. A full quote save would recollect totals.
+     *
+     * @param \Magento\Quote\Model\Quote $quote
+     */
+    private function persistPaystandMarkers($quote): void
+    {
+        $resource = $quote->getResource();
+        $connection = $resource->getConnection();
+        $connection->update(
+            $resource->getMainTable(),
+            [
+                'paystand_adjustment' => $quote->getData('paystand_adjustment'),
+                'paystand_payment_id' => $quote->getData('paystand_payment_id'),
+                'paystand_capture_status' => $quote->getData('paystand_capture_status'),
+                'paystand_capture_snapshot' => $quote->getData(CaptureSnapshot::QUOTE_FIELD),
+            ],
+            ['entity_id = ?' => (int)$quote->getId()]
+        );
+    }
+
+    /**
      * @param Context $context
      * @param LoggerInterface $logger
      * @param JsonFactory $resultJsonFactory
@@ -289,11 +310,9 @@ class SavePaymentData extends Action
                 // CloudLogger failure — silently ignored to protect payment flow
             }
 
-            // Copy paid money first. Recollect can drop shipping and rewrite
-            // grand_total; the snapshot must keep the captured amount.
-            $this->captureSnapshot->copyPaidRecollectAndStamp($quote, 'savepaymentdata');
-
-            $this->cartRepository->save($quote);
+            // Save without a recollect, so the paid totals and address stay as they are.
+            $this->captureSnapshot->stampPaidWithoutRecollect($quote);
+            $this->persistPaystandMarkers($quote);
 
             if ($isAdjustmentEnabled) {
                 $this->logger->info('SAVEPAYMENTDATA >>>>>> Saved paystand_adjustment to quote', [

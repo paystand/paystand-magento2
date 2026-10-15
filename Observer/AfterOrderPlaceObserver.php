@@ -17,6 +17,7 @@ use Magento\Sales\Model\ResourceModel\Order\Invoice\CollectionFactory;
 use Magento\Quote\Model\QuoteFactory;
 use Magento\Quote\Api\CartRepositoryInterface;
 use Magento\Sales\Api\OrderRepositoryInterface;
+use PayStand\PayStandMagento\Model\PaymentAmountGate;
 
 class AfterOrderPlaceObserver implements ObserverInterface
 {
@@ -70,6 +71,9 @@ class AfterOrderPlaceObserver implements ObserverInterface
      */
     protected $_orderRepository;
 
+    /** @var PaymentAmountGate */
+    private $amountGate;
+
     /**
      * PayStand configuration paths
      */
@@ -99,7 +103,8 @@ class AfterOrderPlaceObserver implements ObserverInterface
         CollectionFactory $invoiceCollectionFactory,
         QuoteFactory $quoteFactory,
         CartRepositoryInterface $cartRepository,
-        OrderRepositoryInterface $orderRepository
+        OrderRepositoryInterface $orderRepository,
+        PaymentAmountGate $amountGate
     ) {
         $this->_logger = $logger;
         $this->scopeConfig = $scopeConfig;
@@ -111,6 +116,7 @@ class AfterOrderPlaceObserver implements ObserverInterface
         $this->_quoteFactory = $quoteFactory;
         $this->_cartRepository = $cartRepository;
         $this->_orderRepository = $orderRepository;
+        $this->amountGate = $amountGate;
     }
 
     /**
@@ -389,7 +395,7 @@ class AfterOrderPlaceObserver implements ObserverInterface
 
                                                         // Only attempt to create invoice if transaction was successful
                                                         // Create invoice
-                                                        $invoice = $this->createInvoice($order);
+                                                        $invoice = $this->invoiceWhenAmountMatches($order, $paymentDataArray);
                     if ($invoice) {
                         $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER: Invoice created with ID: " . $invoice->getEntityId());
                                                         } else {
@@ -496,9 +502,9 @@ class AfterOrderPlaceObserver implements ObserverInterface
             );
 
             // Formated price
-            $formatedPrice = $order->getBaseCurrency()->formatTxt(
-                $order->getGrandTotal()
-            );
+            $charged = $this->amountGate->displayAmount($paymentData, $order->getGrandTotal());
+            $chargedCurrency = strtoupper(trim((string)($paymentData['currency'] ?? $order->getOrderCurrencyCode())));
+            $formatedPrice = trim($chargedCurrency . ' ' . number_format($charged, 2, '.', ''));
 
             // Create a message with information from essentialPaymentInfo
             $message = sprintf(
@@ -543,6 +549,52 @@ class AfterOrderPlaceObserver implements ObserverInterface
             $this->_logger->error('>>>>> PAYSTAND-EXCEPTION: ' . $e->getMessage());
             return null;
         }
+    }
+
+    /**
+     * Invoice only when the Paystand amount matches the order total, adjustment included.
+     *
+     * @param Order $order
+     * @param array<string, mixed> $paymentData
+     * @return \Magento\Sales\Model\Order\Invoice|null
+     */
+    private function invoiceWhenAmountMatches($order, array $paymentData)
+    {
+        if (!$order->getId() || (string)$order->getState() === Order::STATE_HOLDED) {
+            return null;
+        }
+
+        // An invoiced order skips the check. createInvoice() returns its invoice.
+        if ($this->hasInvoice($order)) {
+            return $this->createInvoice($order);
+        }
+
+        $decision = $this->amountGate->decide(
+            $order->getGrandTotal(),
+            $order->getBaseGrandTotal(),
+            $order->getOrderCurrencyCode(),
+            $order->getBaseCurrencyCode(),
+            $order->getData('paystand_adjustment'),
+            true,
+            $paymentData
+        );
+        if ($decision['action'] !== PaymentAmountGate::ACTION_INVOICE) {
+            $this->amountGate->hold($order, $decision, (string)($paymentData['id'] ?? ''));
+            $this->_logger->warning(
+                '>>>>> PAYSTAND-AMOUNT-GATE: ' . $this->amountGate->comment($decision, (string)($paymentData['id'] ?? ''))
+            );
+            return null;
+        }
+
+        return $this->createInvoice($order);
+    }
+
+    /** @param Order $order */
+    private function hasInvoice($order): bool
+    {
+        $invoices = $this->_invoiceCollectionFactory->create()
+            ->addAttributeToFilter('order_id', ['eq' => $order->getId()]);
+        return (int)$invoices->count() > 0;
     }
 
     /**

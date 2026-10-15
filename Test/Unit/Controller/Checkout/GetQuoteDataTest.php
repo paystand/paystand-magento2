@@ -10,7 +10,10 @@ use PHPUnit\Framework\MockObject\MockObject;
 use Psr\Log\LoggerInterface;
 use Magento\Checkout\Model\Session as CheckoutSession;
 use Magento\Customer\Model\Session as CustomerSession;
+use Magento\Customer\Api\AddressRepositoryInterface;
 use Magento\Customer\Api\CustomerRepositoryInterface;
+use Magento\Customer\Api\Data\AddressInterface;
+use Magento\Customer\Api\Data\RegionInterface;
 use Magento\Framework\Controller\Result\JsonFactory;
 use Magento\Framework\Controller\Result\Json as JsonResult;
 use Magento\Quote\Model\Quote;
@@ -38,6 +41,9 @@ class GetQuoteDataTest extends TestCase
 
     /** @var array|null */
     private $captured;
+
+    /** @var AddressRepositoryInterface|MockObject */
+    private $addressRepository;
 
     protected function setUp(): void
     {
@@ -88,6 +94,9 @@ class GetQuoteDataTest extends TestCase
             ->onlyMethods(['stampCheckoutIntent', 'clearCheckoutIntent'])
             ->getMock();
         $this->set('captureSnapshot', $this->captureSnapshot);
+        $this->addressRepository = $this->getMockBuilder(AddressRepositoryInterface::class)
+            ->getMockForAbstractClass();
+        $this->set('addressRepository', $this->addressRepository);
     }
 
     /**
@@ -279,6 +288,125 @@ class GetQuoteDataTest extends TestCase
 
         $this->assertTrue($this->captured['success']);
         $this->assertSame(19.99, $this->captured['quote']['grand_total']);
+    }
+
+    /**
+     * Magento DI gives an optional argument its default, so it would always be null.
+     */
+    public function testAddressRepositoryIsARequiredConstructorArgument(): void
+    {
+        $parameter = null;
+        foreach ((new \ReflectionMethod(GetQuoteData::class, '__construct'))->getParameters() as $candidate) {
+            if ($candidate->getName() === 'addressRepository') {
+                $parameter = $candidate;
+            }
+        }
+
+        $this->assertNotNull($parameter);
+        $this->assertFalse($parameter->isOptional());
+        $this->assertFalse($parameter->allowsNull());
+    }
+
+    public function testRestoresTheSavedAddressOfTheQuoteCustomer(): void
+    {
+        $address = $this->buildChangedAddress(77);
+        $address->expects($this->once())->method('setCity')->with('Brooklyn');
+        $address->expects($this->once())->method('setRegionId')->with(43);
+        $address->expects($this->once())->method('setRegion')->with('New York');
+        $address->expects($this->once())->method('setPostcode')->with('11201');
+        $address->expects($this->once())->method('setCountryId')->with('US');
+        $address->expects($this->once())->method('setStreet')->with(['200 Court St']);
+        $this->addressRepository->expects($this->once())->method('getById')->with(77)
+            ->willReturn($this->buildSavedAddress(501));
+
+        $this->restore($this->buildCustomerQuote(501, $address));
+    }
+
+    public function testDoesNotApplyAnotherCustomersAddress(): void
+    {
+        $address = $this->buildChangedAddress(77);
+        $this->expectNoAddressWrites($address);
+        $this->addressRepository->method('getById')->willReturn($this->buildSavedAddress(999));
+
+        $this->restore($this->buildCustomerQuote(501, $address));
+    }
+
+    public function testDoesNotRestoreAGuestQuote(): void
+    {
+        $address = $this->buildChangedAddress(77);
+        $this->expectNoAddressWrites($address);
+        $this->addressRepository->expects($this->never())->method('getById');
+
+        $this->restore($this->buildCustomerQuote(null, $address));
+    }
+
+    /** @param Quote|MockObject $quote */
+    private function restore($quote): void
+    {
+        $method = new \ReflectionMethod(GetQuoteData::class, 'restoreOwnedCustomerAddress');
+        $method->setAccessible(true);
+        $method->invoke($this->controller, $quote);
+    }
+
+    /**
+     * @param int|null $customerId
+     * @param Address|MockObject $shippingAddress
+     * @return Quote|MockObject
+     */
+    private function buildCustomerQuote($customerId, $shippingAddress)
+    {
+        $quote = $this->getMockBuilder(Quote::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['getBillingAddress', 'getShippingAddress'])
+            ->addMethods(['getCustomerId'])
+            ->getMock();
+        $quote->method('getCustomerId')->willReturn($customerId);
+        $quote->method('getBillingAddress')->willReturn(null);
+        $quote->method('getShippingAddress')->willReturn($shippingAddress);
+        return $quote;
+    }
+
+    /** @return Address|MockObject */
+    private function buildChangedAddress(int $customerAddressId)
+    {
+        $address = $this->getMockBuilder(Address::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods([
+                'getCustomerAddressId', 'getCity', 'getRegionId', 'getPostcode', 'getStreet',
+                'setCity', 'setRegionId', 'setRegion', 'setPostcode', 'setCountryId', 'setStreet',
+            ])
+            ->getMock();
+        $address->method('getCustomerAddressId')->willReturn($customerAddressId);
+        $address->method('getCity')->willReturn('Boston');
+        $address->method('getRegionId')->willReturn(32);
+        $address->method('getPostcode')->willReturn('02110');
+        $address->method('getStreet')->willReturn(['1 Main St']);
+        return $address;
+    }
+
+    /** @return AddressInterface|MockObject */
+    private function buildSavedAddress(int $customerId)
+    {
+        $region = $this->getMockBuilder(RegionInterface::class)->getMockForAbstractClass();
+        $region->method('getRegion')->willReturn('New York');
+
+        $saved = $this->getMockBuilder(AddressInterface::class)->getMockForAbstractClass();
+        $saved->method('getCustomerId')->willReturn($customerId);
+        $saved->method('getCity')->willReturn('Brooklyn');
+        $saved->method('getRegionId')->willReturn(43);
+        $saved->method('getRegion')->willReturn($region);
+        $saved->method('getPostcode')->willReturn('11201');
+        $saved->method('getCountryId')->willReturn('US');
+        $saved->method('getStreet')->willReturn(['200 Court St']);
+        return $saved;
+    }
+
+    /** @param Address|MockObject $address */
+    private function expectNoAddressWrites($address): void
+    {
+        foreach (['setCity', 'setRegionId', 'setRegion', 'setPostcode', 'setCountryId', 'setStreet'] as $setter) {
+            $address->expects($this->never())->method($setter);
+        }
     }
 
     /**

@@ -4,6 +4,7 @@ namespace PayStand\PayStandMagento\Test\Unit\Controller\Webhook;
 
 use PayStand\PayStandMagento\Controller\Webhook\Paystand;
 use PayStand\PayStandMagento\Helper\CloudLogger;
+use PayStand\PayStandMagento\Model\PaymentAmountGate;
 use PHPUnit\Framework\TestCase;
 use PHPUnit\Framework\MockObject\MockObject;
 use Psr\Log\LoggerInterface;
@@ -514,6 +515,101 @@ class PaystandTest extends TestCase
         $this->controller->execute();
     }
 
+    // ── Amount gate ────────────────────────────────────────────────────────────
+
+    public function testMismatchedOrderStaysOnHoldAndNotInvoicedThroughPostedThenPaid(): void
+    {
+        $this->set('amountGate', new PaymentAmountGate());
+        $this->wireTransactionBuilder();
+        $invoiceService = $this->getMockBuilder(InvoiceService::class)->disableOriginalConstructor()->getMock();
+        $invoiceService->expects($this->never())->method('prepareInvoice');
+        $this->set('_invoiceService', $invoiceService);
+        $this->setupInvoiceCollection(0);
+
+        $status = 'posted';
+        $this->requestMock->method('getContent')->willReturnCallback(function () use (&$status) {
+            return $this->makeBody(['resource' => $this->paymentResource($status, '106.14')]);
+        });
+        $this->controller->method('getPaystandAccessToken')->willReturn('fake-token');
+        $this->controller->method('verifyPaystandEvent')->willReturn(true);
+        $this->setupQuoteIdMask();
+        $this->setupQuoteMock();
+
+        $order = $this->buildGatedOrderMock('new', 109.63);
+        $order->expects($this->once())->method('addCommentToStatusHistory');
+        $this->controller->method('findOrder')->willReturn($order);
+        $this->orderRepositoryMock->method('get')->willReturn($order);
+
+        $this->jsonResultMock->expects($this->exactly(2))
+            ->method('setHttpResponseCode')
+            ->with(200)
+            ->willReturnSelf();
+
+        $this->controller->execute();
+        $this->assertSame(Order::STATE_HOLDED, $order->getState());
+
+        $status = 'paid';
+        $this->controller->execute();
+        $this->assertSame(Order::STATE_HOLDED, $order->getState());
+    }
+
+    /**
+     * A late paid webhook must not reopen or hold a complete order.
+     */
+    public function testLeavesACompleteOrderAsItIs(): void
+    {
+        $this->set('updateOrderOn', 'paid');
+        $gate = $this->getMockBuilder(PaymentAmountGate::class)->onlyMethods(['decide', 'hold'])->getMock();
+        $gate->expects($this->never())->method('decide');
+        $gate->expects($this->never())->method('hold');
+        $this->set('amountGate', $gate);
+
+        $this->requestMock->method('getContent')
+            ->willReturn($this->makeBody(['resource' => $this->paymentResource('paid', '106.14')]));
+        $this->controller->method('getPaystandAccessToken')->willReturn('fake-token');
+        $this->controller->method('verifyPaystandEvent')->willReturn(true);
+        $this->setupQuoteIdMask();
+        $this->setupQuoteMock();
+
+        $order = $this->buildOrderMock(Order::STATE_COMPLETE);
+        $order->expects($this->never())->method('setState');
+        $order->expects($this->never())->method('save');
+        $this->controller->method('findOrder')->willReturn($order);
+        $this->orderRepositoryMock->method('get')->willReturn($order);
+
+        $this->jsonResultMock->expects($this->once())
+            ->method('setHttpResponseCode')
+            ->with(200)
+            ->willReturnSelf();
+
+        $this->controller->execute();
+    }
+
+    public function testInvoicedOrderIsNotCheckedOrHeld(): void
+    {
+        $gate = $this->getMockBuilder(PaymentAmountGate::class)->onlyMethods(['decide', 'hold'])->getMock();
+        $gate->expects($this->never())->method('decide');
+        $gate->expects($this->never())->method('hold');
+        $this->set('amountGate', $gate);
+
+        $invoice = $this->getMockBuilder(\Magento\Sales\Model\Order\Invoice::class)
+            ->disableOriginalConstructor()
+            ->getMock();
+        $invoiceRepository = $this->getMockBuilder(InvoiceRepositoryInterface::class)->getMockForAbstractClass();
+        $invoiceRepository->method('get')->with(9)->willReturn($invoice);
+        $this->set('_invoiceRepository', $invoiceRepository);
+        $this->setupInvoiceCollection(1, 9);
+
+        $method = new \ReflectionMethod(Paystand::class, 'invoiceWhenAmountMatches');
+        $method->setAccessible(true);
+
+        $this->assertSame($invoice, $method->invoke(
+            $this->controller,
+            $this->buildOrderMock(Order::STATE_PROCESSING),
+            $this->paymentResource('paid', '106.14')
+        ));
+    }
+
     // ── Throwable swallowing ───────────────────────────────────────────────────
 
     /**
@@ -672,5 +768,128 @@ class PaystandTest extends TestCase
         $orderMock->method('setStatus')->willReturnSelf();
         $orderMock->method('save')->willReturnSelf();
         return $orderMock;
+    }
+
+    /**
+     * Payment resource fields that createTransaction() and the amount gate read.
+     */
+    private function paymentResource(string $status, string $amount): array
+    {
+        return [
+            'id'                 => 'mp0m4r5x8ovwo0i1btgop38l',
+            'object'             => 'payment',
+            'status'             => $status,
+            'amount'             => $amount,
+            'currency'           => 'USD',
+            'settlementAmount'   => $amount,
+            'settlementCurrency' => 'USD',
+            'payerId'            => 'payer-1',
+            'sourceType'         => 'card',
+            'sourceId'           => 'card-1',
+            'feeSplit'           => ['subtotal' => $amount, 'payerTotal' => $amount, 'currency' => 'USD'],
+            'meta'               => ['source' => 'magento 2', 'quote' => 'test-quote-masked'],
+        ];
+    }
+
+    /**
+     * Order mock whose state follows setState() and hold().
+     */
+    private function buildGatedOrderMock(string $state, float $grandTotal): MockObject
+    {
+        $payment = $this->getMockBuilder(Order\Payment::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods([
+                'setLastTransId', 'setTransactionId', 'setAdditionalInformation',
+                'addTransactionCommentsToOrder', 'setParentTransactionId', 'save',
+            ])
+            ->getMock();
+        foreach (['setLastTransId', 'setTransactionId', 'setAdditionalInformation', 'setParentTransactionId', 'save'] as $method) {
+            $payment->method($method)->willReturnSelf();
+        }
+
+        $order = $this->getMockBuilder(Order::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods([
+                'getId', 'getState', 'getStatus', 'getIncrementId', 'getQuoteId',
+                'setState', 'setStatus', 'save', 'getPayment', 'getData',
+                'getGrandTotal', 'getBaseGrandTotal', 'getOrderCurrencyCode', 'getBaseCurrencyCode',
+                'canHold', 'hold', 'addCommentToStatusHistory',
+            ])
+            ->getMock();
+        $current = ['state' => $state, 'status' => $state];
+        $order->method('getId')->willReturn(1);
+        $order->method('getIncrementId')->willReturn('1000763084');
+        $order->method('getQuoteId')->willReturn(42);
+        $order->method('getPayment')->willReturn($payment);
+        $order->method('getData')->willReturn(null);
+        $order->method('getGrandTotal')->willReturn($grandTotal);
+        $order->method('getBaseGrandTotal')->willReturn($grandTotal);
+        $order->method('getOrderCurrencyCode')->willReturn('USD');
+        $order->method('getBaseCurrencyCode')->willReturn('USD');
+        $order->method('save')->willReturnSelf();
+        $order->method('getState')->willReturnCallback(function () use (&$current) {
+            return $current['state'];
+        });
+        $order->method('getStatus')->willReturnCallback(function () use (&$current) {
+            return $current['status'];
+        });
+        $order->method('setState')->willReturnCallback(function ($value) use (&$current, $order) {
+            $current['state'] = $value;
+            return $order;
+        });
+        $order->method('setStatus')->willReturnCallback(function ($value) use (&$current, $order) {
+            $current['status'] = $value;
+            return $order;
+        });
+        $order->method('canHold')->willReturnCallback(function () use (&$current) {
+            return $current['state'] !== Order::STATE_HOLDED;
+        });
+        $order->method('hold')->willReturnCallback(function () use (&$current, $order) {
+            $current['state'] = Order::STATE_HOLDED;
+            $current['status'] = Order::STATE_HOLDED;
+            return $order;
+        });
+        return $order;
+    }
+
+    /**
+     * Transaction builder chain used by createTransaction().
+     */
+    private function wireTransactionBuilder(): void
+    {
+        $transaction = $this->getMockBuilder(\Magento\Sales\Model\Order\Payment\Transaction::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['save', 'getTransactionId'])
+            ->getMock();
+        $transaction->method('save')->willReturnSelf();
+        $transaction->method('getTransactionId')->willReturn('mp0m4r5x8ovwo0i1btgop38l');
+
+        $builder = $this->getMockBuilder(BuilderInterface::class)->getMockForAbstractClass();
+        foreach (['setPayment', 'setOrder', 'setTransactionId', 'setAdditionalInformation', 'setFailSafe'] as $method) {
+            $builder->method($method)->willReturnSelf();
+        }
+        $builder->method('build')->willReturn($transaction);
+        $this->set('_builderInterface', $builder);
+    }
+
+    /**
+     * Invoice collection with the given number of invoices on the order.
+     */
+    private function setupInvoiceCollection(int $count, int $invoiceId = 0): void
+    {
+        $select = $this->getMockBuilder(\Magento\Framework\DB\Select::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['limit'])
+            ->getMock();
+        $select->method('limit')->willReturnSelf();
+
+        $collection = $this->getMockBuilder(\Magento\Sales\Model\ResourceModel\Order\Invoice\Collection::class)
+            ->disableOriginalConstructor()
+            ->getMock();
+        $collection->method('addAttributeToFilter')->willReturnSelf();
+        $collection->method('count')->willReturn($count);
+        $collection->method('getSelect')->willReturn($select);
+        $collection->method('getFirstItem')->willReturn(new \Magento\Framework\DataObject(['id' => $invoiceId]));
+        $this->invoiceCollectionFactoryMock->method('create')->willReturn($collection);
     }
 }

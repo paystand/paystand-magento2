@@ -16,7 +16,7 @@ use Magento\Store\Model\ScopeInterface;
 class CloudLogger
 {
     const INGEST_URL     = 'https://magento-plugin-logs.paystand-core-services.workers.dev/ingest';
-    const PLUGIN_VERSION = '3.7.4';
+    const PLUGIN_VERSION = '3.7.6';
 
     // Config paths
     const CONFIG_PUBLISHABLE_KEY = 'payment/paystandmagento/publishable_key';
@@ -64,6 +64,12 @@ class CloudLogger
     // Totals were pinned from a snapshot the webhook rescue wrote, which is the
     // cart the rescue found rather than a cart proven to be the one paid for.
     const EVENT_CAPTURE_PIN_UNVERIFIED = 'capture_pin_unverified';
+
+    // Paystand amount does not match the order total. Hold, do not invoice.
+    const EVENT_PAYMENT_AMOUNT_MISMATCH = 'payment_amount_mismatch';
+
+    // Paystand amount or currency could not be read. Hold, do not invoice.
+    const EVENT_PAYMENT_AMOUNT_UNVERIFIED = 'payment_amount_unverified';
 
     /**
      * Resolve the merchant's customer ID from store config.

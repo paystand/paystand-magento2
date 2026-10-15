@@ -47,6 +47,8 @@ class CloudLoggerTest extends TestCase
         $this->assertNotEmpty(CloudLogger::EVENT_CAPTURED_CART_REFUSED);
         $this->assertSame('captured_cart_refused', CloudLogger::EVENT_CAPTURED_CART_REFUSED);
         $this->assertSame('capture_snapshot_stamp_failed', CloudLogger::EVENT_CAPTURE_SNAPSHOT_STAMP_FAILED);
+        $this->assertSame('payment_amount_mismatch', CloudLogger::EVENT_PAYMENT_AMOUNT_MISMATCH);
+        $this->assertSame('payment_amount_unverified', CloudLogger::EVENT_PAYMENT_AMOUNT_UNVERIFIED);
     }
 
     public function testEventTypeConstantsAreUnique(): void
@@ -62,6 +64,8 @@ class CloudLoggerTest extends TestCase
             CloudLogger::EVENT_CAPTURE_SNAPSHOT_CORRUPT,
             CloudLogger::EVENT_CAPTURED_CART_REFUSED,
             CloudLogger::EVENT_CAPTURE_SNAPSHOT_STAMP_FAILED,
+            CloudLogger::EVENT_PAYMENT_AMOUNT_MISMATCH,
+            CloudLogger::EVENT_PAYMENT_AMOUNT_UNVERIFIED,
         ];
         $this->assertCount(count($events), array_unique($events), 'Event type constants must be unique');
     }

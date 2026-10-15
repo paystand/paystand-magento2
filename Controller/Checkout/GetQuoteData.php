@@ -12,6 +12,7 @@ use Magento\Framework\App\Action\HttpPostActionInterface;
 use Magento\Framework\Controller\Result\JsonFactory;
 use Magento\Checkout\Model\Session as CheckoutSession;
 use Magento\Customer\Model\Session as CustomerSession;
+use Magento\Customer\Api\AddressRepositoryInterface;
 use Magento\Customer\Api\CustomerRepositoryInterface;
 use Magento\Framework\Exception\NoSuchEntityException;
 use Magento\Framework\Exception\LocalizedException;
@@ -29,6 +30,7 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
     private LoggerInterface $logger;
     private QuoteShipping $quoteShipping;
     private CaptureSnapshot $captureSnapshot;
+    private AddressRepositoryInterface $addressRepository;
 
     public function __construct(
         JsonFactory $resultJsonFactory,
@@ -37,7 +39,8 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
         CustomerRepositoryInterface $customerRepository,
         LoggerInterface $logger,
         QuoteShipping $quoteShipping,
-        CaptureSnapshot $captureSnapshot
+        CaptureSnapshot $captureSnapshot,
+        AddressRepositoryInterface $addressRepository
     ) {
         $this->resultJsonFactory = $resultJsonFactory;
         $this->checkoutSession = $checkoutSession;
@@ -46,6 +49,7 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
         $this->logger = $logger;
         $this->quoteShipping = $quoteShipping;
         $this->captureSnapshot = $captureSnapshot;
+        $this->addressRepository = $addressRepository;
     }
 
     /**
@@ -79,6 +83,55 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
     }
 
     /**
+     * Restore quote addresses from the saved address they point at, if this customer owns it.
+     *
+     * @param \Magento\Quote\Model\Quote $quote
+     */
+    private function restoreOwnedCustomerAddress($quote): void
+    {
+        $customerId = (int)$quote->getCustomerId();
+        if ($customerId <= 0) {
+            return;
+        }
+        foreach ([$quote->getBillingAddress(), $quote->getShippingAddress()] as $address) {
+            if (!$address) {
+                continue;
+            }
+            $addressId = (int)$address->getCustomerAddressId();
+            if ($addressId <= 0) {
+                continue;
+            }
+            try {
+                $saved = $this->addressRepository->getById($addressId);
+            } catch (\Throwable $e) {
+                continue;
+            }
+            if ((int)$saved->getCustomerId() !== $customerId) {
+                continue;
+            }
+            $savedStreet = implode("\n", (array)$saved->getStreet());
+            $quoteStreet = implode("\n", (array)$address->getStreet());
+            $regionId = $saved->getRegionId();
+            $differs = (string)$address->getCity() !== (string)$saved->getCity()
+                || (string)$address->getRegionId() !== (string)$regionId
+                || (string)$address->getPostcode() !== (string)$saved->getPostcode()
+                || $quoteStreet !== $savedStreet;
+            if (!$differs) {
+                continue;
+            }
+            $address->setCity($saved->getCity());
+            $address->setRegionId($regionId);
+            $region = $saved->getRegion();
+            if ($region && method_exists($region, 'getRegion')) {
+                $address->setRegion($region->getRegion());
+            }
+            $address->setPostcode($saved->getPostcode());
+            $address->setCountryId($saved->getCountryId());
+            $address->setStreet($saved->getStreet());
+        }
+    }
+
+    /**
      * Execute action to get quote data
      *
      * @return \Magento\Framework\Controller\Result\Json
@@ -105,6 +158,7 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
             // fails, the browser opens the window from its own totals and
             // nothing restamps.
             $this->captureSnapshot->clearCheckoutIntent($quote);
+            $this->restoreOwnedCustomerAddress($quote);
 
             // Force a fresh totals recalculation rather than trusting whatever was
             // last collected on the quote (e.g. before an address/shipping change

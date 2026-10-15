@@ -200,11 +200,65 @@ class SavePaymentDataTest extends TestCase
         $source = file_get_contents(__DIR__ . '/../../../../Controller/Checkout/SavePaymentData.php');
 
         $this->assertStringContainsString(
+            'stampPaidWithoutRecollect($quote)',
+            $source
+        );
+        $this->assertStringContainsString('persistPaystandMarkers($quote)', $source);
+        $this->assertStringNotContainsString(
             "copyPaidRecollectAndStamp(\$quote, 'savepaymentdata')",
             $source
         );
         $this->assertStringNotContainsString('$this->captureSnapshot->paidBag', $source);
         $this->assertStringNotContainsString('$this->captureSnapshot->ensureStamped', $source);
         $this->assertStringNotContainsString('$this->quoteShipping->recollectPreservingShipping', $source);
+    }
+
+    /**
+     * grand_total and customer_email are on the quote but must not be written.
+     */
+    public function testPersistPaystandMarkersWritesOnlyThePaystandColumns(): void
+    {
+        $values = [
+            'paystand_adjustment' => '-3.00',
+            'paystand_payment_id' => 'mp0m4r5x8ovwo0i1btgop38l',
+            'paystand_capture_status' => 'posted',
+            CaptureSnapshot::QUOTE_FIELD => '{"grand_total":"106.14"}',
+            'grand_total' => '109.63',
+            'customer_email' => 'shopper@example.com',
+        ];
+
+        $connection = $this->getMockBuilder(\Magento\Framework\DB\Adapter\AdapterInterface::class)
+            ->getMockForAbstractClass();
+        $connection->expects($this->once())->method('update')->with(
+            'quote',
+            [
+                'paystand_adjustment' => '-3.00',
+                'paystand_payment_id' => 'mp0m4r5x8ovwo0i1btgop38l',
+                'paystand_capture_status' => 'posted',
+                'paystand_capture_snapshot' => '{"grand_total":"106.14"}',
+            ],
+            ['entity_id = ?' => 4277928]
+        )->willReturn(1);
+
+        $resource = $this->getMockBuilder(\Magento\Quote\Model\ResourceModel\Quote::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['getConnection', 'getMainTable'])
+            ->getMock();
+        $resource->method('getConnection')->willReturn($connection);
+        $resource->method('getMainTable')->willReturn('quote');
+
+        $quote = $this->getMockBuilder(\Magento\Quote\Model\Quote::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['getResource', 'getData', 'getId'])
+            ->getMock();
+        $quote->method('getResource')->willReturn($resource);
+        $quote->method('getId')->willReturn('4277928');
+        $quote->method('getData')->willReturnCallback(function ($key = '') use ($values) {
+            return $values[$key] ?? null;
+        });
+
+        $method = new \ReflectionMethod(SavePaymentData::class, 'persistPaystandMarkers');
+        $method->setAccessible(true);
+        $method->invoke($this->controller, $quote);
     }
 }

@@ -367,6 +367,16 @@ class CaptureSnapshot
     }
 
     /**
+     * Stamp the totals already on the quote. Does not recollect.
+     *
+     * @param mixed $quote Magento quote
+     */
+    public function stampPaidWithoutRecollect($quote): void
+    {
+        $this->ensureStamped($quote, $this->paidBag($quote));
+    }
+
+    /**
      * Copy paid Magento money, then recollect, then stamp the copy.
      * Recollect first would stamp a rewritten grand_total (3.7.1 discount bug).
      *
