@@ -11,25 +11,18 @@ use PayStand\PayStandMagento\Plugin\CapturedQuoteSubmit;
 use Psr\Log\LoggerInterface;
 
 /**
- * Records the cart Paystand captured and decides whether a later collect still
- * describes that cart.
- *
- * Magento placeOrder reloads the quote and calls collectTotals(). Rate rows often
- * live only in memory, so skipping collection after capture left validateBeforeSubmit
- * with no rate (shipping method is missing). This snapshot is persisted on the quote
- * so collect can run and the paid shipping + grand total can be put back when the
- * cart has not changed.
+ * Records the cart Paystand captured and checks whether a later collect still describes
+ * it. placeOrder recollects the quote, so the paid shipping and grand total are put back
+ * from this snapshot while the cart is unchanged.
  */
 class CaptureSnapshot
 {
     public const QUOTE_FIELD = 'paystand_capture_snapshot';
 
-    // Stamped by the shopper's own browser, from the cart on screen when the
-    // Paystand window opened. The window locks that amount; a later edit in
-    // another tab must not replace this hash. It is evidence of what was paid for.
+    // Stamped by the browser from the cart on screen when the window opened. It records
+    // what was paid for, so a later edit in another tab must not replace it.
     public const SOURCE_CHECKOUT = 'checkout';
-    // Stamped by the webhook rescue, up to 24h later, from whatever the cart
-    // holds now. The hash describes that cart, not the paid one, so comparing
+    // Stamped by the webhook rescue, up to 24h later, from the cart as it is then. Comparing
     // the cart against it proves nothing.
     public const SOURCE_RESCUE = 'rescue';
 
@@ -64,8 +57,7 @@ class CaptureSnapshot
     }
 
     /**
-     * Money confirmed taken. Gates the collect freeze, so a payment still in
-     * flight is never frozen.
+     * Money confirmed taken. Gates the collect freeze, so a payment in flight is not frozen.
      *
      * @param mixed $quote
      */
@@ -75,10 +67,8 @@ class CaptureSnapshot
     }
 
     /**
-     * Paystand reported a payment for this cart, whatever its status. Gates the
-     * submit refusal: a bank payment is still processing when checkout places the
-     * order, and the webhook rescue places processing payments too, so the cart
-     * must match what was paid for from the moment a payment exists.
+     * Paystand reported a payment for this cart, whatever its status. Gates the submit
+     * refusal, since checkout and the rescue both place processing payments.
      *
      * @param mixed $quote
      */
@@ -88,10 +78,8 @@ class CaptureSnapshot
     }
 
     /**
-     * Paystand reported a payment and Magento will build an order from it.
-     * Wider than isCaptured: ACH usually reaches the webhook rescue as
-     * processing, and that rescue places the order anyway. Gates the snapshot
-     * and the pin, so the order is booked at the amount the shopper was charged.
+     * A payment Magento will build an order from. Wider than isCaptured, since the rescue
+     * places ACH orders while processing. Gates the snapshot and the pin.
      *
      * @param mixed $quote
      */
@@ -117,9 +105,7 @@ class CaptureSnapshot
     }
 
     /**
-     * True while copyPaidRecollectAndStamp is running. The freeze must not
-     * short-circuit that recollect: capture markers are already set and the
-     * snapshot is not written yet.
+     * True while copyPaidRecollectAndStamp runs, so the freeze does not skip its recollect.
      */
     public function isStamping(): bool
     {
@@ -169,19 +155,12 @@ class CaptureSnapshot
     }
 
     /**
-     * Hash of visible items and destination. Street, item id, and region are
-     * omitted: Magento can rewrite those on save/load without the shopper
-     * changing the cart.
+     * Hash of visible items and destination. Street, item id and region are left out, since
+     * Magento can rewrite them on save or load. row_total is the base amount in cents, and
+     * normalization leans toward not refusing.
      *
-     * row_total carries what sku + qty cannot: a priced custom option and a
-     * different child of the same configurable. It is the base-currency figure
-     * rounded to cents, so a currency-rate import or a re-render cannot move it
-     * — only the goods can. Normalisation is deliberately lossy in the direction
-     * of not refusing: case and postcode punctuation are never a shopper's
-     * intent to change the destination.
-     *
-     * Changing anything here invalidates every stamp already written, so a
-     * change must ship with a plugin version bump. testGoldenHashVector pins it.
+     * A change here invalidates every stored stamp, so it needs a plugin version bump.
+     * testHashPartsGoldenVector pins it.
      *
      * @param array<int, array{sku:string,qty:string,row_total:string}> $items
      * @param array{city:string,postcode:string,country:string} $address
@@ -224,13 +203,7 @@ class CaptureSnapshot
     }
 
     /**
-     * One case rule for every hashed field. strtolower is byte-wise, so it
-     * leaves "MÜNCHEN" and "München" hashing differently.
-     */
-    /**
-     * Money as cents, so a display re-render or a decimal(20,4) reload cannot
-     * move the hash. Catalog price changes still move it; the epsilon drift
-     * check is what covers a price that moved without the cart changing.
+     * Money as cents, so a decimal(20,4) reload or a re-render cannot move the hash.
      *
      * @param mixed $value
      */
@@ -239,6 +212,10 @@ class CaptureSnapshot
         return number_format(round((float)$value, 2), 2, '.', '');
     }
 
+    /**
+     * One case rule for every hashed field. strtolower is byte-wise, so "MÜNCHEN" and
+     * "München" would hash differently.
+     */
     private static function fold(string $value): string
     {
         return function_exists('mb_strtolower')
@@ -374,8 +351,17 @@ class CaptureSnapshot
     }
 
     /**
-     * Copy paid Magento money, then recollect, then stamp the copy.
-     * Recollect first would stamp a rewritten grand_total (3.7.1 discount bug).
+     * Stamp the totals already on the quote. Does not recollect.
+     *
+     * @param mixed $quote Magento quote
+     */
+    public function stampPaidWithoutRecollect($quote): void
+    {
+        $this->ensureStamped($quote, $this->paidBag($quote));
+    }
+
+    /**
+     * Copies the paid amounts before the recollect, then stamps the copy.
      *
      * @param mixed $quote Magento quote
      */
@@ -395,9 +381,8 @@ class CaptureSnapshot
     }
 
     /**
-     * True when the snapshot was written by the rescue rather than by checkout.
-     * Its hash comes from the same quote the rescue is about to place, so a
-     * comparison against it always matches and proves nothing.
+     * True when the rescue wrote the snapshot. Its hash comes from the quote being placed,
+     * so it always matches and proves nothing.
      *
      * @param array<string, mixed> $payload
      */
@@ -407,17 +392,9 @@ class CaptureSnapshot
     }
 
     /**
-     * Record the cart the Paystand window is about to charge.
-     *
-     * GetQuoteData runs when the window opens, and the window keeps that
-     * amount even if another browser changes the quote before payment
-     * finishes. Stamping here is what lets the guard see that change.
-     * A quote that already has a reported payment is left alone: replacing
-     * its snapshot would record the cart as it is now, not the cart charged.
-     *
-     * Only the snapshot column is written. GetQuoteData recollects the quote
-     * to price it and has never saved that recollect; a full quote save here
-     * would persist it, shipping rate rows included.
+     * Records the cart the Paystand window is about to charge, so the guard sees a later
+     * change from another browser. A quote with a reported payment is left alone. Only the
+     * snapshot column is written; a full save would persist GetQuoteData's recollect.
      *
      * @param mixed $quote Magento quote
      * @return bool True when the quote row now holds this snapshot
@@ -440,9 +417,8 @@ class CaptureSnapshot
             $this->stamp($quote, null, self::SOURCE_CHECKOUT);
             $snapshot = (string)$quote->getData(self::QUOTE_FIELD);
             if ($this->writeUnpaidSnapshot($quote, $snapshot) === 0) {
-                // Nothing changed: the row already holds this cart, or another
-                // request recorded a payment since this quote was loaded. Keep
-                // whatever the row holds, so memory never outvotes the payment.
+                // No row changed: it already holds this cart, or a payment was recorded since load.
+                // Keep what the row holds.
                 $persisted = $this->persistedSnapshot($quote);
                 $quote->setData(self::QUOTE_FIELD, $persisted);
                 if ($persisted !== $snapshot) {
@@ -475,19 +451,11 @@ class CaptureSnapshot
     }
 
     /**
-     * Drop the snapshot an earlier window open left, before this open prices
-     * the cart.
+     * Drops the snapshot of an earlier window open before this open prices the cart. If
+     * pricing then fails, the payment save stamps from the paid cart instead.
      *
-     * If this GetQuoteData then fails, the browser opens the window from its
-     * own totals and nothing restamps. A snapshot kept from the earlier open
-     * describes a cart the shopper may have changed since, and refuse would
-     * block an order paid at the right amount. With no snapshot, the payment
-     * save stamps from the paid cart instead.
-     *
-     * A quote row that already carries a Paystand payment id is not cleared:
-     * its snapshot is the record of what was charged. The one exception is the
-     * payment the caller is reporting, which Paystand's webhook can record before
-     * the browser does (the payment save passes it; a window open never does).
+     * A row with a Paystand payment id keeps its snapshot, unless that id is the payment the
+     * caller reports: the webhook can record it before the browser does.
      *
      * @param mixed $quote Magento quote
      * @param string $reportedPaymentId The payment the caller is reporting, if any
@@ -521,10 +489,8 @@ class CaptureSnapshot
     }
 
     /**
-     * Write only the snapshot column, and only while the row has no Paystand
-     * payment id, or has the one the caller is reporting. The condition is on the
-     * row, not on this in-memory quote, so any other payment recorded since this
-     * quote was loaded still wins.
+     * Writes only the snapshot column, and only while the row has no payment id or the one
+     * the caller reports. The condition is on the row, so a payment recorded since load wins.
      *
      * @param mixed $quote Magento quote
      * @param string $reportedPaymentId The payment the caller is reporting, if any
@@ -547,10 +513,8 @@ class CaptureSnapshot
     }
 
     /**
-     * Replace the snapshot on this in-memory quote with the one its row holds now,
-     * or with none if the row has none. A copy loaded before checkout restamped the
-     * cart would otherwise be judged against, and saved back over, the newer
-     * snapshot. The in-memory snapshot stays when the row cannot be read.
+     * Replaces this copy's snapshot with the row's, or with none if the row has none, so a
+     * stale copy is not judged against or saved over a newer one. Kept if the row cannot be read.
      *
      * @param mixed $quote Magento quote
      */
@@ -577,14 +541,8 @@ class CaptureSnapshot
     }
 
     /**
-     * Keep the snapshot already on the quote, or write one if this is the
-     * first time the quote shows a reported payment.
-     *
-     * The snapshot from stampCheckoutIntent is the cart the window locked.
-     * Later saves must not overwrite it: a cart edited after the window
-     * opened is a different cart, and the guard has to be able to see that.
-     * A quote with no earlier snapshot (the browser never opened the window)
-     * is still stamped here, from the paid bag copied before recollect.
+     * Keeps the snapshot already on the quote, which is the cart the window locked. A quote
+     * with none (the window never opened) is stamped here from the paid totals.
      *
      * @param mixed $quote Magento quote
      * @param array<string, mixed>|null $paid Paid totals copied before recollect
@@ -645,9 +603,8 @@ class CaptureSnapshot
     }
 
     /**
-     * Re-read paystand_capture_snapshot from the quote row.
-     * Same pattern as preserveCaptureStatus: another request may have stamped
-     * since this in-memory quote was loaded.
+     * Re-reads paystand_capture_snapshot from the quote row, since another request may
+     * have stamped since load.
      *
      * @param mixed $quote Magento quote
      */
@@ -711,9 +668,8 @@ class CaptureSnapshot
     }
 
     /**
-     * The stamped hash, or '' when the payload carries none it can use.
-     * Callers that act on a mismatch need those two cases apart: a malformed
-     * stamp is not evidence the shopper changed the cart.
+     * The stamped hash, or '' when there is none it can use. A malformed stamp is not a
+     * changed cart, so callers tell the two apart.
      *
      * @param array<string, mixed> $payload
      */

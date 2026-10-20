@@ -46,9 +46,8 @@ class CapturedQuoteSubmitTest extends TestCase
     }
 
     /**
-     * A bank payment is still processing when checkout places the order, and the
-     * webhook rescue places processing payments too. The cart must still be the one
-     * paid for (PROD-16503: staging booked a changed cart through the rescue).
+     * A bank payment is still processing when checkout or the webhook rescue places the
+     * order. The cart must still be the one paid for.
      */
     public function testProcessingPaymentRefusesAChangedCart(): void
     {
@@ -158,10 +157,8 @@ class CapturedQuoteSubmitTest extends TestCase
     }
 
     /**
-     * The refuse runs before QuoteManagement::submit, so Magento has taken no stock.
-     * Its submit-failure listeners give stock back: on a store without MSI,
-     * CatalogInventory's revert added stock that was never deducted, once per refusal
-     * and per webhook retry of it.
+     * The refuse runs before QuoteManagement::submit, so no stock was taken. Magento's
+     * submit-failure listeners would give back stock that was never deducted.
      */
     public function testRefusalDoesNotRunMagentoSubmitFailureListeners(): void
     {
@@ -195,8 +192,7 @@ class CapturedQuoteSubmitTest extends TestCase
     }
 
     /**
-     * The rescue stamps from the quote it is about to place, so a match there
-     * is a tautology. Refusing on a mismatch would be equally meaningless.
+     * The rescue stamps the quote it is about to place, so its hash proves nothing either way.
      */
     public function testRescueStampedSnapshotIsNeverRefused(): void
     {
@@ -213,8 +209,7 @@ class CapturedQuoteSubmitTest extends TestCase
     }
 
     /**
-     * Three consumers identify the refusal. None may match on the wording,
-     * which a store can translate or edit.
+     * Consumers match the refusal by type and code, never by its translatable wording.
      */
     public function testRefusalIsTypedAndCarriesAnUntranslatedCode(): void
     {
@@ -229,8 +224,7 @@ class CapturedQuoteSubmitTest extends TestCase
     }
 
     /**
-     * The browser matches this string in rendered checkout text. Changing it
-     * silently stops the shopper being told the order will not exist.
+     * The browser matches this code in checkout text to tell the shopper no order was made.
      */
     public function testRefusalCodeMatchesTheBrowserConstant(): void
     {

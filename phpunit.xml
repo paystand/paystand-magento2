@@ -5,10 +5,7 @@
          colors="true"
          columns="max">
     <testsuites>
-        <!--
-            A directory, not a file list: a test file added without a matching
-            entry used to be skipped silently.
-        -->
+        <!-- A directory, not a file list, so a new test file is never skipped. -->
         <testsuite name="PayStand_Unit_Tests">
             <directory suffix="Test.php">Test/Unit</directory>
         </testsuite>

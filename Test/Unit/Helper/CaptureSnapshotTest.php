@@ -14,9 +14,8 @@ use Magento\Quote\Model\Quote\Item;
 use Psr\Log\LoggerInterface;
 
 /**
- * Unit tests for Helper\CaptureSnapshot — the paid-cart fingerprint persisted on
- * the quote so collectTotals can run after capture without losing the shipping
- * Magento dropped on reload.
+ * Tests for Helper\CaptureSnapshot, the paid-cart fingerprint stored on the quote so
+ * collectTotals can run after capture without losing the shipping.
  */
 class CaptureSnapshotTest extends TestCase
 {
@@ -110,8 +109,7 @@ class CaptureSnapshotTest extends TestCase
     }
 
     /**
-     * Fixed vector so a 3.7.4 key-order or normalisation change cannot mismatch
-     * in-flight 3.7.3 snapshots with a green suite.
+     * A fixed vector, so a key-order or normalization change cannot break stored snapshots.
      */
     public function testHashPartsGoldenVector(): void
     {
@@ -129,9 +127,8 @@ class CaptureSnapshotTest extends TestCase
     }
 
     /**
-     * row_total is what separates two carts that sku + qty cannot tell apart:
-     * a priced custom option and a different child of one configurable.
-     * Without it those hash equal and pin the wrong total.
+     * row_total separates carts that sku and qty cannot, such as a priced custom option
+     * or another child of the same configurable.
      */
     public function testHashChangesWhenRowTotalChanges(): void
     {
@@ -147,8 +144,7 @@ class CaptureSnapshotTest extends TestCase
     }
 
     /**
-     * row_total is money. A re-render or a decimal(20,4) reload must not move
-     * it, or every in-flight paid cart mismatches for no shopper action.
+     * A decimal(20,4) reload must not change the hash of a paid cart.
      */
     public function testHashRoundsRowTotalToCents(): void
     {
@@ -168,8 +164,7 @@ class CaptureSnapshotTest extends TestCase
     }
 
     /**
-     * hash() must read the base figure. row_total is the display-currency
-     * amount, so a nightly rate import would otherwise trip every paid cart.
+     * hash() reads the base amount. The display amount changes with each rate import.
      */
     public function testHashReadsBaseRowTotal(): void
     {
@@ -185,8 +180,7 @@ class CaptureSnapshotTest extends TestCase
     }
 
     /**
-     * A false refusal blocks an order the shopper already paid for, so the
-     * normalisation has to absorb spellings that are not a destination change.
+     * A false refusal blocks a paid order, so city letter case does not change the hash.
      */
     public function testHashFoldsMultibyteCityCase(): void
     {
@@ -251,9 +245,8 @@ class CaptureSnapshotTest extends TestCase
     }
 
     /**
-     * The two gates must stay separate. Freeze and refuse run on a confirmed
-     * capture; the snapshot and the pin also run on the processing rescue,
-     * which places an order.
+     * Freeze and refuse need a confirmed capture. The snapshot and the pin also run on the
+     * processing rescue, which places an order.
      */
     public function testIsPinnableCoversProcessingAndIsCapturedDoesNot(): void
     {
@@ -345,8 +338,7 @@ class CaptureSnapshotTest extends TestCase
                 && str_contains($message, '1001');
         }));
 
-        // Dedicated mock: quoteWith() already stubs getData, so a second
-        // getData stub would replace capture-field returns.
+        // quoteWith() already stubs getData, so this test builds its own mock.
         $quote = $this->getMockBuilder(Quote::class)
             ->disableOriginalConstructor()
             ->onlyMethods([
@@ -826,9 +818,8 @@ class CaptureSnapshotTest extends TestCase
     }
 
     /**
-     * Another request recorded a payment after this quote was loaded, so the
-     * row refuses the write. Memory takes the row's snapshot rather than keep
-     * a cart that was never charged.
+     * A payment was recorded after this quote loaded, so the row refuses the write and
+     * memory takes the row's snapshot.
      */
     public function testStampCheckoutIntentYieldsToAPaymentRecordedSinceLoad(): void
     {
@@ -843,8 +834,7 @@ class CaptureSnapshotTest extends TestCase
     }
 
     /**
-     * MySQL counts a row whose value did not change as not updated. The same
-     * cart opened twice without a clear in between is still written.
+     * MySQL reports an unchanged row as not updated. That still counts as written.
      */
     public function testStampCheckoutIntentTreatsAnUnchangedRowAsWritten(): void
     {
@@ -892,9 +882,8 @@ class CaptureSnapshotTest extends TestCase
     }
 
     /**
-     * Paystand's webhook can record the payment before the browser reports it. The
-     * payment save names that payment, and a quote holding it is still cleared, on
-     * the row as well as in memory (PROD-16503: staging refused a correctly paid cart).
+     * The webhook can record the payment before the browser reports it. A quote holding
+     * the reported payment is still cleared, on the row and in memory.
      */
     public function testClearCheckoutIntentClearsAQuoteHoldingTheReportedPayment(): void
     {
@@ -928,8 +917,7 @@ class CaptureSnapshotTest extends TestCase
     }
 
     /**
-     * The webhook rescue's copy was loaded before its wait. Checkout may have
-     * restamped the cart since; the row's snapshot is the one to judge by and keep.
+     * The rescue's copy is stale, and checkout may have restamped since. The row's snapshot wins.
      */
     public function testAdoptPersistedSnapshotTakesTheRowsSnapshot(): void
     {
@@ -995,9 +983,8 @@ class CaptureSnapshotTest extends TestCase
     }
 
     /**
-     * ACH reaches the webhook rescue as processing and the rescue places the
-     * order anyway. Stamping there is what lets the pin book that order at the
-     * amount charged.
+     * ACH reaches the rescue as processing and is placed anyway. The stamp lets the pin
+     * book that order at the amount charged.
      */
     public function testEnsureStampedStampsAProcessingRescue(): void
     {
@@ -1112,8 +1099,7 @@ class CaptureSnapshotTest extends TestCase
     }
 
     /**
-     * SavePaymentData and webhook must copy paid money before recollect.
-     * Recollect first would stamp a rewritten grand_total.
+     * The paid amounts are copied before recollect, or the stamp takes a rewritten grand_total.
      */
     public function testCopyPaidRecollectAndStampCopiesBeforeRecollect(): void
     {
@@ -1142,8 +1128,7 @@ class CaptureSnapshotTest extends TestCase
                 return ['before' => '', 'restored' => false, 'retryFailed' => false];
             });
 
-        // Dedicated mock: quoteWith() already stubs getData, so a second
-        // getData stub would replace capture-field returns and skip stamping.
+        // quoteWith() already stubs getData, so this test builds its own mock.
         $quote = $this->getMockBuilder(Quote::class)
             ->disableOriginalConstructor()
             ->onlyMethods([
@@ -1191,10 +1176,6 @@ class CaptureSnapshotTest extends TestCase
     }
 
     /**
-     * One item whose base and display row totals differ, as on any store whose
-     * presentation currency is not its base currency.
-     */
-    /**
      * Any reported payment id counts, whatever its status: a bank payment reaches
      * checkout still processing, with no capture status recorded.
      */
@@ -1209,6 +1190,9 @@ class CaptureSnapshotTest extends TestCase
         $this->assertFalse($snapshot->hasReportedPayment(null));
     }
 
+    /**
+     * One item whose base and display row totals differ, as in a multi-currency store.
+     */
     private function quoteForHash(float $baseRowTotal, float $rowTotal): Quote
     {
         $item = $this->getMockBuilder(Item::class)
@@ -1297,8 +1281,7 @@ class CaptureSnapshotTest extends TestCase
     }
 
     /**
-     * A virtual, unpaid quote whose getData/setData share $data, so a value
-     * the helper writes is the value it reads back.
+     * A virtual, unpaid quote whose getData and setData share $data.
      *
      * @param array<string, mixed> $data
      */
@@ -1376,9 +1359,7 @@ class CaptureSnapshotTest extends TestCase
         return $item;
     }
 
-    /**
-     * @param array<int, string> $street
-     */
+    /** @param array<int, string> $street */
     private function address(array $street = ['123 Main']): Address
     {
         $address = $this->getMockBuilder(Address::class)

@@ -15,11 +15,8 @@ use PayStand\PayStandMagento\Helper\CloudLogger;
 use Psr\Log\LoggerInterface;
 
 /**
- * Refuses placeOrder when the cart no longer matches the cart Paystand captured.
- * Magento would otherwise create an order at a different total than the charge.
- *
- * Quotes captured before paystand_capture_snapshot existed have no snapshot;
- * those still submit so a missing column cannot strand paid carts.
+ * Refuses placeOrder when the cart no longer matches the cart Paystand captured, so no
+ * order is made at a total other than the charge. A quote with no snapshot still submits.
  *
  * payment/paystandmagento/captured_cart_guard:
  * off      — do not check
@@ -55,8 +52,6 @@ class CapturedQuoteSubmit
     /**
      * Inspects and rethrows only, so it runs before Magento rather than wrapping it.
      *
-     * @param QuoteManagement $subject
-     * @param Quote $quote
      * @param array $orderData
      * @return void
      * @throws LocalizedException
@@ -68,7 +63,6 @@ class CapturedQuoteSubmit
 
     /**
      * @param Quote $quote
-     * @return void
      * @throws LocalizedException
      */
     private function refuseIfCartChanged($quote): void
@@ -175,11 +169,8 @@ class CapturedQuoteSubmit
             return;
         }
 
-        // Thrown before QuoteManagement::submit runs, so Magento has taken no stock
-        // and its submit-failure listeners have nothing to give back. Dispatching
-        // that event here made CatalogInventory add stock that was never deducted,
-        // once per refusal (stores without MSI). QuoteSubmitLoggerPlugin wraps this
-        // plugin and still logs the refusal.
+        // Thrown before QuoteManagement::submit, so no stock was taken and no submit-failure
+        // event is dispatched. QuoteSubmitLoggerPlugin still logs the refusal.
         throw new CapturedCartChangedException(
             new Phrase(
                 'The cart changed after payment was captured. Do not place this order.'

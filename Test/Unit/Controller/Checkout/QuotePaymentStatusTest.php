@@ -15,11 +15,8 @@ use Magento\Quote\Model\Quote;
 use Magento\Sales\Model\Order;
 
 /**
- * Unit tests for Controller\Checkout\QuotePaymentStatus::execute().
- *
- * The duplicate-payment guard endpoint checked before the Paystand widget opens.
- * Quote resolution + session authorization are delegated to QuoteAccess (mocked
- * here; covered directly by QuoteAccessTest).
+ * Tests for QuotePaymentStatus::execute(), the duplicate-payment check before the widget
+ * opens. QuoteAccess is mocked; QuoteAccessTest covers it.
  */
 class QuotePaymentStatusTest extends TestCase
 {
@@ -105,9 +102,7 @@ class QuotePaymentStatusTest extends TestCase
     }
 
     /**
-     * Unauthorized (or unknown) quote gets the identical generic "not paid"
-     * response: fail closed for information disclosure, fail open for the
-     * legitimate first payment.
+     * An unknown quote gets the generic "not paid" response. It leaks nothing and blocks no first payment.
      */
     public function testFailsClosedWhenQuoteNotAuthorized(): void
     {
@@ -178,9 +173,6 @@ class QuotePaymentStatusTest extends TestCase
         $this->assertFalse($this->captured['orderExists']);
     }
 
-    /**
-     * Masked guest ids pass straight through to QuoteAccess.
-     */
     public function testMaskedGuestQuoteIdIsPassedToQuoteAccess(): void
     {
         $maskedId = 'abc123maskedguestid456';
@@ -202,8 +194,7 @@ class QuotePaymentStatusTest extends TestCase
     // ── Session release ──────────────────────────────────────────────────────
 
     /**
-     * The guard runs while a payment is being taken, so it must hand the session
-     * back instead of holding it open until the response.
+     * The check runs while a payment is taken, so it must not hold the session open.
      */
     public function testClosesTheSessionOnTheAuthorizedPath(): void
     {
@@ -228,8 +219,7 @@ class QuotePaymentStatusTest extends TestCase
     }
 
     /**
-     * The close has to land after the session has been read for authorization
-     * and before the order lookup, which is the slow part of the request.
+     * The order lookup is the slow part of the request.
      */
     public function testClosesTheSessionAfterAuthorizingAndBeforeTheOrderLookup(): void
     {
@@ -273,9 +263,6 @@ class QuotePaymentStatusTest extends TestCase
         $this->assertFalse($this->captured['alreadyPaid']);
     }
 
-    /**
-     * @return int
-     */
     private function countWriteCloses(): int
     {
         return count(array_filter($this->sequence, function ($event) {
@@ -284,7 +271,6 @@ class QuotePaymentStatusTest extends TestCase
     }
 
     /**
-     * @param int $id
      * @param string|null $paymentId
      * @return Quote|MockObject
      */
@@ -299,10 +285,7 @@ class QuotePaymentStatusTest extends TestCase
         return $quoteMock;
     }
 
-    /**
-     * @param string $name
-     * @param mixed $value
-     */
+    /** @param mixed $value */
     private function set(string $name, $value): void
     {
         $class = new \ReflectionClass($this->controller);

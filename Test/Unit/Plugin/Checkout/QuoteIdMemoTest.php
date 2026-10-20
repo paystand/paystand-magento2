@@ -9,10 +9,8 @@ use PHPUnit\Framework\TestCase;
 use PHPUnit\Framework\MockObject\MockObject;
 
 /**
- * Unit tests for Plugin\Checkout\QuoteIdMemo.
- *
- * The plugin runs on every getQuote() call on the frontend, so its only jobs are
- * to capture the id before getQuote() can clear it and to stay out of the way.
+ * Tests for Plugin\Checkout\QuoteIdMemo. It runs on every frontend getQuote() call and
+ * records the quote id before getQuote() can clear it.
  */
 class QuoteIdMemoTest extends TestCase
 {
@@ -36,8 +34,7 @@ class QuoteIdMemoTest extends TestCase
     }
 
     /**
-     * The call that matters is the one before the quote goes inactive; the
-     * replacement cart's id seen afterwards must not overwrite it.
+     * The id seen before the quote goes inactive is kept; the new cart's id does not replace it.
      */
     public function testKeepsTheIdSeenBeforeTheSessionWasCleared(): void
     {

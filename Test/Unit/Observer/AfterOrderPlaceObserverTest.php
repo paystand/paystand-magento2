@@ -2,6 +2,7 @@
 
 namespace PayStand\PayStandMagento\Test\Unit\Observer;
 
+use PayStand\PayStandMagento\Model\PaymentAmountGate;
 use PayStand\PayStandMagento\Observer\AfterOrderPlaceObserver;
 use Magento\Framework\Event\Observer;
 use Magento\Framework\Event;
@@ -54,7 +55,8 @@ class AfterOrderPlaceObserverTest extends TestCase
             $this->getMockBuilder(CollectionFactory::class)->disableOriginalConstructor()->getMock(),
             $this->getMockBuilder(QuoteFactory::class)->disableOriginalConstructor()->getMock(),
             $this->cartRepositoryMock,
-            $this->getMockBuilder(OrderRepositoryInterface::class)->getMockForAbstractClass()
+            $this->getMockBuilder(OrderRepositoryInterface::class)->getMockForAbstractClass(),
+            new PaymentAmountGate($this->loggerMock)
         );
     }
 

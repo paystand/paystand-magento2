@@ -22,17 +22,9 @@ use Magento\Sales\Api\OrderRepositoryInterface;
 use Magento\Sales\Model\Order;
 
 /**
- * Direct unit tests for Paystand::createOrderFromQuote() — the server-side
- * order-creation fallback that rescues a paid-but-orderless quote.
- *
- * Unlike PaystandTest (which stubs this method to test execute()'s routing),
- * these tests run the REAL method: only findOrder (DB) and the Paystand status
- * read are stubbed, and the lock manager, cart repository/management, and order
- * repository are mocks.
- * Covered behaviours: locking, idempotent short-circuits, the
- * inactive-converted vs inactive-unconverted disambiguation, reactivation,
- * payment-method and guest-email backfill, the current-status re-check, and
- * failure paths.
+ * Tests for Paystand::createOrderFromQuote(), the server-side fallback that places the
+ * order for a paid quote that has none. The real method runs; only findOrder and the
+ * Paystand status read are stubbed.
  */
 class CreateOrderFromQuoteTest extends TestCase
 {
@@ -94,8 +86,7 @@ class CreateOrderFromQuoteTest extends TestCase
     }
 
     /**
-     * placeOrder collects totals itself; ours could clear the shipping method on
-     * the paid quote being rescued.
+     * placeOrder collects totals itself. A second collect could clear the shipping method.
      */
     public function testDoesNotRecollectTotalsBeforePlacingOrder(): void
     {
@@ -148,8 +139,7 @@ class CreateOrderFromQuoteTest extends TestCase
     }
 
     /**
-     * Inactive quote whose order shows up on the re-check: the client-side
-     * placeOrder won the race — return its order, never place a second one.
+     * The browser placed the order first. Return that order and do not place a second one.
      */
     public function testInactiveConvertedQuoteReturnsRacingOrder(): void
     {
@@ -168,9 +158,7 @@ class CreateOrderFromQuoteTest extends TestCase
     }
 
     /**
-     * Inactive quote, no order anywhere, AND a recorded Paystand payment: the
-     * exact paid-but-orderless case (cart merge / expiry after capture). Must
-     * be reactivated and placed, not silently skipped.
+     * An inactive quote with a recorded payment and no order is reactivated and placed.
      */
     public function testInactiveUnconvertedPaidQuoteIsReactivatedAndPlaced(): void
     {
@@ -196,9 +184,8 @@ class CreateOrderFromQuoteTest extends TestCase
     }
 
     /**
-     * An inactive quote with no order and NO payment evidence at all (neither a
-     * recorded marker nor a payment id on the webhook) must not be resurrected —
-     * that is a benign deactivation (cart merge / cron expiry / admin hold).
+     * With no payment marker and no webhook payment id, the quote was deactivated for
+     * another reason (cart merge, expiry, admin hold) and stays inactive.
      */
     public function testInactiveQuoteWithNoPaymentEvidenceIsNotReactivated(): void
     {
@@ -215,7 +202,7 @@ class CreateOrderFromQuoteTest extends TestCase
         $this->controller->method('findOrder')->willReturn(null);
         $this->cartManagementMock->expects($this->never())->method('placeOrder');
 
-        // No marker on the quote AND no payment id on the webhook payload.
+        // No marker on the quote and no payment id on the webhook.
         $this->assertNull($this->invoke($quote, 'posted', ''));
     }
 
@@ -243,8 +230,6 @@ class CreateOrderFromQuoteTest extends TestCase
         $this->assertSame($order, $this->invoke($quote));
     }
 
-    // ── payment-status gate ──────────────────────────────────────────────────
-
     /**
      * execute() admits 'failed' for order-state updates, so this method re-checks.
      */
@@ -258,9 +243,7 @@ class CreateOrderFromQuoteTest extends TestCase
     }
 
     /**
-     * 'processing' is the status the webhook actually carries while a capture
-     * settles, so excluding it would disable the rescue. Safe because invoicing is
-     * deferred until updateOrderOn.
+     * The webhook sends 'processing' while a capture settles. Invoicing waits for updateOrderOn.
      */
     public function testProcessingPaymentCreatesOrder(): void
     {
@@ -277,8 +260,7 @@ class CreateOrderFromQuoteTest extends TestCase
     }
 
     /**
-     * 'canceled' maps to STATE_CANCELED, not STATE_PROCESSING — it must never
-     * bring a new order into being.
+     * 'canceled' maps to STATE_CANCELED, so it never creates an order.
      */
     public function testCanceledPaymentNeverCreatesOrder(): void
     {
@@ -451,8 +433,7 @@ class CreateOrderFromQuoteTest extends TestCase
     }
 
     /**
-     * After placeOrder commits our quote copy is stale, so a later throw must not
-     * roll back over Magento's writes.
+     * After placeOrder commits, the quote copy is stale. A later throw must not roll it back.
      */
     public function testReactivationIsNotRolledBackAfterPlaceOrderCommitted(): void
     {
@@ -466,20 +447,19 @@ class CreateOrderFromQuoteTest extends TestCase
         $this->cartRepositoryMock->method('get')->willReturn($reloaded);
         $this->controller->method('findOrder')->willReturn(null);
 
-        // placeOrder commits, then the order reload blows up.
+        // placeOrder commits, then the order reload throws.
         $this->cartManagementMock->method('placeOrder')->willReturn(77);
         $this->orderRepositoryMock->method('get')
             ->willThrowException(new \RuntimeException('order reload failed'));
 
-        // Reactivated on the way in, and NOT flipped back afterwards.
+        // Reactivated on the way in and not reset afterwards.
         $reloaded->expects($this->once())->method('setIsActive')->with(true);
 
         $this->assertNull($this->invoke($quote));
     }
 
     /**
-     * A quote that was already active must not be touched by the rollback path
-     * when placeOrder fails — we only undo what we ourselves changed.
+     * The rollback undoes only our own change, so an already active quote stays active.
      */
     public function testActiveQuoteIsNotDeactivatedWhenPlaceOrderFails(): void
     {
@@ -495,8 +475,6 @@ class CreateOrderFromQuoteTest extends TestCase
 
         $this->assertNull($this->invoke($quote));
     }
-
-    // ── current payment status ───────────────────────────────────────────────
 
     /**
      * A card can fail seconds after its processing delivery, and the delivery the
@@ -813,8 +791,6 @@ class CreateOrderFromQuoteTest extends TestCase
         $this->assertSame($order, $this->invoke($quote, 'processing'));
     }
 
-    // ── reading the current status from Paystand ─────────────────────────────
-
     public function testStatusReadSendsTheTokenAndCustomerIdToTheLiveApi(): void
     {
         $curl = $this->statusCurl(200, '{"id":"pay-1","status":"Failed"}');
@@ -897,17 +873,10 @@ class CreateOrderFromQuoteTest extends TestCase
         $this->assertNull($this->readStatus(null, ''));
     }
 
-    // ── helpers ──────────────────────────────────────────────────────────────
-
     /**
-     * Invoke the protected createOrderFromQuote() on the real controller.
-     *
-     * Defaults to a successfully captured payment ('posted'), the only class of
-     * status for which an order may be created server-side.
+     * Calls the protected createOrderFromQuote(). A $paymentId of '' means the webhook has none.
      *
      * @param Quote|MockObject $quote
-     * @param string $status Paystand payment status on the webhook payload
-     * @param string $paymentId Payment id on the webhook payload ('' = absent)
      * @return Order|null
      */
     private function invoke($quote, string $status = 'posted', string $paymentId = 'pay-test-123')
@@ -923,12 +892,9 @@ class CreateOrderFromQuoteTest extends TestCase
     }
 
     /**
-     * placeOrder reloads the quote and collects its totals, which re-adjudicates
-     * cart price rules. The rescue runs precisely when the client-side save that
-     * normally records the capture markers did not, so it must record them itself
-     * or the discount the shopper paid on can be dropped from the order.
-     */
-    /**
+     * placeOrder recollects totals and reapplies cart price rules. The rescue records the
+     * capture markers itself, or the discount the shopper paid can drop from the order.
+     *
      * @dataProvider capturedStatusProvider
      */
     public function testCaptureMarkersAreRecordedBeforePlacingOrder(string $status): void
@@ -957,9 +923,6 @@ class CreateOrderFromQuoteTest extends TestCase
         $this->assertSame('pay-webhook-999', $written['paystand_payment_id'] ?? null);
     }
 
-    /**
-     * @return array
-     */
     public static function capturedStatusProvider(): array
     {
         return [
@@ -970,8 +933,7 @@ class CreateOrderFromQuoteTest extends TestCase
     }
 
     /**
-     * The ordering is load-bearing: placeOrder reloads the quote from the database,
-     * so a marker only reaches the totals freeze if it was saved before that call.
+     * placeOrder reloads the quote from the database, so the markers must be saved first.
      */
     public function testMarkersAreSavedBeforePlaceOrderIsCalled(): void
     {
@@ -1056,9 +1018,8 @@ class CreateOrderFromQuoteTest extends TestCase
     }
 
     /**
-     * ACH often reaches Magento createOrderFromQuote as processing, and
-     * placeOrder still runs. The markers and the snapshot must both be written
-     * on that path, marked as rescue-stamped, or the pin never engages there.
+     * ACH often arrives as processing and placeOrder still runs, so that path also writes
+     * the markers and the snapshot, marked as rescue-stamped.
      */
     public function testProcessingRescueRecordsCaptureMarkers(): void
     {
@@ -1089,10 +1050,8 @@ class CreateOrderFromQuoteTest extends TestCase
     }
 
     /**
-     * The delivery loaded its quote on arrival, then waited about 20s. The browser can
-     * record the payment in that time; the row's status must count, or saving the older
-     * copy as processing lets the refuse check skip a changed cart. On staging that
-     * booked order 000000353 for a cart nobody paid for (PROD-16503).
+     * The quote copy was loaded before a 20s wait, and the browser can record the payment
+     * meanwhile. The row's status must count, or the refuse check skips a changed cart.
      *
      * @dataProvider statusRecordedSinceLoadProvider
      */
@@ -1127,9 +1086,6 @@ class CreateOrderFromQuoteTest extends TestCase
         $this->assertSame($expected, $written['paystand_capture_status'] ?? null);
     }
 
-    /**
-     * @return array
-     */
     public static function statusRecordedSinceLoadProvider(): array
     {
         return [
@@ -1141,8 +1097,7 @@ class CreateOrderFromQuoteTest extends TestCase
     }
 
     /**
-     * The copy was loaded before the wait. The row's snapshot must be taken before
-     * stamping and saving, or an older snapshot is judged against and written back.
+     * The copy is stale, so the row's snapshot is read before stamping and saving.
      */
     public function testRescueTakesTheRowsSnapshotBeforeStampingAndSaving(): void
     {
@@ -1175,8 +1130,7 @@ class CreateOrderFromQuoteTest extends TestCase
     }
 
     /**
-     * failed never maps to Magento STATE_PROCESSING, so createOrderFromQuote
-     * returns before markers or Magento placeOrder.
+     * 'failed' never maps to STATE_PROCESSING, so the method returns before markers or placeOrder.
      */
     public function testNonCaptureStatusRecordsNoFreezeMarker(): void
     {
@@ -1200,10 +1154,8 @@ class CreateOrderFromQuoteTest extends TestCase
     }
 
     /**
-     * The quote handed INTO createOrderFromQuote — only its id is consulted
-     * before the method reloads a fresh copy from the repository.
+     * The quote passed in. Only its id is read before the method reloads the quote.
      *
-     * @param int $id
      * @return Quote|MockObject
      */
     private function buildInitialQuote(int $id)
@@ -1217,12 +1169,8 @@ class CreateOrderFromQuoteTest extends TestCase
     }
 
     /**
-     * The fresh quote returned by cartRepository->get() inside the lock.
-     *
-     * Defaults model a healthy, rescuable quote: active, 1 item, payment
-     * method assigned, customer email present, and a recorded Paystand
-     * payment (the signal that gates reactivation of an inactive quote).
-     * Override per scenario.
+     * The quote cartRepository->get() returns inside the lock. The defaults are a quote the
+     * rescue can place: active, one item, payment method, email, and a recorded payment.
      *
      * @param array $overrides active|items|customerEmail|billingEmail|shippingEmail|paymentMethod|paystandPaymentId
      * @return Quote|MockObject
@@ -1293,7 +1241,6 @@ class CreateOrderFromQuoteTest extends TestCase
     /**
      * The quote resource as the status re-read uses it: one row, one column.
      *
-     * @param string $status
      * @return object
      */
     /**
@@ -1369,11 +1316,7 @@ class CreateOrderFromQuoteTest extends TestCase
         return $address;
     }
 
-    /**
-     * @param int $id
-     * @param string $incrementId
-     * @return Order|MockObject
-     */
+    /** @return Order|MockObject */
     private function buildOrder(int $id, string $incrementId)
     {
         $order = $this->getMockBuilder(Order::class)
@@ -1385,9 +1328,8 @@ class CreateOrderFromQuoteTest extends TestCase
     }
 
     /**
-     * Set a (possibly inherited, possibly private) property on the controller.
+     * Sets a property on the controller, including inherited private ones.
      *
-     * @param string $name
      * @param mixed $value
      */
     private function set(string $name, $value): void
