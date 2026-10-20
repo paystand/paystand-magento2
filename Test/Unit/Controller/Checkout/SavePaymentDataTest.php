@@ -8,13 +8,8 @@ use PayStand\PayStandMagento\Model\Config\Source\PaymentStatus;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Unit tests for the capture-status gate in Controller\Checkout\SavePaymentData —
- * the client-side writer of paystand_capture_status, which decides whether a quote's
- * totals are frozen against cart price rules being re-adjudicated after capture.
- *
- * The gate is deliberately narrower than the re-charge lock: that keys on the payment
- * id alone, while freezing totals needs a status confirming the money was taken.
- * Freezing on anything weaker would strand a cart whose payment never completed.
+ * Tests for SavePaymentData. Totals freeze only on a captured status, so a cart
+ * whose payment never completed still collects.
  */
 class SavePaymentDataTest extends TestCase
 {
@@ -65,8 +60,7 @@ class SavePaymentDataTest extends TestCase
     }
 
     /**
-     * The regression the gate exists for: a payment id is recorded for any payment
-     * the widget reports, so a status-less request must leave the cart collecting.
+     * A payment id alone does not prove the money was taken.
      */
     public function testPaymentIdWithoutStatusDoesNotFreeze(): void
     {
@@ -92,8 +86,7 @@ class SavePaymentDataTest extends TestCase
     }
 
     /**
-     * Both writers of the column read the same list, so the gate must stay in step
-     * with the values the admin dropdown offers for updateOrderOn.
+     * The gate accepts the same statuses as the updateOrderOn dropdown.
      */
     public function testGateAcceptsExactlyTheSharedCapturedStatuses(): void
     {
@@ -145,8 +138,7 @@ class SavePaymentDataTest extends TestCase
     }
 
     /**
-     * getquotedata failed, so the window charged the browser's totals. The
-     * snapshot on the quote is from an earlier open and must not judge it.
+     * getquotedata failed, so the snapshot on the quote is from an earlier open.
      */
     public function testWindowPricedByTheBrowserDropsTheEarlierSnapshot(): void
     {
@@ -154,8 +146,7 @@ class SavePaymentDataTest extends TestCase
     }
 
     /**
-     * Paystand's webhook can record the payment before the browser reports it.
-     * The drop names this payment, so a quote already holding it is still cleared.
+     * The webhook can record this payment first. The drop must still clear the quote.
      */
     public function testTheDropNamesThePaymentThisRequestReports(): void
     {
@@ -175,10 +166,6 @@ class SavePaymentDataTest extends TestCase
         $this->dropFor(null, 0);
     }
 
-    /**
-     * The drop runs before this request records its own payment id, and names that
-     * payment, so only a quote holding a different payment keeps its snapshot.
-     */
     public function testEarlierSnapshotIsDroppedBeforeThePaymentIdIsRecorded(): void
     {
         $source = file_get_contents(__DIR__ . '/../../../../Controller/Checkout/SavePaymentData.php');
@@ -191,20 +178,73 @@ class SavePaymentDataTest extends TestCase
     }
 
     /**
-     * SavePaymentData must stamp through the helper so paidBag, recollect, and
-     * ensureStamped stay in one order. A naive paidBag substring would also
-     * match comments; assert the live call and the three old call sites only.
+     * SavePaymentData stamps through the helper and saves only the Paystand columns.
+     * Whole calls are matched, since a bare method name also matches comments.
      */
     public function testSavePaymentDataUsesCopyPaidHelper(): void
     {
         $source = file_get_contents(__DIR__ . '/../../../../Controller/Checkout/SavePaymentData.php');
 
         $this->assertStringContainsString(
+            'stampPaidWithoutRecollect($quote)',
+            $source
+        );
+        $this->assertStringContainsString('persistPaystandMarkers($quote)', $source);
+        $this->assertStringNotContainsString(
             "copyPaidRecollectAndStamp(\$quote, 'savepaymentdata')",
             $source
         );
         $this->assertStringNotContainsString('$this->captureSnapshot->paidBag', $source);
         $this->assertStringNotContainsString('$this->captureSnapshot->ensureStamped', $source);
         $this->assertStringNotContainsString('$this->quoteShipping->recollectPreservingShipping', $source);
+    }
+
+    /**
+     * grand_total and customer_email are on the quote but must not be written.
+     */
+    public function testPersistPaystandMarkersWritesOnlyThePaystandColumns(): void
+    {
+        $values = [
+            'paystand_adjustment' => '-3.00',
+            'paystand_payment_id' => 'mp0m4r5x8ovwo0i1btgop38l',
+            'paystand_capture_status' => 'posted',
+            CaptureSnapshot::QUOTE_FIELD => '{"grand_total":"106.14"}',
+            'grand_total' => '109.63',
+            'customer_email' => 'shopper@example.com',
+        ];
+
+        $connection = $this->getMockBuilder(\Magento\Framework\DB\Adapter\AdapterInterface::class)
+            ->getMockForAbstractClass();
+        $connection->expects($this->once())->method('update')->with(
+            'quote',
+            [
+                'paystand_adjustment' => '-3.00',
+                'paystand_payment_id' => 'mp0m4r5x8ovwo0i1btgop38l',
+                'paystand_capture_status' => 'posted',
+                'paystand_capture_snapshot' => '{"grand_total":"106.14"}',
+            ],
+            ['entity_id = ?' => 4277928]
+        )->willReturn(1);
+
+        $resource = $this->getMockBuilder(\Magento\Quote\Model\ResourceModel\Quote::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['getConnection', 'getMainTable'])
+            ->getMock();
+        $resource->method('getConnection')->willReturn($connection);
+        $resource->method('getMainTable')->willReturn('quote');
+
+        $quote = $this->getMockBuilder(\Magento\Quote\Model\Quote::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['getResource', 'getData', 'getId'])
+            ->getMock();
+        $quote->method('getResource')->willReturn($resource);
+        $quote->method('getId')->willReturn('4277928');
+        $quote->method('getData')->willReturnCallback(function ($key = '') use ($values) {
+            return $values[$key] ?? null;
+        });
+
+        $method = new \ReflectionMethod(SavePaymentData::class, 'persistPaystandMarkers');
+        $method->setAccessible(true);
+        $method->invoke($this->controller, $quote);
     }
 }

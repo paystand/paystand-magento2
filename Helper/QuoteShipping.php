@@ -6,9 +6,8 @@ use Psr\Log\LoggerInterface;
 use Magento\Quote\Model\Quote\Address\RateFactory;
 
 /**
- * Guards a quote's shipping selection across a totals recollection, and describes it
- * for telemetry. Magento clears the method and zeroes the amount when a rate
- * re-request returns nothing (Quote\Address::collectShippingRates).
+ * Keeps a quote's shipping selection through a totals recollect, and describes it for
+ * logs. Magento clears the method when a rate re-request returns nothing.
  */
 class QuoteShipping
 {
@@ -25,8 +24,8 @@ class QuoteShipping
     }
 
     /**
-     * Capture the shipping selection before a recollection.
-     * Null for virtual quotes or quotes with no shipping address — nothing to protect.
+     * The shipping selection before a recollect. Null for a virtual quote or one with no
+     * shipping address.
      *
      * @param \Magento\Quote\Model\Quote $quote
      * @return array|null
@@ -44,10 +43,7 @@ class QuoteShipping
 
         $method = $address->getShippingMethod();
 
-        // Capture the selected rate row too, not just the method. placeOrder's
-        // validator (QuoteValidator::validateBeforeSubmit) requires the method AND a
-        // matching rate — restoring the method alone leaves getShippingRateByCode()
-        // null and still fails placement.
+        // Keep the rate row too; validateBeforeSubmit needs the method and a matching rate.
         $rate = null;
         if ($method) {
             $rateModel = $address->getShippingRateByCode($method);
@@ -73,8 +69,7 @@ class QuoteShipping
     }
 
     /**
-     * Restore a shipping selection that a recollection cleared.
-     * Only puts back what the shopper already chose; never invents a method.
+     * Puts back a shipping selection that a recollect cleared. It never invents a method.
      *
      * @param \Magento\Quote\Model\Quote $quote
      * @param array|null $snapshot Result of snapshot() taken before recollecting
@@ -92,14 +87,11 @@ class QuoteShipping
             return false;
         }
 
-        // The validator needs both, so treat a dropped method OR a dropped rate row
-        // as something to restore — the amounts the shopper already paid, and a rate
-        // that getShippingRateByCode() can resolve for the method.
+        // The validator needs both, so a dropped method or a dropped rate row is restored.
         $current = (string)$address->getShippingMethod();
         $methodMissing = $current === '';
-        // A method picked after capture must go back too. Leaving it while the
-        // paid amount and description are written below builds an order that
-        // ships one service and charges for another.
+        // A method picked after capture goes back too, or the order ships one service and
+        // charges for another.
         $methodChanged = !$methodMissing && $current !== (string)$snapshot['method'];
         $rateMissing = !$address->getShippingRateByCode($snapshot['method']);
         if (!$methodMissing && !$methodChanged && !$rateMissing) {
@@ -111,8 +103,7 @@ class QuoteShipping
             $address->setShippingDescription($snapshot['description']);
         }
 
-        // Amounts come from the snapshot rather than the zeroed recollection: this is
-        // the shipping the shopper was charged, not a stale re-quote.
+        // The amounts come from the snapshot: the shipping the shopper was charged.
         $address->setShippingAmount($snapshot['amount']);
         $address->setBaseShippingAmount($snapshot['baseAmount']);
 
@@ -149,10 +140,8 @@ class QuoteShipping
     }
 
     /**
-     * Recollect a quote's totals while preserving the shopper's shipping selection.
-     * A recollection can clear the method when a rate re-request returns nothing, so
-     * this snapshots first, restores after, and — if it had to restore — re-arms the
-     * rate request and recollects once more so the restored method gets a live rate.
+     * Recollects totals and keeps the shipping selection. After a restore, it re-arms the
+     * rate request and recollects once more so the method gets a live rate.
      *
      * @param \Magento\Quote\Model\Quote $quote
      * @param string $context Where this ran, for the log lines
@@ -169,9 +158,8 @@ class QuoteShipping
         $restored = $this->restore($quote, $snapshot, $context);
         $retryFailed = false;
         if ($restored) {
-            // Re-arm the rate request before recollecting: the first pass consumed
-            // the flag, so a plain recollect finds no rate to price the restored
-            // method and would return shipping as 0.
+            // Re-arm the rate request, since the first pass used the flag. Without it shipping
+            // collects at 0.
             $shippingAddress = $quote->getShippingAddress();
             if ($shippingAddress) {
                 $shippingAddress->setCollectShippingRates(true);

@@ -14,6 +14,7 @@ use PayStand\PayStandMagento\Exception\CapturedCartChangedException;
 use PayStand\PayStandMagento\Helper\CaptureSnapshot;
 use PayStand\PayStandMagento\Helper\CloudLogger;
 use PayStand\PayStandMagento\Model\Config\Source\PaymentStatus;
+use PayStand\PayStandMagento\Model\PaymentAmountGate;
 
 /**
  * Webhook Receiver Controller for Paystand
@@ -45,6 +46,10 @@ class Paystand extends \Magento\Framework\App\Action\Action
      */
     const PAYMENT_STATUS_TIMEOUT_SECONDS = 5;
 
+    /** invoiceWhenAmountMatches() results, next to PaymentAmountGate's hold outcomes. */
+    private const INVOICED = 'invoiced';
+    private const NOT_INVOICEABLE = 'not_invoiceable';
+
     /** @var \Psr\Log\LoggerInterface */
     protected $_logger;
 
@@ -57,39 +62,25 @@ class Paystand extends \Magento\Framework\App\Action\Action
     /** @var \Magento\Framework\Controller\Result\JsonFactory */
     protected $_jsonResultFactory;
 
-    /**
-     * @var \Magento\Framework\App\Config\ScopeConfigInterface
-     */
+    /** @var \Magento\Framework\App\Config\ScopeConfigInterface */
     protected $scopeConfig;
 
-    /**
-     * @var \Magento\Sales\Model\Order\Payment\Transaction\BuilderInterface
-     */
+    /** @var \Magento\Sales\Model\Order\Payment\Transaction\BuilderInterface */
     protected $_builderInterface;
 
-    /**
-     * @var \Magento\Sales\Model\ResourceModel\Order\Invoice\CollectionFactory
-     */
+    /** @var \Magento\Sales\Model\ResourceModel\Order\Invoice\CollectionFactory */
     protected $_invoiceCollectionFactory;
 
-    /**
-     * @var \Magento\Sales\Model\Service\InvoiceService
-     */
+    /** @var \Magento\Sales\Model\Service\InvoiceService */
     protected $_invoiceService;
 
-    /**
-     * @var \Magento\Framework\DB\TransactionFactory
-     */
+    /** @var \Magento\Framework\DB\TransactionFactory */
     protected $_transactionFactory;
 
-    /**
-     * @var \Magento\Sales\Api\InvoiceRepositoryInterface
-     */
+    /** @var \Magento\Sales\Api\InvoiceRepositoryInterface */
     protected $_invoiceRepository;
 
-    /**
-     * @var \Magento\Sales\Api\OrderRepositoryInterface
-     */
+    /** @var \Magento\Sales\Api\OrderRepositoryInterface */
     protected $_orderRepository;
 
     protected $error;
@@ -110,6 +101,9 @@ class Paystand extends \Magento\Framework\App\Action\Action
 
     /** @var \PayStand\PayStandMagento\Helper\CaptureSnapshot */
     private $captureSnapshot;
+
+    /** @var PaymentAmountGate */
+    private $amountGate;
 
     /**
      * Why the last createOrderFromQuote() failed. 'terminal' means Magento rejected
@@ -157,7 +151,8 @@ class Paystand extends \Magento\Framework\App\Action\Action
         CartManagementInterface $cartManagement,
         LockManagerInterface $lockManager,
         \PayStand\PayStandMagento\Helper\QuoteShipping $quoteShipping,
-        \PayStand\PayStandMagento\Helper\CaptureSnapshot $captureSnapshot
+        \PayStand\PayStandMagento\Helper\CaptureSnapshot $captureSnapshot,
+        PaymentAmountGate $amountGate
     ) {
         $this->_logger = $logger;
         $this->_request = $request;
@@ -176,6 +171,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
         $this->lockManager = $lockManager;
         $this->quoteShipping = $quoteShipping;
         $this->captureSnapshot = $captureSnapshot;
+        $this->amountGate = $amountGate;
         $this->updateOrderOn = $this->scopeConfig->getValue(self::UPDATE_ORDER_ON, self::STORE_SCOPE);
         parent::__construct($context);
     }
@@ -341,12 +337,8 @@ class Paystand extends \Magento\Framework\App\Action\Action
             );
         }
 
-        // Order still does not exist after retries. The payment was already
-        // captured at Paystand, so a missing order means the client-side placeOrder
-        // failed to convert the paid quote — leaving the shopper charged with no
-        // order. Rather than only searching, make the webhook the source of truth:
-        // create the order server-side from the paid quote so a captured payment
-        // always yields an order.
+        // No order after the retries, but the payment is captured. Create the order
+        // server-side from the paid quote.
         if (!$order || !$order->getId()) {
             $order = $this->createOrderFromQuote($quote, $json);
         }
@@ -436,6 +428,34 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 return $result;
             }
 
+            // A hold stays in place, whether a merchant, a fraud check or the amount check set it,
+            // and a complete or closed order is not reopened. A held order records the payment once.
+            if (in_array($state, [Order::STATE_HOLDED, Order::STATE_COMPLETE, Order::STATE_CLOSED], true)) {
+                $recorded = 'no';
+                $wouldInvoice = $psPaymentStatus == $updateOrderOn
+                    || $psPaymentStatus == 'paid' || $psPaymentStatus == 'posted';
+                if ($state === Order::STATE_HOLDED && $wouldInvoice) {
+                    $recorded = $this->recordPaymentOnHeldOrder($order, json_decode($body, true)['resource']);
+                }
+                $notOpen = 'order ' . $order->getIncrementId() . ' is ' . $state . ', payment '
+                    . ($json->resource->id ?? '') . ' ' . $psPaymentStatus . ' not invoiced, recorded=' . $recorded;
+                $this->_logger->warning('>>>>> PAYSTAND-ORDER-NOT-OPEN: ' . $notOpen);
+                try {
+                    CloudLogger::ship(CloudLogger::EVENT_WEBHOOK_ORDER_NOT_OPEN, [
+                        'quote_id'      => (string)($order->getQuoteId() ?? ''),
+                        'payment_id'    => $json->resource->id ?? '',
+                        'error_message' => $notOpen,
+                    ]);
+                } catch (\Throwable $e) {
+                    // CloudLogger failure — silently ignored to protect payment flow
+                }
+                $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
+                $result->setData([
+                    'success_message' => __('Order is %1, no further action needed', $state)
+                ]);
+                return $result;
+            }
+
             // If order is in processing and payment status is paid/posted, check if we need to create invoice
             if ($state == Order::STATE_PROCESSING && ($psPaymentStatus == $updateOrderOn || $psPaymentStatus == 'paid' || $psPaymentStatus == 'posted')) {
                 $this->_logger->debug(
@@ -459,24 +479,18 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 
                 // Invoice doesn't exist, create it
                 $this->_logger->debug('>>>>> PAYSTAND-PROCESSING: Creating transaction and invoice for paid order...');
-                
-                // Create Transaction for the Order
-                $this->createTransaction($order, json_decode($body, true)['resource']);
-                
-                // Automatically invoice order
-                $this->createInvoice($order);
-                
-                $this->_logger->debug('>>>>> PAYSTAND-PROCESSING: Transaction and invoice created successfully for order ' . $order->getIncrementId());
-                
-                // Finish and send back success response
+                $paymentResource = json_decode($body, true)['resource'];
+                $this->createTransaction($order, $paymentResource);
+                $outcome = $this->invoiceWhenAmountMatches($order, $paymentResource);
+
                 $this->_logger->debug(
                     '>>>>> PAYSTAND-FINISH: Paystand payment status: "' . $psPaymentStatus
-                        . '", order state: "' . $state
-                        . '", order status: "' . $status . '", invoice created'
+                        . '", order ' . $order->getIncrementId() . ' state: "' . $order->getState()
+                        . '", outcome: ' . $outcome
                 );
                 $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
                 $result->setData([
-                    'success_message' => __('Invoice created for order')
+                    'success_message' => $this->invoiceOutcomeMessage($outcome)
                 ]);
                 return $result;
             }
@@ -517,18 +531,22 @@ class Paystand extends \Magento\Framework\App\Action\Action
             }
 
             // Only create transaction and invoice when the payment is on paid/posted status
+            $outcome = null;
             if ($psPaymentStatus == $updateOrderOn) {
                 $this->_logger->debug(">>>>> PAYSTAND-PROCESSING: Payment status matches configured updateOrderOn ('{$updateOrderOn}'), creating transaction and invoice...");
-                
-                // Create Transaction for the Order
-                $this->createTransaction($order, json_decode($body, true)['resource']);
-                
-                // Automatically invoice order
-                $this->createInvoice($order);
-                
-                $this->_logger->debug(">>>>> PAYSTAND-PROCESSING: Transaction and invoice created successfully for order " . $order->getIncrementId());
+                $paymentResource = json_decode($body, true)['resource'];
+                $this->createTransaction($order, $paymentResource);
+                $outcome = $this->invoiceWhenAmountMatches($order, $paymentResource);
+                $this->_logger->debug(">>>>> PAYSTAND-PROCESSING: Order " . $order->getIncrementId() . " invoice outcome: " . $outcome);
             } else {
                 $this->_logger->debug(">>>>> PAYSTAND-PROCESSING: Payment status '{$psPaymentStatus}' does not match updateOrderOn '{$updateOrderOn}', skipping transaction/invoice creation");
+            }
+
+            // The amount check held the order or tried to. The gate already logged it.
+            if ($outcome === PaymentAmountGate::OUTCOME_HELD || $outcome === PaymentAmountGate::OUTCOME_HOLD_FAILED) {
+                $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
+                $result->setData(['success_message' => $this->invoiceOutcomeMessage($outcome)]);
+                return $result;
             }
 
             // Finish and send back success response
@@ -630,12 +648,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
     }
 
     /**
-     * Returns a Paystand OAuth access token.
-     * Declared protected (not private) to allow PHPUnit partial mocking in unit tests.
-     * In PHP, private methods cannot be stubbed by subclasses — there is no reflection
-     * workaround that replaces a method implementation at runtime.
-     * NOTE: do not override this in production Magento extensions — it is an internal
-     * auth mechanism and is not part of the public API contract of this class.
+     * Returns a Paystand OAuth access token. Protected so unit tests can stub it.
      */
     protected function getPaystandAccessToken()
     {
@@ -660,10 +673,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
     }
 
     /**
-     * Verifies an incoming webhook event against the Paystand API.
-     * Declared protected (not private) to allow PHPUnit partial mocking in unit tests.
-     * See note on getPaystandAccessToken() for rationale.
-     * NOTE: do not override this in production Magento extensions.
+     * Verifies a webhook event with the Paystand API. Protected so unit tests can stub it.
      */
     protected function verifyPaystandEvent($access_token, $event)
     {
@@ -780,10 +790,9 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 [\Magento\Sales\Model\Order\Payment\Transaction::RAW_DETAILS => $paymentData]
             );
 
-            // Formated price
-            $formatedPrice = $order->getBaseCurrency()->formatTxt(
-                $order->getGrandTotal()
-            );
+            $charged = $this->amountGate->displayAmount($paymentData, $order->getGrandTotal());
+            $chargedCurrency = strtoupper(trim((string)($paymentData['currency'] ?? $order->getOrderCurrencyCode())));
+            $formatedPrice = trim($chargedCurrency . ' ' . number_format($charged, 2, '.', ''));
 
             $paystandPaymentInfo = $this->retrievePaystandPaymentInfo($paymentData);
             $message = sprintf(
@@ -842,6 +851,91 @@ class Paystand extends \Magento\Framework\App\Action\Action
             $paymentInfo = [];
         }
         return $paymentInfo;
+    }
+
+    /**
+     * Invoice only when Paystand's amount matches the order total. Otherwise hold.
+     *
+     * @param \Magento\Sales\Model\Order $order
+     * @param array<string, mixed> $paymentData
+     * @return string self::INVOICED, self::NOT_INVOICEABLE, or a PaymentAmountGate hold outcome
+     */
+    private function invoiceWhenAmountMatches($order, array $paymentData): string
+    {
+        // An invoiced order skips the check.
+        if ($this->hasInvoice($order)) {
+            return self::INVOICED;
+        }
+
+        $outcome = $this->amountGate->checkOrder($order, $paymentData);
+        if ($outcome !== PaymentAmountGate::OUTCOME_INVOICE) {
+            return $outcome;
+        }
+
+        return $this->createInvoice($order) ? self::INVOICED : self::NOT_INVOICEABLE;
+    }
+
+    private function invoiceOutcomeMessage(string $outcome)
+    {
+        switch ($outcome) {
+            case self::INVOICED:
+                return __('Invoice created for order');
+            case PaymentAmountGate::OUTCOME_HELD:
+                return __('Paystand amount not confirmed against the order total, order held and not invoiced');
+            case PaymentAmountGate::OUTCOME_HOLD_FAILED:
+                return __('Paystand amount not confirmed against the order total, order not invoiced, hold not saved');
+            default:
+                return __('Order cannot be invoiced, no invoice created');
+        }
+    }
+
+    /**
+     * Records the payment and the amount check on an order that is already on hold,
+     * once per payment. The hold stays, so the merchant decides when to invoice.
+     *
+     * @param \Magento\Sales\Model\Order $order
+     * @param array<string, mixed> $paymentData
+     * @return string what was done, for the log
+     */
+    private function recordPaymentOnHeldOrder($order, array $paymentData): string
+    {
+        $paymentId = (string)($paymentData['id'] ?? '');
+        $payment = $order->getPayment();
+        if ($paymentId === '' || !$payment) {
+            return 'no_payment';
+        }
+        // createTransaction() sets this, so the amount check has already run for this payment.
+        if ((string)$payment->getLastTransId() === $paymentId) {
+            return 'already';
+        }
+        if ($this->hasInvoice($order)) {
+            return self::INVOICED;
+        }
+
+        $this->createTransaction($order, $paymentData);
+        $outcome = $this->amountGate->checkOrder($order, $paymentData);
+        if ($outcome === PaymentAmountGate::OUTCOME_INVOICE) {
+            try {
+                $order->addCommentToStatusHistory(
+                    __('Paystand payment %1 matches the order total. The order was on hold, so it was not invoiced.', $paymentId),
+                    false
+                );
+                $order->save();
+            } catch (\Throwable $e) {
+                $this->_logger->error(
+                    '>>>>> PAYSTAND-ORDER-NOT-OPEN: comment not saved on order ' . $order->getIncrementId() . ': ' . $e->getMessage()
+                );
+            }
+        }
+        return $outcome;
+    }
+
+    /** @param \Magento\Sales\Model\Order $order */
+    private function hasInvoice($order): bool
+    {
+        $invoices = $this->_invoiceCollectionFactory->create()
+            ->addAttributeToFilter('order_id', ['eq' => $order->getId()]);
+        return (int)$invoices->count() > 0;
     }
 
     private function createInvoice($order)
@@ -991,11 +1085,8 @@ class Paystand extends \Magento\Framework\App\Action\Action
             return null;
         }
 
-        // Only create for a status that advances an order, so a declined payment can
-        // never produce one. newOrderStatus() is the single source of truth: it maps
-        // 'processing'/'posted'/'paid' to STATE_PROCESSING, 'failed'/'canceled' not.
-        // The empty check is load-bearing — newOrderStatus() compares loosely against
-        // updateOrderOn, and '' == null is true in PHP.
+        // Only a status that newOrderStatus() maps to STATE_PROCESSING creates an order. The
+        // empty check matters: newOrderStatus() compares loosely, and '' == null in PHP.
         $psPaymentStatus = $json->resource->status ?? null;
         if (!$psPaymentStatus || $this->newOrderStatus($psPaymentStatus) !== Order::STATE_PROCESSING) {
             $this->_logger->debug(
@@ -1005,11 +1096,8 @@ class Paystand extends \Magento\Framework\App\Action\Action
             return null;
         }
 
-        // Serialize order creation for this quote so a concurrent webhook (or a
-        // Paystand retry) cannot place a second order for the same cart. The
-        // client-side placeOrder does not take this lock, so inside the critical
-        // section we also re-read the quote's is_active flag — the authoritative
-        // "already submitted" signal — before placing.
+        // The lock stops a second webhook from placing a second order. The browser's placeOrder
+        // does not take it, so the quote's is_active flag is checked again inside the lock.
         $lockName = 'paystand_place_order_' . $quoteId;
         $lockAcquired = false;
         try {
@@ -1018,9 +1106,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
             $this->_logger->error('>>>>> PAYSTAND-WEBHOOK: Lock acquisition failed for ' . $lockName . ': ' . $e->getMessage());
         }
         if (!$lockAcquired) {
-            // Fall back to search-only behaviour — observable in production
-            // telemetry so lock contention/leaks are detectable, since this is
-            // the failure mode closest to the original paid-but-orderless bug.
+            // Fall back to search only. The log makes lock contention visible.
             $this->_logger->warning('>>>>> PAYSTAND-WEBHOOK: Could not acquire place-order lock for quote ' . $quoteId . '; using existing order if any');
             try {
                 CloudLogger::ship(CloudLogger::EVENT_PLACEORDER_LOCK_FALLBACK, [
@@ -1036,13 +1122,11 @@ class Paystand extends \Magento\Framework\App\Action\Action
 
         // Whether we reactivated the quote, so the failure path can undo it.
         $reactivated = false;
-        // Once placeOrder commits, our in-memory quote is stale and must not be
-        // saved back over Magento's writes — so the rollback below is skipped.
+        // After placeOrder commits, the in-memory quote is stale, so the rollback is skipped.
         $placed = false;
 
         try {
-            // Idempotency: re-check right before creating, in case a concurrent
-            // client-side placeOrder just succeeded.
+            // Check again in case the browser's placeOrder just succeeded.
             $existing = $this->findOrder($quote);
             if ($existing && $existing->getId()) {
                 return $existing;
@@ -1074,9 +1158,8 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 return $existing;
             }
 
-            // Magento hands back the copy this request loaded on arrival, before the
-            // wait above (QuoteRepository caches per request). findOrder() and the
-            // capture-status re-read below go to the database for what can change.
+            // QuoteRepository returns the copy loaded before the wait. findOrder() and the
+            // capture-status re-read below read the database instead.
             try {
                 $quote = $this->cartRepository->get($quoteId);
             } catch (\Exception $e) {
@@ -1084,18 +1167,15 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 return null;
             }
 
-            // An inactive quote may be converted OR merely merged/expired/held, so
-            // check for an order first (conversion commits it before deactivating)
-            // and only reactivate when none exists. placeOrder loads via getActive(),
-            // so reactivation is required before placing.
+            // An inactive quote may be converted, merged, expired or held. Only one with no order
+            // is reactivated; placeOrder loads the quote through getActive().
             if (!$quote->getIsActive()) {
                 $existing = $this->findOrder($quote);
                 if ($existing && $existing->getId()) {
                     $this->_logger->debug('>>>>> PAYSTAND-WEBHOOK: Quote ' . $quoteId . ' already converted; using existing order ' . $existing->getIncrementId());
                     return $existing;
                 }
-                // ?: not ?? — an empty marker must fall through to the webhook's id
-                // rather than be kept and block the rescue.
+                // ?: so an empty marker falls through to the webhook's id.
                 $paymentEvidence = $quote->getData('paystand_payment_id') ?: ($json->resource->id ?? null);
                 if (!$paymentEvidence) {
                     $this->_logger->debug('>>>>> PAYSTAND-WEBHOOK: Quote ' . $quoteId . ' inactive, never converted, and no payment evidence; not reactivating');
@@ -1119,9 +1199,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 $payment->setMethod(\PayStand\PayStandMagento\Model\Directpost::METHOD_CODE);
             }
 
-            // If no customer email is resolvable (quote, billing, or shipping),
-            // bail out explicitly and observably rather than letting placeOrder
-            // throw a generic exception that hides why the order failed.
+            // With no email, stop and log why. placeOrder would throw a generic error.
             $email = $this->resolveQuoteCustomerEmail($quote);
             if (!$email) {
                 $this->_logger->error('>>>>> PAYSTAND-WEBHOOK: Cannot create order server-side — no customer email on quote ' . $quoteId);
@@ -1138,16 +1216,12 @@ class Paystand extends \Magento\Framework\App\Action\Action
             }
             $quote->setCustomerEmail($email);
 
-            // placeOrder below reloads the quote from the database and collects its
-            // totals. Record the capture markers and a snapshot of the paid cart so
-            // CapturedQuoteTotals can restore shipping + pin grand total after that
-            // collect, and CapturedQuoteSubmit can refuse a cart that changed.
+            // placeOrder reloads the quote and collects totals. The markers and snapshot let
+            // CapturedQuoteTotals pin the paid totals and CapturedQuoteSubmit refuse a changed cart.
             $captureId = $quote->getData('paystand_payment_id') ?: ($json->resource->id ?? null);
             $captureStatus = strtolower(trim((string)$psPaymentStatus));
             if ($captureId && in_array($captureStatus, PaymentStatus::PLACE_ORDER_STATUSES, true)) {
-                // The browser can record the payment while this delivery waits. Rank the
-                // row's status too: saving this copy as processing over the browser's paid
-                // would let CapturedQuoteSubmit skip a changed cart.
+                // The browser can record a stronger status during the wait, so the row's status counts.
                 $captureStatus = PaymentStatus::keepStrongerStatus(
                     PaymentStatus::keepStrongerStatus(
                         (string)$quote->getData('paystand_capture_status'),
@@ -1175,17 +1249,12 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 // CloudLogger failure — silently ignored to protect payment flow
             }
 
-            // Checkout can restamp the cart while this delivery waits: when the window
-            // was priced from browser totals, the payment save replaces the snapshot of
-            // an earlier open. Judge the cart by the row's snapshot, and do not save this
-            // copy's older one back over it.
+            // Checkout can restamp the cart during the wait. Use the row's snapshot, and do not
+            // save this copy's older one over it.
             $this->captureSnapshot->adoptPersistedSnapshot($quote);
 
-            // Copy paid money first. Recollect can drop shipping and rewrite
-            // grand_total; the snapshot must keep the captured amount. A restored
-            // rate row can merge in at stamp time. Marked as rescue-stamped: this
-            // runs when the browser never stamped, so the cart here is whatever
-            // the shopper left, not provably the cart that was paid for.
+            // Copy the paid amounts before the recollect rewrites grand_total. Marked as
+            // rescue-stamped, since this cart is not proven to be the one paid for.
             $this->captureSnapshot->copyPaidRecollectAndStamp(
                 $quote,
                 'webhook-createorder',
@@ -1220,9 +1289,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
             ];
             $this->_logger->error('>>>>> PAYSTAND-ERROR: Server-side order creation failed for quote ' . $quoteId . ': ' . $e->getMessage());
 
-            // Undo a reactivation whose placement then failed, so a deactivated cart
-            // is not resurrected in the shopper's session. Skipped once placed, since
-            // our copy is stale and would clobber what placeOrder wrote.
+            // Undo a reactivation when placement failed, but not after placeOrder committed.
             if ($reactivated && !$placed) {
                 try {
                     $quote->setIsActive(false);
@@ -1251,9 +1318,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
             try {
                 $this->lockManager->unlock($lockName);
             } catch (\Throwable $e) {
-                // Best-effort unlock — the lock provider releases it when the
-                // connection/session ends. Logged (not swallowed silently) so a
-                // leaking lock is visible in production diagnostics.
+                // The lock also ends with the DB session. Logged so a leaking lock is visible.
                 $this->_logger->error('>>>>> PAYSTAND-WEBHOOK: Failed to release place-order lock ' . $lockName . ': ' . $e->getMessage());
             }
         }
@@ -1449,9 +1514,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
     }
 
     /**
-     * Carries a capture status recorded since this quote was loaded back onto the
-     * in-memory copy, so saving a delivery that has no capture of its own cannot
-     * persist a null over it and drop a snapshot a later collect needs.
+     * Copies a capture status recorded since load onto this copy, so saving it keeps it.
      *
      * @param \Magento\Quote\Model\Quote $quote
      * @param int|string $quoteId
@@ -1478,13 +1541,11 @@ class Paystand extends \Magento\Framework\App\Action\Action
      *
      * @param mixed $quote
      * @param int $quoteId
-     * @return string
      */
     private function persistedCaptureStatus($quote, $quoteId): string
     {
         try {
-            // Uses the connection the quote itself is saved through, so this needs no
-            // extra dependency and cannot drift from that table.
+            // Uses the quote's own connection, so no extra dependency is needed.
             $resource = $quote->getResource();
             $connection = $resource->getConnection();
             $select = $connection->select()
@@ -1500,11 +1561,10 @@ class Paystand extends \Magento\Framework\App\Action\Action
     }
 
     /**
-     * True when the last failure was terminal AND the event is past the retry window.
-     * Fails safe: an unusable timestamp never abandons.
+     * True when the last failure was terminal and the event is past the retry window.
+     * An unusable timestamp never abandons.
      *
      * @param \stdClass $json
-     * @return bool
      */
     protected function isRescueTerminalAndExpired($json): bool
     {
@@ -1531,8 +1591,7 @@ class Paystand extends \Magento\Framework\App\Action\Action
     }
 
     /**
-     * Resolve a customer email for a quote missing one — guests enter it in the
-     * widget, so recover it from the billing or shipping address.
+     * Finds an email for a quote that has none, from the billing or shipping address.
      *
      * @param \Magento\Quote\Model\Quote $quote
      * @return string|null

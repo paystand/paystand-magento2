@@ -12,9 +12,11 @@ use Magento\Framework\App\Action\HttpPostActionInterface;
 use Magento\Framework\Controller\Result\JsonFactory;
 use Magento\Checkout\Model\Session as CheckoutSession;
 use Magento\Customer\Model\Session as CustomerSession;
+use Magento\Customer\Api\AddressRepositoryInterface;
 use Magento\Customer\Api\CustomerRepositoryInterface;
 use Magento\Framework\Exception\NoSuchEntityException;
 use Magento\Framework\Exception\LocalizedException;
+use Magento\Quote\Model\ResourceModel\Quote\Address as QuoteAddressResource;
 use PayStand\PayStandMagento\Helper\CaptureSnapshot;
 use PayStand\PayStandMagento\Helper\CloudLogger;
 use PayStand\PayStandMagento\Helper\QuoteShipping;
@@ -29,6 +31,8 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
     private LoggerInterface $logger;
     private QuoteShipping $quoteShipping;
     private CaptureSnapshot $captureSnapshot;
+    private AddressRepositoryInterface $addressRepository;
+    private QuoteAddressResource $quoteAddressResource;
 
     public function __construct(
         JsonFactory $resultJsonFactory,
@@ -37,7 +41,9 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
         CustomerRepositoryInterface $customerRepository,
         LoggerInterface $logger,
         QuoteShipping $quoteShipping,
-        CaptureSnapshot $captureSnapshot
+        CaptureSnapshot $captureSnapshot,
+        AddressRepositoryInterface $addressRepository,
+        QuoteAddressResource $quoteAddressResource
     ) {
         $this->resultJsonFactory = $resultJsonFactory;
         $this->checkoutSession = $checkoutSession;
@@ -46,17 +52,15 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
         $this->logger = $logger;
         $this->quoteShipping = $quoteShipping;
         $this->captureSnapshot = $captureSnapshot;
+        $this->addressRepository = $addressRepository;
+        $this->quoteAddressResource = $quoteAddressResource;
     }
 
     /**
-     * Report the shipping selection either side of the recollection, so a live
-     * failure shows exactly when the rate disappeared.
+     * Logs the shipping selection before and after the recollect, to show when a rate is lost.
      *
      * @param \Magento\Quote\Model\Quote $quote
      * @param string $before describe() output taken before recollecting
-     * @param bool $restored Whether the selection had to be put back
-     * @param bool $retryFailed Whether the re-requested rates came back empty too
-     * @return void
      */
     private function shipShippingBreadcrumb($quote, string $before, bool $restored, bool $retryFailed): void
     {
@@ -75,6 +79,95 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
             ]);
         } catch (\Throwable $e) {
             // CloudLogger failure — silently ignored to protect the payment flow
+        }
+    }
+
+    /**
+     * Restore quote addresses from the saved address they point at, if this customer owns it.
+     *
+     * @param \Magento\Quote\Model\Quote $quote
+     * @return \Magento\Quote\Model\Quote\Address[] the addresses that changed
+     */
+    private function restoreOwnedCustomerAddress($quote): array
+    {
+        $restored = [];
+        $customerId = (int)$quote->getCustomerId();
+        if ($customerId <= 0) {
+            return $restored;
+        }
+        foreach ([$quote->getBillingAddress(), $quote->getShippingAddress()] as $address) {
+            if (!$address) {
+                continue;
+            }
+            $addressId = (int)$address->getCustomerAddressId();
+            if ($addressId <= 0) {
+                continue;
+            }
+            try {
+                $saved = $this->addressRepository->getById($addressId);
+            } catch (\Throwable $e) {
+                $this->logger->warning('[Paystand GetQuoteData] Saved address not read, quote address kept', [
+                    'quote_id' => $quote->getId(),
+                    'customer_address_id' => $addressId,
+                    'error' => $e->getMessage(),
+                ]);
+                continue;
+            }
+            if ((int)$saved->getCustomerId() !== $customerId) {
+                continue;
+            }
+            $savedStreet = implode("\n", (array)$saved->getStreet());
+            $quoteStreet = implode("\n", (array)$address->getStreet());
+            $regionId = $saved->getRegionId();
+            $differs = (string)$address->getCity() !== (string)$saved->getCity()
+                || (string)$address->getRegionId() !== (string)$regionId
+                || (string)$address->getPostcode() !== (string)$saved->getPostcode()
+                || $quoteStreet !== $savedStreet;
+            if (!$differs) {
+                continue;
+            }
+            $address->setCity($saved->getCity());
+            $address->setRegionId($regionId);
+            $region = $saved->getRegion();
+            if ($region && method_exists($region, 'getRegion')) {
+                $address->setRegion($region->getRegion());
+            }
+            $address->setPostcode($saved->getPostcode());
+            $address->setCountryId($saved->getCountryId());
+            $address->setStreet($saved->getStreet());
+            $restored[] = $address;
+        }
+        return $restored;
+    }
+
+    /**
+     * placeOrder reloads the quote, so a restored address must be in the database for
+     * the order to carry the tax the window charges. A failed save is logged only.
+     *
+     * @param \Magento\Quote\Model\Quote $quote
+     * @param \Magento\Quote\Model\Quote\Address[] $addresses
+     */
+    private function saveRestoredAddresses($quote, array $addresses): void
+    {
+        foreach ($addresses as $address) {
+            try {
+                $this->quoteAddressResource->save($address);
+            } catch (\Throwable $e) {
+                $this->logger->error('[Paystand GetQuoteData] Restored address not saved', [
+                    'quote_id' => $quote->getId(),
+                    'address_type' => $address->getAddressType(),
+                    'error' => $e->getMessage(),
+                ]);
+                try {
+                    CloudLogger::ship(CloudLogger::EVENT_QUOTE_ADDRESS_RESTORE_FAILED, [
+                        'quote_id'      => (string)$quote->getId(),
+                        'error_message' => 'getquotedata ' . $address->getAddressType() . ' address not saved: '
+                            . $e->getMessage(),
+                    ]);
+                } catch (\Throwable $ignored) {
+                    // CloudLogger failure — silently ignored to protect the payment flow
+                }
+            }
         }
     }
 
@@ -100,23 +193,15 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
                 ]);
             }
 
-            // A snapshot from an earlier window open describes a cart the shopper
-            // may have changed since. Drop it before pricing: if this request
-            // fails, the browser opens the window from its own totals and
-            // nothing restamps.
+            // Drop the snapshot of an earlier open before pricing. If this request fails, the
+            // browser prices the window itself and nothing restamps.
             $this->captureSnapshot->clearCheckoutIntent($quote);
+            $restoredAddresses = $this->restoreOwnedCustomerAddress($quote);
 
-            // Force a fresh totals recalculation rather than trusting whatever was
-            // last collected on the quote (e.g. before an address/shipping change
-            // settled). collectTotals() short-circuits if the quote's
-            // totals_collected_flag is already set (see Quote::collectTotals()),
-            // so the flag must be cleared first or a quote that was already
-            // collected earlier in the request lifecycle would return stale data
-            // here despite this call.
-            //
-            // Bracketed because that recollection can clear the shipping selection
-            // when a rate re-request returns nothing (see QuoteShipping).
+            // Clear totals_collected_flag so collectTotals() recalculates. The recollect can
+            // clear the shipping selection, so QuoteShipping brackets it.
             $shipping = $this->quoteShipping->recollectPreservingShipping($quote, 'getquotedata');
+            $this->saveRestoredAddresses($quote, $restoredAddresses);
 
             $this->shipShippingBreadcrumb(
                 $quote,
@@ -208,6 +293,7 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
                     'base_grand_total' => $quote->getBaseGrandTotal(),
                     'subtotal' => $quote->getSubtotal(),
                     'currency_code' => $quote->getQuoteCurrencyCode(),
+                    'base_currency_code' => $quote->getBaseCurrencyCode(),
                     'items_count' => $quote->getItemsCount(),
                     'items_qty' => $quote->getItemsQty(),
                     'totals' => $totalsData
@@ -216,10 +302,8 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
                 'customer' => $customerData
             ];
 
-            // The Paystand window locks the amount this response returns. Record
-            // that cart now, before another browser can change the quote. The
-            // payment save keeps this snapshot instead of photographing the
-            // quote again after the window has already charged.
+            // The window charges the amount this response returns, so the cart is stamped now,
+            // before another browser can change it. The payment save keeps this snapshot.
             $this->captureSnapshot->stampCheckoutIntent($quote);
 
             return $result->setData($response);
@@ -252,12 +336,7 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
                 ]
             ]);
         } catch (\Throwable $e) {
-            // Catches \Error/\TypeError/\DivisionByZeroError-class failures that
-            // \Exception above does not — e.g. from a misbehaving total collector
-            // invoked via collectTotals(), which iterates every registered
-            // collector rather than just this module's own code. Without this,
-            // such a failure would produce an uncaught fatal instead of the JSON
-            // error response the JS caller's .catch() depends on.
+            // \Error from any total collector, so the browser still gets a JSON error response.
             $this->logger->error('[Paystand] Unexpected throwable: ' . $e->getMessage());
             return $result->setHttpResponseCode(\Magento\Framework\Webapi\Exception::HTTP_INTERNAL_ERROR)->setData([
                 'success' => false,

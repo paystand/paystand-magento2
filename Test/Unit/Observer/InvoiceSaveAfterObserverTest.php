@@ -14,14 +14,9 @@ use Magento\Sales\Model\Order\Invoice;
 use Magento\Sales\Model\Order\Payment;
 
 /**
- * Unit tests for Observer\InvoiceSaveAfterObserver — carries paystand_adjustment
- * onto an invoice created outside the automatic flow.
- *
- * The load-bearing behaviour here is the skip: this observer runs on
- * sales_order_invoice_register, which Invoice::register() dispatches after it has
- * already propagated the invoice grand total into total_invoiced and total_paid.
- * The automatic flow stamps paystand_adjustment on the invoice before register(),
- * so this observer must leave those totals alone or the fee lands twice.
+ * Tests for Observer\InvoiceSaveAfterObserver, which adds paystand_adjustment to an invoice
+ * made outside the automatic flow. An invoice that already has it is skipped, since
+ * register() has already added its total to total_invoiced and total_paid.
  */
 class InvoiceSaveAfterObserverTest extends TestCase
 {
@@ -37,9 +32,8 @@ class InvoiceSaveAfterObserverTest extends TestCase
     }
 
     /**
-     * The regression guard for the fee double-count. The automatic invoice path
-     * sets paystand_adjustment before register(), so by the time this observer
-     * sees the invoice the fee is already inside total_invoiced and total_paid.
+     * The automatic path sets paystand_adjustment before register(), so the fee is already
+     * in total_invoiced and total_paid.
      */
     public function testAlreadyStampedInvoiceIsLeftAlone(): void
     {
@@ -55,8 +49,7 @@ class InvoiceSaveAfterObserverTest extends TestCase
     }
 
     /**
-     * An invoice created without the adjustment — the manual admin path — still
-     * gets it applied, to both the invoice and the order's paid totals.
+     * A manual admin invoice gets the adjustment, on the invoice and the order's paid totals.
      */
     public function testUnstampedInvoiceStillReceivesTheAdjustment(): void
     {
@@ -91,10 +84,7 @@ class InvoiceSaveAfterObserverTest extends TestCase
         $this->assertTrue(true, 'A missing invoice must not throw');
     }
 
-    /**
-     * @param float $adjustment
-     * @return Order|MockObject
-     */
+    /** @return Order|MockObject */
     private function buildOrder(float $adjustment)
     {
         $order = $this->getMockBuilder(Order::class)

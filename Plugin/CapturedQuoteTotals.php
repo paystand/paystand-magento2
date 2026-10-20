@@ -11,16 +11,11 @@ use PayStand\PayStandMagento\Helper\QuoteShipping;
 use Psr\Log\LoggerInterface;
 
 /**
- * After Paystand captures a quote, Magento must still collectTotals(). Skipping
- * collection (the 3.7.2 freeze) left placeOrder with no shipping rate after it
- * reloaded the quote — "The shipping method is missing" — even when the cart
- * had not changed (PROD-16503).
- *
- * This plugin lets Magento collect, then puts back the paid shipping row and
- * grand total when the cart still matches the capture snapshot, or when the
- * recollected grand total is within a cent of the paid one. Quotes that are
- * captured but have no snapshot freeze collect, same as 3.7.2, except during
- * the stamp recollect and when captured_cart_guard is off.
+ * After capture, Magento must still collectTotals() so placeOrder finds a shipping rate
+ * after it reloads the quote. This plugin lets Magento collect, then puts back the paid
+ * shipping row and grand total when the cart matches the snapshot, or when the new grand
+ * total is within a cent of the paid one. A captured quote with no snapshot freezes
+ * collect, except during the stamp recollect and when captured_cart_guard is off.
  */
 class CapturedQuoteTotals
 {
@@ -49,9 +44,8 @@ class CapturedQuoteTotals
     }
 
     /**
-     * Collect when a snapshot exists so Magento can rebuild rate rows after a
-     * reload. Freeze collect when the quote is captured and the snapshot is
-     * missing, so cart price rules cannot raise the paid total.
+     * Collects when a snapshot exists, so Magento can rebuild rate rows. Freezes collect for
+     * a captured quote with no snapshot, so cart price rules cannot raise the paid total.
      *
      * @param \Magento\Quote\Model\Quote $subject
      * @return void
@@ -122,10 +116,8 @@ class CapturedQuoteTotals
     }
 
     /**
-     * Pins on isPinnable, not isCaptured. The webhook rescue reaches Magento
-     * with an ACH still reported as processing and places the order anyway;
-     * gating the pin on a confirmed capture would book that order at whatever
-     * the recollect produced instead of the amount charged.
+     * Pins on isPinnable, not isCaptured, since the rescue places ACH orders while they
+     * read processing.
      *
      * @param \Magento\Quote\Model\Quote $quote
      * @return void
@@ -140,9 +132,8 @@ class CapturedQuoteTotals
             return;
         }
 
-        // Multishipping splits totals across several addresses and never reaches
-        // QuoteManagement::submit(), so there is no guard behind this. Pinning a
-        // quote-level total onto one of those addresses would half-pin the order.
+        // Multishipping spreads totals over several addresses and skips submit(), so a pin
+        // would cover only part of the order.
         if ($quote->getIsMultiShipping()) {
             $this->logger->warning(
                 'PAYSTAND-CAPTURED-TOTALS: multishipping quote is not pinned, leaving Magento totals on quote '
@@ -179,9 +170,8 @@ class CapturedQuoteTotals
             : null;
 
         if (!$hashMatches) {
-            // The cart changed and only the total still agrees. A second change,
-            // to a different shipping service, would have this order ship on a
-            // rate the shopper picked for something else, so it ends the pin.
+            // The cart changed and only the total agrees. A different shipping service as well
+            // ends the pin.
             if ($shipping && $this->shippingMethodChanged($quote, $shipping)) {
                 $this->logger->warning(
                     'PAYSTAND-CAPTURED-TOTALS: cart hash and shipping method both changed after capture,'
@@ -201,9 +191,8 @@ class CapturedQuoteTotals
             $this->pinShippingAmounts($quote, $shipping);
         }
 
-        // A rescue writes its snapshot from the cart it found, so its hash matching
-        // proves nothing. It is still the best paid figure available, so pin it and
-        // record that the pinned amount was never verified against the capture.
+        // A rescue-stamped hash proves nothing, but it is the best paid figure there is. Pin
+        // it and log that the amount is unverified.
         if (($hasPaidTotal || $shipping) && $this->snapshot->isSelfStamped($payload)) {
             $this->logger->warning(
                 'PAYSTAND-CAPTURED-TOTALS: pinning quote ' . $quote->getId()
@@ -274,9 +263,8 @@ class CapturedQuoteTotals
     }
 
     /**
-     * restore() only writes amounts when the method or rate row was missing.
-     * Pin them whenever the cart still matches, so a live re-quote cannot
-     * replace the shipping the shopper already paid.
+     * restore() writes amounts only when the method or rate row was missing. This pins them
+     * whenever the cart matches, so a live re-quote cannot replace the paid shipping.
      *
      * @param \Magento\Quote\Model\Quote $quote
      * @param array<string, mixed> $shipping
@@ -305,13 +293,11 @@ class CapturedQuoteTotals
     }
 
     /**
-     * True when the address carries a different shipping method than the one
-     * the snapshot recorded. An empty method is not a change: the recollect
-     * clears the selection on its own, which is what restore() puts back.
+     * True when the address has a different shipping method than the snapshot. An empty
+     * method is not a change: the recollect clears it and restore() puts it back.
      *
      * @param \Magento\Quote\Model\Quote $quote
      * @param array<string, mixed> $shipping
-     * @return bool
      */
     private function shippingMethodChanged($quote, array $shipping): bool
     {
@@ -330,9 +316,8 @@ class CapturedQuoteTotals
     }
 
     /**
-     * Distance between two money figures in whole cents. Comparing floats with
-     * a decimal epsilon misses by one bit (abs(1.01 - 1.00) is above 0.01), so
-     * round to cents first and compare integers.
+     * Distance between two money figures in whole cents. abs(1.01 - 1.00) is above 0.01 in
+     * floats, so both are rounded to cents first.
      */
     private static function centsApart(float $left, float $right): int
     {

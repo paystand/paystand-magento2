@@ -12,8 +12,7 @@ use Magento\Quote\Model\Quote\Address\Rate;
 use Magento\Quote\Model\Quote\Address\RateFactory;
 
 /**
- * Unit tests for Helper\QuoteShipping — keeps a totals recollection from costing
- * a shopper their shipping selection.
+ * Tests for Helper\QuoteShipping, which keeps the shipping choice through a recollect.
  */
 class QuoteShippingTest extends TestCase
 {
@@ -42,8 +41,6 @@ class QuoteShippingTest extends TestCase
             $this->rateFactory
         );
     }
-
-    // ── snapshot ─────────────────────────────────────────────────────────────
 
     public function testSnapshotReturnsNullForVirtualQuote(): void
     {
@@ -82,14 +79,12 @@ class QuoteShippingTest extends TestCase
         $this->assertNull($snapshot['rate']);
     }
 
-    // ── restore ──────────────────────────────────────────────────────────────
-
     /**
      * The recollection wiped the method, so it must be put back.
      */
     public function testRestorePutsBackAClearedSelection(): void
     {
-        // Method and rate both read back empty — exactly what Magento leaves behind.
+        // Method and rate both read back empty, as Magento leaves them.
         $address = $this->buildAddress('', 0.0, '', null, null);
         $address->expects($this->once())->method('setShippingMethod')->with('flatrate_flatrate');
         $address->expects($this->once())->method('setShippingAmount')->with(77.00);
@@ -108,9 +103,8 @@ class QuoteShippingTest extends TestCase
     }
 
     /**
-     * The shopper picked a faster method after paying. Writing the paid amount
-     * and description onto it would ship one service and charge for another,
-     * so the paid method goes back with them.
+     * The shopper picked a faster method after paying. The paid method goes back with
+     * the paid amount, so the order does not ship one service and charge for another.
      */
     public function testRestoreRevertsAMethodChangedAfterCapture(): void
     {
@@ -136,8 +130,7 @@ class QuoteShippingTest extends TestCase
     }
 
     /**
-     * A changed method is reverted even when its own rate row is still there,
-     * which is the case restore() used to walk away from.
+     * A changed method is reverted even when its own rate row is still there.
      */
     public function testRestoreRevertsAChangedMethodThatStillHasARate(): void
     {
@@ -181,8 +174,7 @@ class QuoteShippingTest extends TestCase
     }
 
     /**
-     * The method survived but its rate row was dropped — placeOrder's validator
-     * needs the rate back, without re-selecting the method.
+     * The method survived but its rate row was dropped. placeOrder needs the rate back.
      */
     public function testRestoreReattachesADroppedRateForASurvivingMethod(): void
     {
@@ -207,7 +199,7 @@ class QuoteShippingTest extends TestCase
     }
 
     /**
-     * Both cleared: put the method back AND re-attach the rate row.
+     * Both cleared: put the method back and reattach the rate row.
      */
     public function testRestoreReattachesRateAndMethodWhenBothCleared(): void
     {
@@ -238,8 +230,6 @@ class QuoteShippingTest extends TestCase
         $this->assertFalse($this->helper->restore($quote, ['method' => ''], 'test'));
     }
 
-    // ── recollectPreservingShipping ──────────────────────────────────────────
-
     /**
      * A recollection that keeps the selection needs no restore and no retry.
      */
@@ -258,8 +248,6 @@ class QuoteShippingTest extends TestCase
         $this->assertFalse($result['retryFailed']);
         $this->assertStringContainsString('method=flatrate_flatrate', $result['before']);
     }
-
-    // ── describe ─────────────────────────────────────────────────────────────
 
     /**
      * "method set, rate missing" is the state that fails placement.
@@ -287,8 +275,7 @@ class QuoteShippingTest extends TestCase
     }
 
     /**
-     * A live rate for some other carrier does not make the chosen method
-     * placeable, so the code has to match rather than the list being non-empty.
+     * A rate for another carrier does not make the chosen method placeable; the code must match.
      */
     public function testDescribeIgnoresARateForADifferentMethod(): void
     {
@@ -341,12 +328,9 @@ class QuoteShippingTest extends TestCase
         $this->assertSame('shipping=no-quote', $this->helper->describe(null));
     }
 
-    // ── helpers ──────────────────────────────────────────────────────────────
-
     /**
      * A rate that only answers getCode(), for describe()'s rate-list matching.
      *
-     * @param string $code
      * @return Rate|MockObject
      */
     private function buildRate(string $code)
@@ -380,8 +364,7 @@ class QuoteShippingTest extends TestCase
     }
 
     /**
-     * A rate whose setters chain, matching how restore() rebuilds a rate row, and
-     * that reads its code back so a test can assert what was rebuilt.
+     * A rate with chained setters, as restore() uses them, that reads its code back.
      *
      * @return Rate|MockObject
      */
@@ -408,14 +391,12 @@ class QuoteShippingTest extends TestCase
     }
 
     /**
-     * @param bool $isVirtual
      * @param Address|MockObject|null $address
      * @return Quote|MockObject
      */
     private function buildQuote(bool $isVirtual, $address)
     {
-        // setTotalsCollectedFlag is a magic data accessor on Quote, so it needs
-        // addMethods() rather than onlyMethods().
+        // setTotalsCollectedFlag is a magic accessor on Quote, so it needs addMethods().
         $quote = $this->getMockBuilder(Quote::class)
             ->disableOriginalConstructor()
             ->onlyMethods(['isVirtual', 'getShippingAddress', 'getId', 'collectTotals'])
@@ -429,14 +410,8 @@ class QuoteShippingTest extends TestCase
     }
 
     /**
-     * getShippingAmount / getBaseShippingAmount / getShippingDescription /
-     * setShippingMethod / setShippingDescription are magic data accessors on
-     * Address, so they need addMethods() rather than onlyMethods().
+     * The shipping getters and setters are magic accessors on Address, so they need addMethods().
      *
-     * @param string $method
-     * @param float $amount
-     * @param string $description
-     * @param array|null $addressData
      * @param Rate|MockObject|null $rateByCode Rate returned by getShippingRateByCode(), or null if dropped
      * @return Address|MockObject
      */
