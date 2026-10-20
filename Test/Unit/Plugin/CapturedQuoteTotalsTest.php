@@ -13,9 +13,8 @@ use PHPUnit\Framework\TestCase;
 use Psr\Log\LoggerInterface;
 
 /**
- * After capture, Magento must still collectTotals so shipping rates exist after a
- * quote reload. The plugin pins the paid shipping + grand total when the cart
- * still matches the capture snapshot.
+ * After capture, collectTotals still runs so shipping rates exist after a reload. The
+ * plugin pins the paid shipping and grand total while the cart matches the snapshot.
  */
 class CapturedQuoteTotalsTest extends TestCase
 {
@@ -74,8 +73,7 @@ class CapturedQuoteTotalsTest extends TestCase
     }
 
     /**
-     * Quotes captured before paystand_capture_snapshot existed have no JSON.
-     * Fall back to the 3.7.2 freeze so cart price rules cannot raise the total.
+     * A quote with no snapshot falls back to the freeze, so cart price rules cannot raise the total.
      *
      * @dataProvider capturedStatusProvider
      */
@@ -93,9 +91,7 @@ class CapturedQuoteTotalsTest extends TestCase
         $plugin->beforeCollectTotals($quote);
     }
 
-    /**
-     * @return array<string, array{0: string}>
-     */
+    /** @return array<string, array{0: string}> */
     public static function capturedStatusProvider(): array
     {
         return [
@@ -192,9 +188,8 @@ class CapturedQuoteTotalsTest extends TestCase
     }
 
     /**
-     * The PROD-16503 failure: Magento placeOrder reloaded the quote, collectTotals
-     * ran, shipping method and rate were gone. Restore them from the snapshot
-     * when the cart still matches.
+     * placeOrder reloads the quote and collectTotals drops the shipping method and rate.
+     * They are restored from the snapshot while the cart matches.
      */
     public function testAfterCollectRestoresShippingWhenCartMatches(): void
     {
@@ -291,9 +286,8 @@ class CapturedQuoteTotalsTest extends TestCase
     }
 
     /**
-     * The incident quote. The webhook rescue places the order while ACH still
-     * reads processing, so the pin has to run at that status or the order is
-     * booked at the recollected total instead of the charged one.
+     * The rescue places ACH orders while they read processing, so the pin runs at that
+     * status. Otherwise the order books at the recollected total.
      */
     public function testAfterCollectPinsAProcessingRescue(): void
     {
@@ -435,9 +429,8 @@ class CapturedQuoteTotalsTest extends TestCase
     }
 
     /**
-     * The rescue stamps the cart it found, so its hash matching proves nothing.
-     * The pin still runs, and the quote is named so the amount can be checked
-     * against the capture later.
+     * A rescue-stamped hash proves nothing. The pin still runs and logs the quote, so the
+     * amount can be checked against the capture.
      */
     public function testAfterCollectFlagsAPinFromARescueWrittenSnapshot(): void
     {
@@ -593,9 +586,7 @@ class CapturedQuoteTotalsTest extends TestCase
         return $quote;
     }
 
-    /**
-     * @param array<string, mixed> $shippingSnap
-     */
+    /** @param array<string, mixed> $shippingSnap */
     private function matchingCapturedQuote(
         array $shippingSnap,
         float $grandTotal,

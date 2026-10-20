@@ -9,34 +9,18 @@ use PayStand\PayStandMagento\Helper\CloudLogger;
 use PayStand\PayStandMagento\Model\Directpost;
 
 /**
- * Wraps Magento\Quote\Model\QuoteManagement::submit() to close the diagnostic gap
- * between the browser dispatching placeOrder and Magento either creating the order
- * or throwing a caught exception (PlaceOrderFailureObserver).
- *
- * Logs synchronously to the local Magento log (survives even if the PHP process
- * dies immediately after) AND ships to CloudLogger (queryable without needing
- * merchant server log access).
- *
- * Only instruments PayStand payments — checks quote payment method before logging
- * to avoid noise on non-PayStand checkouts.
- *
- * SAFETY GUARANTEE: nothing in this plugin's diagnostic path (metadata extraction,
- * local logging, CloudLogger shipping) may ever prevent $proceed() from running or
- * alter/obscure its return value. Every diagnostic step is individually guarded so a
- * failure there degrades logging, never checkout.
+ * Wraps QuoteManagement::submit() for Paystand quotes and logs the attempt and its outcome,
+ * to the local log and to CloudLogger. A logging failure never stops $proceed() or changes
+ * its return value.
  */
 class QuoteSubmitLoggerPlugin
 {
-    /**
-     * @var LoggerInterface
-     */
+    /** @var LoggerInterface */
     protected $logger;
 
     /**
-     * Callable(string $eventType, array $context): void — defaults to
-     * [CloudLogger::class, 'ship']. Injectable seam so tests can exercise
-     * shipCloudLog()'s own try/catch with a real throwing shipper instead of
-     * mocking shipCloudLog() itself (which would leave that try/catch untested).
+     * Callable(string $eventType, array $context): void, by default [CloudLogger::class, 'ship'].
+     * Tests inject a throwing shipper to exercise shipCloudLog()'s try/catch.
      *
      * @var callable
      */
@@ -49,9 +33,6 @@ class QuoteSubmitLoggerPlugin
     }
 
     /**
-     * @param QuoteManagement $subject
-     * @param callable $proceed
-     * @param Quote $quote
      * @param array $orderData
      * @return \Magento\Sales\Api\Data\OrderInterface|\Magento\Sales\Model\Order|null
      * @throws \Throwable
@@ -62,12 +43,10 @@ class QuoteSubmitLoggerPlugin
             return $proceed($quote, $orderData);
         }
 
-        // Unique per-attempt ID so concurrent/retried submits of the same quote_id
-        // (no CartMutex, direct submit() callers, etc.) can still be told apart.
+        // A per-attempt id tells apart concurrent or retried submits of one quote.
         $requestId = uniqid('psq_', true);
 
-        // Metadata extraction must never block placeOrder — any failure here just
-        // degrades the log line, it never prevents $proceed() from running.
+        // A failure reading metadata only degrades the log line.
         $quoteId = 'unknown';
         $customerId = 'unknown';
         $grandTotal = 'unknown';
@@ -110,10 +89,8 @@ class QuoteSubmitLoggerPlugin
             throw $throwable;
         }
 
-        // submit() can legitimately return null/falsy for a quote with no visible
-        // items — a documented non-exceptional path, NOT success. placeOrder()'s
-        // caller treats this null as a failure; logging it as COMPLETED would be
-        // exactly the false-success signal this feature exists to eliminate.
+        // submit() returns null for a quote with no visible items. The caller treats that as a
+        // failure, so it is not logged as COMPLETED.
         if (!$order) {
             $this->safeInfo(
                 ">>>>> PAYSTAND-PLACEORDER-NULL-RESULT: request_id={$requestId} quote_id={$quoteId}"
@@ -144,8 +121,7 @@ class QuoteSubmitLoggerPlugin
     }
 
     /**
-     * Log an info-level message, swallowing any failure so a broken logger
-     * backend can never block placeOrder or discard an already-created order.
+     * Logs at info level. A logger failure is swallowed so it cannot affect placeOrder.
      */
     private function safeInfo(string $message): void
     {
@@ -157,10 +133,7 @@ class QuoteSubmitLoggerPlugin
     }
 
     /**
-     * Log an error-level message, swallowing any failure. Kept as an explicit
-     * sibling to safeInfo() rather than a single string-dispatched safeLog($level, ...)
-     * — a typo'd $level string would silently vanish into the catch block below,
-     * masking a real bug instead of surfacing it.
+     * Logs at error level and swallows any failure, like safeInfo().
      */
     private function safeError(string $message): void
     {
@@ -172,11 +145,8 @@ class QuoteSubmitLoggerPlugin
     }
 
     /**
-     * Ship a CloudLogger event, swallowing any failure (including \Error, e.g. an
-     * undefined constant) so diagnostic logging can never break the payment flow.
-     *
-     * Protected (not private) so unit tests can mock it via a partial mock and
-     * avoid making real HTTPS calls to the ingest Worker.
+     * Ships a CloudLogger event and swallows any failure, \Error included. Protected so
+     * unit tests can stub it.
      */
     protected function shipCloudLog(string $eventType, string $quoteId, string $message): void
     {
@@ -188,13 +158,8 @@ class QuoteSubmitLoggerPlugin
     }
 
     /**
-     * Only instrument quotes actually paid via the PayStand payment method,
-     * to avoid noise on unrelated checkouts.
-     *
-     * Catches \Throwable (not just \Exception): this plugin runs unconditionally
-     * for every payment method via etc/di.xml, gated only by this check. An
-     * uncaught \Error here (e.g. a fatal on a malformed payment object) would
-     * break checkout site-wide for every merchant, not just PayStand.
+     * True for quotes paid with Paystand. It catches \Throwable, since the plugin runs for
+     * every payment method and an \Error here would break all checkouts.
      */
     private function isPaystandQuote(Quote $quote): bool
     {

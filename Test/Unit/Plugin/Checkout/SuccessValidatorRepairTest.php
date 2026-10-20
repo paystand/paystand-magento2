@@ -12,12 +12,8 @@ use PHPUnit\Framework\TestCase;
 use PHPUnit\Framework\MockObject\MockObject;
 
 /**
- * Unit tests for Plugin\Checkout\SuccessValidatorRepair.
- *
- * The plugin only ever turns a refusal into an approval, and only when an order
- * for the session's own quote was placed inside the repair window. The age guard
- * is the security boundary: without it a stale session could surface an old order
- * as a fresh confirmation, and it cannot be exercised against a live checkout.
+ * Tests for Plugin\Checkout\SuccessValidatorRepair. It turns a refusal into an approval
+ * only for an order on the session's own quote placed inside the repair window.
  */
 class SuccessValidatorRepairTest extends TestCase
 {
@@ -106,8 +102,7 @@ class SuccessValidatorRepairTest extends TestCase
     }
 
     /**
-     * By the time the validator runs, getQuote() has usually already nulled the
-     * session's own id — the memo is the only thing left that names the quote.
+     * getQuote() has usually nulled the session's quote id, so only the memo names the quote.
      */
     public function testUsesTheMemoWhenTheSessionQuoteIdIsGone(): void
     {
@@ -121,9 +116,7 @@ class SuccessValidatorRepairTest extends TestCase
     }
 
     /**
-     * For a logged-in shopper getQuote() does not leave the id empty: it assigns
-     * the replacement cart it just created. Repairing from that id would look up
-     * an order that does not exist, so the memo has to win.
+     * For a logged-in shopper, the session holds the new cart's id, which has no order.
      */
     public function testPrefersTheMemoOverAReplacementCartIdInTheSession(): void
     {
@@ -157,11 +150,8 @@ class SuccessValidatorRepairTest extends TestCase
         $this->assertFalse($this->build()->afterIsValid($this->subjectMock, false));
     }
 
-    // ── Repair window ────────────────────────────────────────────────────────
-
     /**
-     * The window is the security boundary, so it is pinned to a literal rather
-     * than read from the constant — a silent widening has to fail here.
+     * The window is the security boundary, so the test uses a literal, not the constant.
      */
     public function testTheRepairWindowIsFifteenMinutes(): void
     {
@@ -169,8 +159,7 @@ class SuccessValidatorRepairTest extends TestCase
     }
 
     /**
-     * An order past the window must not revive a confirmation page, or a stale
-     * session could show an old order as if it had just been placed.
+     * An order past the window must not show on a confirmation page as if it were new.
      */
     public function testRefusesAnOrderPlacedHoursAgo(): void
     {
@@ -222,10 +211,8 @@ class SuccessValidatorRepairTest extends TestCase
     }
 
     /**
-     * Order timestamps are stored in UTC. The process timezone is set ahead of
-     * UTC on purpose: parsing a UTC stamp naively there ages the order past the
-     * window, so a dropped timezone fails here instead of passing by luck. A
-     * zone behind UTC would read as a future timestamp and still look recent.
+     * created_at is UTC. The process timezone is ahead of UTC, so parsing the stamp as local
+     * time ages the order past the window and the test fails.
      */
     public function testCreatedAtIsReadAsUtcRegardlessOfProcessTimezone(): void
     {
@@ -243,8 +230,6 @@ class SuccessValidatorRepairTest extends TestCase
             date_default_timezone_set($originalTimezone);
         }
     }
-
-    // ── Bounce report ────────────────────────────────────────────────────────
 
     /**
      * The confirmation page keeps last_order_id and clears last_success_quote_id.
@@ -342,11 +327,8 @@ class SuccessValidatorRepairTest extends TestCase
         );
     }
 
-    // ── Failure containment ──────────────────────────────────────────────────
-
     /**
-     * A repair that blows up must leave Magento's own decision standing rather
-     * than fataling on the confirmation page.
+     * A repair that throws leaves Magento's own decision in place.
      */
     public function testAThrowingSessionLeavesTheValidatorDecisionUntouched(): void
     {
@@ -367,9 +349,6 @@ class SuccessValidatorRepairTest extends TestCase
         $this->assertSame([], $this->restored);
     }
 
-    /**
-     * @return SuccessValidatorRepair
-     */
     private function build(): SuccessValidatorRepair
     {
         return new SuccessValidatorRepair(
@@ -379,11 +358,7 @@ class SuccessValidatorRepairTest extends TestCase
         );
     }
 
-    /**
-     * @param int $quoteId
-     * @param Order|null $order
-     * @return string the success_page_bounced message for this session state
-     */
+    /** @return string the success_page_bounced message for this session state */
     private function bounceMessage(int $quoteId, $order): string
     {
         $method = new \ReflectionMethod(SuccessValidatorRepair::class, 'bounceMessage');
@@ -391,19 +366,13 @@ class SuccessValidatorRepairTest extends TestCase
         return $method->invoke($this->build(), $quoteId, $order);
     }
 
-    /**
-     * @param int $seconds
-     * @return string UTC timestamp in Magento's created_at format
-     */
+    /** @return string UTC timestamp in Magento's created_at format */
     private function agedBySeconds(int $seconds): string
     {
         return gmdate('Y-m-d H:i:s', time() - $seconds);
     }
 
     /**
-     * @param int $id
-     * @param string $incrementId
-     * @param string $status
      * @param string|null $createdAt
      * @return Order|MockObject
      */

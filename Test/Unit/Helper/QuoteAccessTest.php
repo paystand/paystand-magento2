@@ -18,14 +18,9 @@ use Magento\Sales\Model\ResourceModel\Order\Collection as OrderCollection;
 use Magento\Sales\Model\ResourceModel\Order\CollectionFactory as OrderCollectionFactory;
 
 /**
- * Unit tests for Helper\QuoteAccess — the shared quote resolution + session
- * authorization used by the checkout AJAX endpoints.
- *
- * The authorization matrix under test:
- * - masked id             → allow (unguessable capability token)
- * - numeric + owning customer session      → allow
- * - numeric + same checkout-session quote  → allow
- * - numeric + neither                      → DENY (fail closed)
+ * Tests for Helper\QuoteAccess, the quote lookup and session check for the checkout AJAX
+ * endpoints. A masked id is allowed. A numeric id needs the owning customer or the
+ * session's own quote; otherwise access is denied.
  */
 class QuoteAccessTest extends TestCase
 {
@@ -82,8 +77,6 @@ class QuoteAccessTest extends TestCase
         );
     }
 
-    // ── resolveRealQuoteId ────────────────────────────────────────────────────
-
     public function testNumericIdIsReturnedAsIs(): void
     {
         $this->assertSame(4189563, $this->helper->resolveRealQuoteId('4189563'));
@@ -104,8 +97,6 @@ class QuoteAccessTest extends TestCase
         $this->expectException(NoSuchEntityException::class);
         $this->helper->resolveRealQuoteId('bogusmaskedtoken');
     }
-
-    // ── canAccess authorization matrix ───────────────────────────────────────
 
     public function testMaskedIdGrantsAccess(): void
     {
@@ -153,8 +144,6 @@ class QuoteAccessTest extends TestCase
         $this->assertFalse($this->helper->canAccess($quote, false));
     }
 
-    // ── getAuthorizedQuote end-to-end ────────────────────────────────────────
-
     public function testGetAuthorizedQuoteReturnsNullForForeignNumericId(): void
     {
         $quote = $this->buildQuoteMock(4189563, 555);
@@ -187,8 +176,6 @@ class QuoteAccessTest extends TestCase
         $this->assertNull($this->helper->getAuthorizedQuote(''));
     }
 
-    // ── findOrderByQuoteId ────────────────────────────────────────────────────
-
     public function testFindOrderByQuoteIdReturnsNullWhenTheQuoteHasNoOrder(): void
     {
         $this->setupOrderCollection(4189563, 0, null);
@@ -205,8 +192,7 @@ class QuoteAccessTest extends TestCase
     }
 
     /**
-     * A quote can end up with more than one order when the webhook and the
-     * browser both place it. The newest row is the one the shopper just paid for.
+     * The webhook and the browser can both place a quote. The newest order is the one just paid.
      */
     public function testFindOrderByQuoteIdReturnsTheNewestOfDuplicateOrders(): void
     {
@@ -224,14 +210,9 @@ class QuoteAccessTest extends TestCase
         $this->assertNull($this->helper->findOrderByQuoteId(4189563));
     }
 
-    // ── helpers ──────────────────────────────────────────────────────────────
-
     /**
-     * The query is pinned, not just stubbed: the lookup exists to scope orders to
-     * one quote, so a dropped filter or a reversed sort has to fail here.
+     * The query is checked, not just stubbed, so a dropped filter or a reversed sort fails.
      *
-     * @param int $expectedQuoteId
-     * @param int $size
      * @param Order|MockObject|null $firstItem
      * @return OrderCollection|MockObject
      */
@@ -261,11 +242,7 @@ class QuoteAccessTest extends TestCase
         return $collectionMock;
     }
 
-    /**
-     * @param int $id
-     * @param string $incrementId
-     * @return Order|MockObject
-     */
+    /** @return Order|MockObject */
     private function buildOrderMock(int $id, string $incrementId)
     {
         $orderMock = $this->getMockBuilder(Order::class)
@@ -290,7 +267,6 @@ class QuoteAccessTest extends TestCase
     }
 
     /**
-     * @param int $id
      * @param int|null $customerId
      * @return Quote|MockObject
      */

@@ -4,6 +4,7 @@ namespace PayStand\PayStandMagento\Test\Unit\Controller\Webhook;
 
 use PayStand\PayStandMagento\Controller\Webhook\Paystand;
 use PayStand\PayStandMagento\Helper\CloudLogger;
+use PayStand\PayStandMagento\Model\PaymentAmountGate;
 use PHPUnit\Framework\TestCase;
 use PHPUnit\Framework\MockObject\MockObject;
 use Psr\Log\LoggerInterface;
@@ -27,13 +28,8 @@ use Magento\Framework\Exception\NoSuchEntityException;
 use Magento\Framework\Exception\StateException;
 
 /**
- * Unit tests for Controller\Webhook\Paystand::execute().
- *
- * Covers all early-return paths and the primary order-processing paths.
- *
- * getPaystandAccessToken(), verifyPaystandEvent(), and findOrder() are declared
- * protected in the production class so they can be stubbed here — no real HTTP
- * calls or DB queries are made.
+ * Tests for Controller\Webhook\Paystand::execute(). The access token, event check and
+ * findOrder() are protected so they can be stubbed; no HTTP calls or DB queries run.
  */
 class PaystandTest extends TestCase
 {
@@ -135,13 +131,8 @@ class PaystandTest extends TestCase
         $this->set('_invoiceRepository',  $this->getMockBuilder(InvoiceRepositoryInterface::class)->getMockForAbstractClass());
     }
 
-    // ── Constant regression ────────────────────────────────────────────────────
-
     /**
-     * Regression for the production bug: "Undefined constant
-     * PayStand\PayStandMagento\Helper\CloudLogger::EVENT_WEBHOOK_START"
-     * This constant is called in execute() before the body is even parsed,
-     * so a missing constant crashes every single webhook hit.
+     * execute() reads this constant first, so without it every webhook fails.
      */
     public function testEventWebhookStartConstantIsDefined(): void
     {
@@ -171,8 +162,6 @@ class PaystandTest extends TestCase
         }
     }
 
-    // ── Empty body ─────────────────────────────────────────────────────────────
-
     public function testExecuteReturnsBadRequestOnEmptyBody(): void
     {
         $this->requestMock->method('getContent')->willReturn(null);
@@ -184,8 +173,6 @@ class PaystandTest extends TestCase
 
         $this->controller->execute();
     }
-
-    // ── Source / object guards ─────────────────────────────────────────────────
 
     public function testExecuteReturnsOkWhenSourceIsNotMagento2(): void
     {
@@ -222,8 +209,6 @@ class PaystandTest extends TestCase
         $this->controller->execute();
     }
 
-    // ── Access token / verification ────────────────────────────────────────────
-
     public function testExecuteReturnsBadRequestWhenAccessTokenIsNull(): void
     {
         $this->requestMock->method('getContent')->willReturn($this->makeBody());
@@ -251,8 +236,6 @@ class PaystandTest extends TestCase
         $this->controller->execute();
     }
 
-    // ── Payment status guard ───────────────────────────────────────────────────
-
     public function testExecuteReturnsOkWhenPaymentStatusIsNotProcessable(): void
     {
         $this->requestMock->method('getContent')
@@ -272,8 +255,6 @@ class PaystandTest extends TestCase
 
         $this->controller->execute();
     }
-
-    // ── Quote lookup errors ────────────────────────────────────────────────────
 
     public function testExecuteReturnsBadRequestWhenQuoteNotFound(): void
     {
@@ -311,11 +292,8 @@ class PaystandTest extends TestCase
         $this->controller->execute();
     }
 
-    // ── Order not found ────────────────────────────────────────────────────────
-
     /**
-     * findOrder() is protected and mocked to return null, simulating all retry
-     * strategies exhausted. execute() must return 404 so Paystand re-delivers.
+     * When every order search fails, execute() returns 404 so Paystand delivers again.
      */
     public function testExecuteReturnsNotFoundWhenOrderNotFoundAfterRetries(): void
     {
@@ -326,7 +304,7 @@ class PaystandTest extends TestCase
         $this->setupQuoteMock();
 
         $this->controller->method('findOrder')->willReturn(null);
-        // No server-side fallback either — the true "cannot produce an order" case.
+        // The server-side fallback also fails, so no order can be produced.
         $this->controller->method('createOrderFromQuote')->willReturn(null);
 
         $this->jsonResultMock->expects($this->once())
@@ -337,15 +315,12 @@ class PaystandTest extends TestCase
         $this->controller->execute();
     }
 
-    // ── Bounded rescue retries ─────────────────────────────────────────────────
-
     /**
-     * A terminal failure past the window returns 200 so redelivery stops and the
-     * case surfaces as rescue_abandoned.
+     * A terminal failure past the window returns 200 to stop delivery, and logs rescue_abandoned.
      */
     public function testAbandonsRetriesWhenFailureIsTerminalAndEventIsOld(): void
     {
-        // makeBody()'s created is 2026-01-01, comfortably past the window.
+        // makeBody() sets created to 2026-01-01, past the window.
         $this->requestMock->method('getContent')->willReturn($this->makeBody());
         $this->controller->method('getPaystandAccessToken')->willReturn('fake-token');
         $this->controller->method('verifyPaystandEvent')->willReturn(true);
@@ -417,9 +392,7 @@ class PaystandTest extends TestCase
         $this->assertSame($expected, $method->invoke($this->controller, $json), $case);
     }
 
-    /**
-     * @return array<string, array{0: bool, 1: mixed, 2: mixed, 3: string}>
-     */
+    /** @return array<string, array{0: bool, 1: mixed, 2: mixed, 3: string}> */
     public static function rescueRetryScenarios(): array
     {
         $old = '2026-01-01T00:00:00.000Z';
@@ -428,9 +401,9 @@ class PaystandTest extends TestCase
 
         return [
             'terminal + old event => abandon' => [true, $terminal, $old, 'a rejected cart past the window is futile to retry'],
-            // Infrastructure faults are not the cart's fault — they keep their retries however old.
+            // Infrastructure faults keep their retries, however old the event.
             'transient + old event => retry' => [false, ['terminal' => false, 'message' => 'deadlock'], $old, 'infra faults must keep retrying'],
-            // A rate lost to a transient carrier blip can come back on the next delivery.
+            // A rate lost to a short carrier outage can come back on the next delivery.
             'terminal + fresh event => retry' => [false, $terminal, $fresh, 'a fresh terminal failure may still resolve'],
             // Fail safe: unknown age must never drop a paid order.
             'terminal + no timestamp => retry' => [false, $terminal, null, 'unknown age must fall back to retrying'],
@@ -440,9 +413,7 @@ class PaystandTest extends TestCase
     }
 
     /**
-     * When the order search finds nothing, the webhook must fall back to creating
-     * the order server-side (source of truth) instead of returning 404 — a
-     * captured payment must always yield an order.
+     * When the order search finds nothing, the webhook creates the order instead of returning 404.
      */
     public function testExecuteCreatesOrderServerSideWhenSearchFindsNone(): void
     {
@@ -466,8 +437,6 @@ class PaystandTest extends TestCase
 
         $this->controller->execute();
     }
-
-    // ── Order found — state guards ─────────────────────────────────────────────
 
     public function testExecuteReturnsOkWhenOrderIsCanceled(): void
     {
@@ -517,9 +486,8 @@ class PaystandTest extends TestCase
     }
 
     /**
-     * Order is pending, payment is 'posted'. updateOrderOn is set to 'paid'
-     * so the state-change branch runs but NOT the invoice/transaction branch.
-     * Verifies the order receives setState/setStatus/save calls and returns 200.
+     * Pending order, 'posted' payment, updateOrderOn = 'paid'. The state changes and the
+     * response is 200, but no invoice or transaction is created.
      */
     public function testExecuteChangesOrderStateForPendingOrderOnProcessableStatus(): void
     {
@@ -547,43 +515,114 @@ class PaystandTest extends TestCase
         $this->controller->execute();
     }
 
-    // ── Throwable swallowing ───────────────────────────────────────────────────
+    public function testMismatchedOrderStaysOnHoldAndNotInvoicedThroughPostedThenPaid(): void
+    {
+        $this->set('amountGate', new PaymentAmountGate());
+        $this->wireTransactionBuilder();
+        $invoiceService = $this->getMockBuilder(InvoiceService::class)->disableOriginalConstructor()->getMock();
+        $invoiceService->expects($this->never())->method('prepareInvoice');
+        $this->set('_invoiceService', $invoiceService);
+        $this->setupInvoiceCollection(0);
+
+        $status = 'posted';
+        $this->requestMock->method('getContent')->willReturnCallback(function () use (&$status) {
+            return $this->makeBody(['resource' => $this->paymentResource($status, '106.14')]);
+        });
+        $this->controller->method('getPaystandAccessToken')->willReturn('fake-token');
+        $this->controller->method('verifyPaystandEvent')->willReturn(true);
+        $this->setupQuoteIdMask();
+        $this->setupQuoteMock();
+
+        $order = $this->buildGatedOrderMock('new', 109.63);
+        $order->expects($this->once())->method('addCommentToStatusHistory');
+        $this->controller->method('findOrder')->willReturn($order);
+        $this->orderRepositoryMock->method('get')->willReturn($order);
+
+        $this->jsonResultMock->expects($this->exactly(2))
+            ->method('setHttpResponseCode')
+            ->with(200)
+            ->willReturnSelf();
+
+        $this->controller->execute();
+        $this->assertSame(Order::STATE_HOLDED, $order->getState());
+
+        $status = 'paid';
+        $this->controller->execute();
+        $this->assertSame(Order::STATE_HOLDED, $order->getState());
+    }
 
     /**
-     * C-1 regression: verifies that catch(\Throwable) — not catch(\Exception) — is
-     * what protects the payment flow. This test throws \Error (not \Exception) from
-     * a CloudLogger call site and asserts execute() does not propagate it.
-     *
-     * On the pre-fix code (catch \Exception), this test FAILS because \Error does
-     * not extend \Exception and would propagate. On the fixed code (catch \Throwable),
-     * this test PASSES because \Throwable catches both \Exception and \Error.
-     *
-     * This is the exact class of error PHP 8 throws for undefined constants.
+     * A late paid webhook must not reopen or hold a complete order.
+     */
+    public function testLeavesACompleteOrderAsItIs(): void
+    {
+        $this->set('updateOrderOn', 'paid');
+        $gate = $this->getMockBuilder(PaymentAmountGate::class)->onlyMethods(['decide', 'hold'])->getMock();
+        $gate->expects($this->never())->method('decide');
+        $gate->expects($this->never())->method('hold');
+        $this->set('amountGate', $gate);
+
+        $this->requestMock->method('getContent')
+            ->willReturn($this->makeBody(['resource' => $this->paymentResource('paid', '106.14')]));
+        $this->controller->method('getPaystandAccessToken')->willReturn('fake-token');
+        $this->controller->method('verifyPaystandEvent')->willReturn(true);
+        $this->setupQuoteIdMask();
+        $this->setupQuoteMock();
+
+        $order = $this->buildOrderMock(Order::STATE_COMPLETE);
+        $order->expects($this->never())->method('setState');
+        $order->expects($this->never())->method('save');
+        $this->controller->method('findOrder')->willReturn($order);
+        $this->orderRepositoryMock->method('get')->willReturn($order);
+
+        $this->jsonResultMock->expects($this->once())
+            ->method('setHttpResponseCode')
+            ->with(200)
+            ->willReturnSelf();
+
+        $this->controller->execute();
+    }
+
+    public function testInvoicedOrderIsNotCheckedOrHeld(): void
+    {
+        $gate = $this->getMockBuilder(PaymentAmountGate::class)->onlyMethods(['decide', 'hold'])->getMock();
+        $gate->expects($this->never())->method('decide');
+        $gate->expects($this->never())->method('hold');
+        $this->set('amountGate', $gate);
+
+        $invoice = $this->getMockBuilder(\Magento\Sales\Model\Order\Invoice::class)
+            ->disableOriginalConstructor()
+            ->getMock();
+        $invoiceRepository = $this->getMockBuilder(InvoiceRepositoryInterface::class)->getMockForAbstractClass();
+        $invoiceRepository->method('get')->with(9)->willReturn($invoice);
+        $this->set('_invoiceRepository', $invoiceRepository);
+        $this->setupInvoiceCollection(1, 9);
+
+        $method = new \ReflectionMethod(Paystand::class, 'invoiceWhenAmountMatches');
+        $method->setAccessible(true);
+
+        $this->assertSame($invoice, $method->invoke(
+            $this->controller,
+            $this->buildOrderMock(Order::STATE_PROCESSING),
+            $this->paymentResource('paid', '106.14')
+        ));
+    }
+
+    /**
+     * PHP 8 throws \Error for an undefined constant. catch (\Throwable) stops it;
+     * catch (\Exception) would not.
      */
     public function testExecuteDoesNotPropagatePhpError(): void
     {
-        // Return a body that passes source/object guards but fails access token
-        // so we hit the early return before any real processing.
-        // The CloudLogger webhook_start call fires immediately after body parse.
-        // We simulate a \Error by making the logger throw one (CloudLogger::ship
-        // calls curl_init internally; in test context it fails silently, so we
-        // instead verify via the constant-defined test that the code path is correct).
-        //
-        // Direct \Error propagation test: override the controller's execute() entry
-        // point to inject a \Error into the CloudLogger try block by using a subclass.
         $threw = false;
         $errorMessage = '';
         try {
-            // Simulate what PHP 8 does when it hits an undefined constant:
-            // trigger a \Error and verify catch(\Throwable) stops it.
             $fn = function () {
                 throw new \Error('Simulated undefined constant Error');
             };
             try {
                 $fn();
             } catch (\Throwable $e) {
-                // This is the fixed catch block — \Throwable catches \Error.
-                // If this were catch(\Exception $e) it would not catch \Error.
                 $errorMessage = $e->getMessage();
             }
         } catch (\Throwable $e) {
@@ -595,8 +634,7 @@ class PaystandTest extends TestCase
     }
 
     /**
-     * End-to-end: execute() itself must never propagate any Throwable regardless
-     * of what happens inside CloudLogger or other internal calls.
+     * execute() never lets a Throwable escape, whatever fails inside it.
      */
     public function testExecuteNeverPropagatesThrowable(): void
     {
@@ -612,11 +650,8 @@ class PaystandTest extends TestCase
         $this->assertFalse($threw, 'execute() must never propagate a Throwable — payment flow must be protected');
     }
 
-    // ── Helpers ───────────────────────────────────────────────────────────────
-
     /**
-     * Set a protected/private property on the controller via reflection.
-     * Walks the class hierarchy so inherited properties (e.g. _request from Action) are found.
+     * Sets a property on the controller, including inherited ones such as _request.
      */
     private function set(string $name, $value): void
     {
@@ -705,5 +740,128 @@ class PaystandTest extends TestCase
         $orderMock->method('setStatus')->willReturnSelf();
         $orderMock->method('save')->willReturnSelf();
         return $orderMock;
+    }
+
+    /**
+     * Payment resource fields that createTransaction() and the amount gate read.
+     */
+    private function paymentResource(string $status, string $amount): array
+    {
+        return [
+            'id'                 => 'mp0m4r5x8ovwo0i1btgop38l',
+            'object'             => 'payment',
+            'status'             => $status,
+            'amount'             => $amount,
+            'currency'           => 'USD',
+            'settlementAmount'   => $amount,
+            'settlementCurrency' => 'USD',
+            'payerId'            => 'payer-1',
+            'sourceType'         => 'card',
+            'sourceId'           => 'card-1',
+            'feeSplit'           => ['subtotal' => $amount, 'payerTotal' => $amount, 'currency' => 'USD'],
+            'meta'               => ['source' => 'magento 2', 'quote' => 'test-quote-masked'],
+        ];
+    }
+
+    /**
+     * Order mock whose state follows setState() and hold().
+     */
+    private function buildGatedOrderMock(string $state, float $grandTotal): MockObject
+    {
+        $payment = $this->getMockBuilder(Order\Payment::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods([
+                'setLastTransId', 'setTransactionId', 'setAdditionalInformation',
+                'addTransactionCommentsToOrder', 'setParentTransactionId', 'save',
+            ])
+            ->getMock();
+        foreach (['setLastTransId', 'setTransactionId', 'setAdditionalInformation', 'setParentTransactionId', 'save'] as $method) {
+            $payment->method($method)->willReturnSelf();
+        }
+
+        $order = $this->getMockBuilder(Order::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods([
+                'getId', 'getState', 'getStatus', 'getIncrementId', 'getQuoteId',
+                'setState', 'setStatus', 'save', 'getPayment', 'getData',
+                'getGrandTotal', 'getBaseGrandTotal', 'getOrderCurrencyCode', 'getBaseCurrencyCode',
+                'canHold', 'hold', 'addCommentToStatusHistory',
+            ])
+            ->getMock();
+        $current = ['state' => $state, 'status' => $state];
+        $order->method('getId')->willReturn(1);
+        $order->method('getIncrementId')->willReturn('1000763084');
+        $order->method('getQuoteId')->willReturn(42);
+        $order->method('getPayment')->willReturn($payment);
+        $order->method('getData')->willReturn(null);
+        $order->method('getGrandTotal')->willReturn($grandTotal);
+        $order->method('getBaseGrandTotal')->willReturn($grandTotal);
+        $order->method('getOrderCurrencyCode')->willReturn('USD');
+        $order->method('getBaseCurrencyCode')->willReturn('USD');
+        $order->method('save')->willReturnSelf();
+        $order->method('getState')->willReturnCallback(function () use (&$current) {
+            return $current['state'];
+        });
+        $order->method('getStatus')->willReturnCallback(function () use (&$current) {
+            return $current['status'];
+        });
+        $order->method('setState')->willReturnCallback(function ($value) use (&$current, $order) {
+            $current['state'] = $value;
+            return $order;
+        });
+        $order->method('setStatus')->willReturnCallback(function ($value) use (&$current, $order) {
+            $current['status'] = $value;
+            return $order;
+        });
+        $order->method('canHold')->willReturnCallback(function () use (&$current) {
+            return $current['state'] !== Order::STATE_HOLDED;
+        });
+        $order->method('hold')->willReturnCallback(function () use (&$current, $order) {
+            $current['state'] = Order::STATE_HOLDED;
+            $current['status'] = Order::STATE_HOLDED;
+            return $order;
+        });
+        return $order;
+    }
+
+    /**
+     * Transaction builder chain used by createTransaction().
+     */
+    private function wireTransactionBuilder(): void
+    {
+        $transaction = $this->getMockBuilder(\Magento\Sales\Model\Order\Payment\Transaction::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['save', 'getTransactionId'])
+            ->getMock();
+        $transaction->method('save')->willReturnSelf();
+        $transaction->method('getTransactionId')->willReturn('mp0m4r5x8ovwo0i1btgop38l');
+
+        $builder = $this->getMockBuilder(BuilderInterface::class)->getMockForAbstractClass();
+        foreach (['setPayment', 'setOrder', 'setTransactionId', 'setAdditionalInformation', 'setFailSafe'] as $method) {
+            $builder->method($method)->willReturnSelf();
+        }
+        $builder->method('build')->willReturn($transaction);
+        $this->set('_builderInterface', $builder);
+    }
+
+    /**
+     * Invoice collection with the given number of invoices on the order.
+     */
+    private function setupInvoiceCollection(int $count, int $invoiceId = 0): void
+    {
+        $select = $this->getMockBuilder(\Magento\Framework\DB\Select::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['limit'])
+            ->getMock();
+        $select->method('limit')->willReturnSelf();
+
+        $collection = $this->getMockBuilder(\Magento\Sales\Model\ResourceModel\Order\Invoice\Collection::class)
+            ->disableOriginalConstructor()
+            ->getMock();
+        $collection->method('addAttributeToFilter')->willReturnSelf();
+        $collection->method('count')->willReturn($count);
+        $collection->method('getSelect')->willReturn($select);
+        $collection->method('getFirstItem')->willReturn(new \Magento\Framework\DataObject(['id' => $invoiceId]));
+        $this->invoiceCollectionFactoryMock->method('create')->willReturn($collection);
     }
 }

@@ -30,17 +30,10 @@ class QuoteSubmitLoggerPluginTest extends TestCase
     }
 
     /**
-     * Build the plugin with shipCloudLog() stubbed out so tests never make real
-     * HTTPS calls to the CloudLogger ingest Worker. Records every shipped call
-     * in $shipped for assertions.
+     * The plugin with shipCloudLog() stubbed, so no HTTPS call is made. Each call is recorded
+     * in $shipped as event, quote_id and message. To test shipCloudLog()'s own try/catch, use
+     * makePluginWithShipper().
      *
-     * Use this for tests asserting WHAT gets shipped (event/quote_id/message).
-     * For tests asserting shipCloudLog()'s own safety guarantee (that a
-     * throwing shipper is swallowed), use makePluginWithShipper() instead —
-     * mocking shipCloudLog() itself would bypass its try/catch entirely and
-     * leave that guarantee unexercised.
-     *
-     * @param array $shipped Reference — populated with ['event' => ..., 'quote_id' => ..., 'message' => ...]
      * @return QuoteSubmitLoggerPlugin|MockObject
      */
     private function makePlugin(array &$shipped)
@@ -59,23 +52,14 @@ class QuoteSubmitLoggerPluginTest extends TestCase
     }
 
     /**
-     * Build a real (non-mocked) plugin with an injected cloudShipper callable —
-     * no real HTTPS call is made (the callable itself is test-controlled), but
-     * shipCloudLog()'s own try/catch runs for real. Use this to prove that
-     * guarantee actually holds, rather than assuming it because the code reads
-     * that way.
-     *
-     * @return QuoteSubmitLoggerPlugin
+     * A real plugin with a test-controlled cloudShipper, so shipCloudLog()'s try/catch runs.
      */
     private function makePluginWithShipper(callable $cloudShipper): QuoteSubmitLoggerPlugin
     {
         return new QuoteSubmitLoggerPlugin($this->loggerMock, $cloudShipper);
     }
 
-    /**
-     * @param string $method
-     * @return Quote|MockObject
-     */
+    /** @return Quote|MockObject */
     private function makeQuote(string $method)
     {
         $paymentMock = $this->getMockBuilder(Payment::class)
@@ -211,8 +195,7 @@ class QuoteSubmitLoggerPluginTest extends TestCase
         $plugin = $this->makePlugin($shipped);
         $quote = $this->makeQuote('paystandmagento');
 
-        // submit() legitimately returns null for a quote with no visible items —
-        // a documented non-exceptional path that must NOT be logged as COMPLETED.
+        // submit() returns null for a quote with no visible items; that is not COMPLETED.
         $proceed = function ($q, $orderData) {
             return null;
         };
@@ -271,10 +254,8 @@ class QuoteSubmitLoggerPluginTest extends TestCase
     }
 
     /**
-     * getPayment() throwing an \Error (not \Exception) must still be caught —
-     * isPaystandQuote() catches \Throwable specifically so a fatal here can never
-     * break checkout site-wide for every payment method (this plugin runs
-     * unconditionally via etc/di.xml, gated only by isPaystandQuote()).
+     * The plugin runs for every payment method, so isPaystandQuote() catches \Throwable.
+     * An \Error from getPayment() must not break checkout.
      */
     public function testGetPaymentThrowingErrorIsCaughtAndTreatedAsNonPaystand(): void
     {
@@ -307,9 +288,7 @@ class QuoteSubmitLoggerPluginTest extends TestCase
     }
 
     /**
-     * getMethod() throwing an \Error must also be caught — this is the call the
-     * isPaystandQuote() try/catch actually guards (getPayment() succeeding but
-     * getMethod() failing on a malformed payment object).
+     * An \Error from getMethod() on a malformed payment object is also caught.
      */
     public function testGetMethodThrowingErrorIsCaughtAndTreatedAsNonPaystand(): void
     {
@@ -347,9 +326,8 @@ class QuoteSubmitLoggerPluginTest extends TestCase
     }
 
     /**
-     * Metadata extraction (getId/getCustomerId/getGrandTotal) must never block
-     * proceed() — even if it throws, $proceed() still runs and its result is
-     * still returned untouched.
+     * If reading getId, getCustomerId or getGrandTotal throws, proceed() still runs and its
+     * result is returned unchanged.
      */
     public function testMetadataExtractionFailureDoesNotBlockProceed(): void
     {
@@ -388,8 +366,7 @@ class QuoteSubmitLoggerPluginTest extends TestCase
     }
 
     /**
-     * A logger failure (e.g. broken log backend) must never prevent proceed()
-     * from running, and must never cause an already-created order to be lost.
+     * A logger failure does not stop proceed() and does not lose an order already created.
      */
     public function testLoggerFailureDoesNotBlockProceedOrDiscardOrder(): void
     {
@@ -418,13 +395,8 @@ class QuoteSubmitLoggerPluginTest extends TestCase
     }
 
     /**
-     * shipCloudLog()'s own try/catch is the actual mechanism protecting checkout
-     * from a CloudLogger failure — every other test in this file mocks
-     * shipCloudLog() out entirely (correctly, to avoid real HTTP calls), which
-     * means that try/catch itself was never exercised. This test injects a
-     * cloudShipper callable that genuinely throws, going through the real
-     * shipCloudLog() body, to prove the guarantee actually holds rather than
-     * just reading that way in the source.
+     * The other tests stub shipCloudLog(). This one injects a shipper that throws, so the
+     * real try/catch in shipCloudLog() is tested.
      */
     public function testShipCloudLogSwallowsShipperFailureAndNeverBlocksProceed(): void
     {
@@ -449,15 +421,13 @@ class QuoteSubmitLoggerPluginTest extends TestCase
             return $orderMock;
         };
 
-        // No exception should escape aroundSubmit() despite the shipper throwing
-        // on every call (ENTERED and COMPLETED both attempt to ship).
+        // ENTERED and COMPLETED both ship, and the shipper throws on each call.
         $result = $plugin->aroundSubmit($this->subjectMock, $proceed, $quote, []);
 
         $this->assertTrue($proceedCalled);
         $this->assertSame($orderMock, $result);
 
-        // The throwing shipper really was invoked (not skipped) — proves the
-        // try/catch is what's swallowing the failure, not test setup avoiding it.
+        // The shipper ran, so the try/catch is what stopped the failure.
         $this->assertCount(2, $shipperCalls);
         $this->assertSame(
             \PayStand\PayStandMagento\Helper\CloudLogger::EVENT_PLACEORDER_ENTERED,

@@ -15,12 +15,8 @@ use Magento\Quote\Model\Quote;
 use Magento\Sales\Model\Order;
 
 /**
- * Unit tests for Controller\Checkout\OrderStatus::execute().
- *
- * Quote resolution + session authorization are delegated to QuoteAccess (mocked
- * here; covered directly by QuoteAccessTest). These tests assert the controller
- * contract: fail closed with the generic response for unknown/unauthorized
- * quotes, report the order when authorized.
+ * Tests for OrderStatus::execute(). QuoteAccess is mocked; QuoteAccessTest covers it.
+ * Unknown or unauthorized quotes get the generic response.
  */
 class OrderStatusTest extends TestCase
 {
@@ -107,8 +103,7 @@ class OrderStatusTest extends TestCase
     }
 
     /**
-     * Unauthorized (or unknown) quote must produce the identical generic
-     * response as "no order yet" — sequential ids leak nothing.
+     * Same response as "no order yet", so sequential ids leak nothing.
      */
     public function testFailsClosedWhenQuoteNotAuthorized(): void
     {
@@ -159,10 +154,6 @@ class OrderStatusTest extends TestCase
         $this->assertNull($this->captured['incrementId']);
     }
 
-    /**
-     * Masked guest ids pass straight through to QuoteAccess — the controller
-     * must not require a numeric id.
-     */
     public function testMaskedGuestQuoteIdIsPassedToQuoteAccess(): void
     {
         $maskedId = 'abc123maskedguestid456';
@@ -184,8 +175,7 @@ class OrderStatusTest extends TestCase
     // ── Session release ──────────────────────────────────────────────────────
 
     /**
-     * The endpoint is polled while placeOrder is still running, so it must hand
-     * the session back instead of holding it open until the response.
+     * The endpoint is polled while placeOrder runs, so it must not hold the session open.
      */
     public function testClosesTheSessionOnTheAuthorizedPath(): void
     {
@@ -198,9 +188,6 @@ class OrderStatusTest extends TestCase
         $this->assertSame(1, $this->countWriteCloses());
     }
 
-    /**
-     * A malformed poll returns early, and must not keep the session either.
-     */
     public function testClosesTheSessionWhenQuoteIdIsMissing(): void
     {
         $this->requestMock->method('getParam')->with('quote')->willReturn(null);
@@ -212,8 +199,7 @@ class OrderStatusTest extends TestCase
     }
 
     /**
-     * The close has to land after the session has been read for authorization
-     * and before the order lookup, which is the slow part of the request.
+     * The order lookup is the slow part of the request.
      */
     public function testClosesTheSessionAfterAuthorizingAndBeforeTheOrderLookup(): void
     {
@@ -234,10 +220,6 @@ class OrderStatusTest extends TestCase
         $this->assertSame(['authorize', 'writeClose', 'findOrder'], $this->sequence);
     }
 
-    /**
-     * A session that refuses to close is logged, never fatal — the poller still
-     * gets its answer.
-     */
     public function testAFailedSessionCloseIsLoggedAndStillAnswers(): void
     {
         $this->sessionManagerMock = $this->getMockBuilder(SessionManagerInterface::class)
@@ -260,9 +242,6 @@ class OrderStatusTest extends TestCase
         $this->assertFalse($this->captured['orderExists']);
     }
 
-    /**
-     * @return int
-     */
     private function countWriteCloses(): int
     {
         return count(array_filter($this->sequence, function ($event) {
@@ -270,10 +249,7 @@ class OrderStatusTest extends TestCase
         }));
     }
 
-    /**
-     * @param int $id
-     * @return Quote|MockObject
-     */
+    /** @return Quote|MockObject */
     private function buildQuoteMock(int $id)
     {
         $quoteMock = $this->getMockBuilder(Quote::class)
@@ -284,12 +260,7 @@ class OrderStatusTest extends TestCase
         return $quoteMock;
     }
 
-    /**
-     * Set a (possibly inherited, possibly private) property on the controller.
-     *
-     * @param string $name
-     * @param mixed $value
-     */
+    /** @param mixed $value */
     private function set(string $name, $value): void
     {
         $class = new \ReflectionClass($this->controller);
