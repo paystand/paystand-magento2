@@ -20,6 +20,7 @@ use Magento\Quote\Model\Quote;
 use Magento\Quote\Model\Quote\Address;
 use Magento\Quote\Model\Quote\Address\Rate;
 use Magento\Quote\Model\Quote\Address\RateFactory;
+use Magento\Quote\Model\ResourceModel\Quote\Address as QuoteAddressResource;
 
 /**
  * Tests for GetQuoteData::execute(). QuoteShipping is real, not mocked, because
@@ -41,6 +42,12 @@ class GetQuoteDataTest extends TestCase
 
     /** @var AddressRepositoryInterface|MockObject */
     private $addressRepository;
+
+    /** @var QuoteAddressResource|MockObject */
+    private $addressResource;
+
+    /** @var LoggerInterface|MockObject */
+    private $logger;
 
     protected function setUp(): void
     {
@@ -81,7 +88,8 @@ class GetQuoteDataTest extends TestCase
         $this->set('customerSession',    $customerSessionMock);
         $this->set('customerRepository', $this->getMockBuilder(CustomerRepositoryInterface::class)
             ->getMockForAbstractClass());
-        $this->set('logger', $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass());
+        $this->logger = $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass();
+        $this->set('logger', $this->logger);
         $this->set('quoteShipping', new QuoteShipping(
             $this->getMockBuilder(LoggerInterface::class)->getMockForAbstractClass(),
             $this->buildRateFactory()
@@ -94,6 +102,11 @@ class GetQuoteDataTest extends TestCase
         $this->addressRepository = $this->getMockBuilder(AddressRepositoryInterface::class)
             ->getMockForAbstractClass();
         $this->set('addressRepository', $this->addressRepository);
+        $this->addressResource = $this->getMockBuilder(QuoteAddressResource::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['save'])
+            ->getMock();
+        $this->set('quoteAddressResource', $this->addressResource);
     }
 
     /** @return RateFactory|MockObject */
@@ -316,28 +329,180 @@ class GetQuoteDataTest extends TestCase
         $this->restore($this->buildCustomerQuote(null, $address));
     }
 
-    /** @param Quote|MockObject $quote */
-    private function restore($quote): void
+    public function testRestoresTheBillingAddressToo(): void
+    {
+        $billing = $this->buildChangedAddress(78);
+        $billing->expects($this->once())->method('setCity')->with('Brooklyn');
+        $shipping = $this->buildChangedAddress(77);
+        $shipping->expects($this->once())->method('setCity')->with('Brooklyn');
+        $this->addressRepository->expects($this->exactly(2))->method('getById')
+            ->willReturn($this->buildSavedAddress(501));
+
+        $restored = $this->restore($this->buildCustomerQuote(501, $shipping, $billing));
+
+        $this->assertSame([$billing, $shipping], $restored);
+    }
+
+    public function testSkipsAQuoteAddressWithNoSavedAddress(): void
+    {
+        $address = $this->buildChangedAddress(0);
+        $this->expectNoAddressWrites($address);
+        $this->addressRepository->expects($this->never())->method('getById');
+
+        $this->assertSame([], $this->restore($this->buildCustomerQuote(501, $address)));
+    }
+
+    public function testKeepsTheQuoteAddressWhenTheSavedAddressCannotBeRead(): void
+    {
+        $address = $this->buildChangedAddress(77);
+        $this->expectNoAddressWrites($address);
+        $this->addressRepository->method('getById')
+            ->willThrowException(new \Magento\Framework\Exception\NoSuchEntityException(__('No such entity.')));
+        $this->logger->expects($this->once())->method('warning')
+            ->with('[Paystand GetQuoteData] Saved address not read, quote address kept');
+
+        $this->assertSame([], $this->restore($this->buildCustomerQuote(501, $address)));
+    }
+
+    public function testLeavesAnAddressThatAlreadyMatches(): void
+    {
+        $address = $this->buildChangedAddress(77);
+        $this->expectNoAddressWrites($address);
+        $saved = $this->getMockBuilder(AddressInterface::class)->getMockForAbstractClass();
+        $saved->method('getCustomerId')->willReturn(501);
+        $saved->method('getCity')->willReturn('Boston');
+        $saved->method('getRegionId')->willReturn(32);
+        $saved->method('getPostcode')->willReturn('02110');
+        $saved->method('getStreet')->willReturn(['1 Main St']);
+        $this->addressRepository->method('getById')->willReturn($saved);
+
+        $this->assertSame([], $this->restore($this->buildCustomerQuote(501, $address)));
+    }
+
+    public function testDoesNotReturnAnotherCustomersAddress(): void
+    {
+        $address = $this->buildChangedAddress(77);
+        $this->addressRepository->method('getById')->willReturn($this->buildSavedAddress(999));
+
+        $this->assertSame([], $this->restore($this->buildCustomerQuote(501, $address)));
+    }
+
+    public function testSavesEachRestoredAddress(): void
+    {
+        $billing = $this->buildChangedAddress(78);
+        $shipping = $this->buildChangedAddress(77);
+        $saved = [];
+        $this->addressResource->expects($this->exactly(2))->method('save')
+            ->willReturnCallback(function ($address) use (&$saved) {
+                $saved[] = $address;
+                return $this->addressResource;
+            });
+
+        $this->saveRestored($this->buildCustomerQuote(501, $shipping), [$billing, $shipping]);
+
+        $this->assertSame([$billing, $shipping], $saved);
+    }
+
+    public function testLogsARestoredAddressThatIsNotSavedAndCarriesOn(): void
+    {
+        $billing = $this->buildChangedAddress(78);
+        $shipping = $this->buildChangedAddress(77);
+        $this->addressResource->expects($this->exactly(2))->method('save')
+            ->willThrowException(new \RuntimeException('Deadlock found'));
+        $this->logger->expects($this->exactly(2))->method('error')
+            ->with('[Paystand GetQuoteData] Restored address not saved');
+
+        $this->saveRestored($this->buildCustomerQuote(501, $shipping), [$billing, $shipping]);
+    }
+
+    /**
+     * placeOrder reloads the quote, so the restored address must reach the database.
+     * It is saved after the recollect, which reads it.
+     */
+    public function testSavesTheRestoredAddressAfterTheRecollect(): void
+    {
+        $calls = [];
+        $billing = $this->buildChangedAddress(78);
+        $quote = $this->buildQuote($this->buildAddress('flatrate_flatrate', 5.00), 38.49, false, $billing, 501);
+        $quote->method('collectTotals')->willReturnCallback(function () use (&$calls, $quote) {
+            $calls[] = 'collect';
+            return $quote;
+        });
+        $this->addressRepository->method('getById')->with(78)->willReturn($this->buildSavedAddress(501));
+        $this->addressResource->expects($this->once())->method('save')->with($billing)
+            ->willReturnCallback(function () use (&$calls) {
+                $calls[] = 'save';
+                return $this->addressResource;
+            });
+        $this->checkoutSessionMock->method('getQuote')->willReturn($quote);
+
+        $this->controller->execute();
+
+        $this->assertTrue($this->captured['success']);
+        $this->assertSame(['collect', 'save'], $calls);
+    }
+
+    public function testDoesNotSaveAddressesThatWereNotRestored(): void
+    {
+        $quote = $this->buildQuote($this->buildAddress('flatrate_flatrate', 5.00), 38.49);
+        $this->addressResource->expects($this->never())->method('save');
+        $this->checkoutSessionMock->method('getQuote')->willReturn($quote);
+
+        $this->controller->execute();
+
+        $this->assertTrue($this->captured['success']);
+    }
+
+    /**
+     * Luma charges base_grand_total, so the window needs the base currency to label it.
+     */
+    public function testReturnsTheBaseCurrencyWithTheQuoteCurrency(): void
+    {
+        $quote = $this->buildQuote($this->buildAddress('flatrate_flatrate', 5.00), 38.49);
+        $quote->method('getBaseCurrencyCode')->willReturn('CAD');
+        $this->checkoutSessionMock->method('getQuote')->willReturn($quote);
+
+        $this->controller->execute();
+
+        $this->assertSame('USD', $this->captured['quote']['currency_code']);
+        $this->assertSame('CAD', $this->captured['quote']['base_currency_code']);
+    }
+
+    /**
+     * @param Quote|MockObject $quote
+     * @return Address[]
+     */
+    private function restore($quote): array
     {
         $method = new \ReflectionMethod(GetQuoteData::class, 'restoreOwnedCustomerAddress');
         $method->setAccessible(true);
-        $method->invoke($this->controller, $quote);
+        return $method->invoke($this->controller, $quote);
+    }
+
+    /** @param Quote|MockObject $quote */
+    private function saveRestored($quote, array $addresses): void
+    {
+        $method = new \ReflectionMethod(GetQuoteData::class, 'saveRestoredAddresses');
+        $method->setAccessible(true);
+        $method->invoke($this->controller, $quote, $addresses);
     }
 
     /**
      * @param int|null $customerId
      * @param Address|MockObject $shippingAddress
+     * @param Address|MockObject|null $billingAddress
      * @return Quote|MockObject
      */
-    private function buildCustomerQuote($customerId, $shippingAddress)
+    private function buildCustomerQuote($customerId, $shippingAddress, $billingAddress = null)
     {
         $quote = $this->getMockBuilder(Quote::class)
             ->disableOriginalConstructor()
-            ->onlyMethods(['getBillingAddress', 'getShippingAddress'])
+            ->onlyMethods(['getId', 'getBillingAddress', 'getShippingAddress'])
             ->addMethods(['getCustomerId'])
             ->getMock();
+        $quote->method('getId')->willReturn(4277928);
         $quote->method('getCustomerId')->willReturn($customerId);
-        $quote->method('getBillingAddress')->willReturn(null);
+        $quote->method('getBillingAddress')->willReturn($billingAddress);
         $quote->method('getShippingAddress')->willReturn($shippingAddress);
         return $quote;
     }
@@ -350,6 +515,7 @@ class GetQuoteDataTest extends TestCase
             ->onlyMethods([
                 'getCustomerAddressId', 'getCity', 'getRegionId', 'getPostcode', 'getStreet',
                 'setCity', 'setRegionId', 'setRegion', 'setPostcode', 'setCountryId', 'setStreet',
+                'getRegion', 'getRegionCode',
             ])
             ->getMock();
         $address->method('getCustomerAddressId')->willReturn($customerAddressId);
@@ -387,9 +553,10 @@ class GetQuoteDataTest extends TestCase
 
     /**
      * @param Address|MockObject|null $address
+     * @param Address|MockObject|null $billing
      * @return Quote|MockObject
      */
-    private function buildQuote($address, float $grandTotal, bool $isVirtual = false)
+    private function buildQuote($address, float $grandTotal, bool $isVirtual = false, $billing = null, $customerId = null)
     {
         $quote = $this->getMockBuilder(Quote::class)
             ->disableOriginalConstructor()
@@ -399,13 +566,14 @@ class GetQuoteDataTest extends TestCase
             ])
             ->addMethods([
                 'setTotalsCollectedFlag', 'getGrandTotal', 'getBaseGrandTotal',
-                'getSubtotal', 'getQuoteCurrencyCode', 'getCustomerEmail',
+                'getSubtotal', 'getQuoteCurrencyCode', 'getBaseCurrencyCode', 'getCustomerEmail', 'getCustomerId',
             ])
             ->getMock();
         $quote->method('getId')->willReturn(4277928);
         $quote->method('isVirtual')->willReturn($isVirtual);
         $quote->method('getShippingAddress')->willReturn($address);
-        $quote->method('getBillingAddress')->willReturn(null);
+        $quote->method('getBillingAddress')->willReturn($billing);
+        $quote->method('getCustomerId')->willReturn($customerId);
         $quote->method('setTotalsCollectedFlag')->willReturnSelf();
         $quote->method('getTotals')->willReturn([]);
         $quote->method('getGrandTotal')->willReturn($grandTotal);

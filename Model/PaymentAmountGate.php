@@ -6,21 +6,91 @@ namespace PayStand\PayStandMagento\Model;
 
 use Magento\Sales\Model\Order;
 use PayStand\PayStandMagento\Helper\CloudLogger;
+use Psr\Log\LoggerInterface;
 
 /**
  * Checks the Paystand charge against the order total before an invoice.
  * A mismatch holds the order. Payer fees come from Paystand's fee split.
+ *
+ * Paystand fields, from Roadrunner's payment.json, fee-split.json and payment-domestic.js:
+ * amount is what the payer paid, in currency, and is set to feeSplit.payerTotal.
+ * feeSplit.subtotal is that amount before payer fees and discounts. settlementAmount is
+ * the processor's figure in settlementCurrency, which differs after a currency conversion.
  */
 class PaymentAmountGate
 {
     public const ACTION_INVOICE = 'invoice';
     public const ACTION_HOLD = 'hold';
 
+    /** checkOrder() results. */
+    public const OUTCOME_INVOICE = 'invoice';
+    public const OUTCOME_HELD = 'held';
+    public const OUTCOME_HOLD_FAILED = 'hold_failed';
+
     public const REASON_MATCH = 'match';
     public const REASON_MISMATCH = 'mismatch';
     public const REASON_UNVERIFIED = 'unverified';
 
     public const TOLERANCE_CENTS = 1;
+
+    // An invoice made in the admin bills the full order total, whatever Paystand charged.
+    private const MANUAL_INVOICE_WARNING = ' A manual invoice bills the full order total.'
+        . ' Check the amount in Paystand before you invoice.';
+
+    /** @var LoggerInterface */
+    private $logger;
+
+    public function __construct(LoggerInterface $logger)
+    {
+        $this->logger = $logger;
+    }
+
+    /**
+     * Decide for this order and hold it when the amount does not match. The caller
+     * invoices only on OUTCOME_INVOICE. A hold that cannot be saved is logged, not thrown.
+     *
+     * @param mixed $order Magento order
+     * @param array<string, mixed> $paymentData Paystand payment
+     */
+    public function checkOrder($order, array $paymentData): string
+    {
+        $decision = $this->decide(
+            $order->getGrandTotal(),
+            $order->getBaseGrandTotal(),
+            $order->getOrderCurrencyCode(),
+            $order->getBaseCurrencyCode(),
+            $order->getData('paystand_adjustment'),
+            true,
+            $paymentData
+        );
+        if ($decision['action'] === self::ACTION_INVOICE) {
+            return self::OUTCOME_INVOICE;
+        }
+
+        $paymentId = (string)($paymentData['id'] ?? '');
+        $comment = $this->comment($decision, $paymentId);
+        try {
+            $this->hold($order, $decision, $paymentId);
+        } catch (\Throwable $e) {
+            $this->logger->error(
+                '>>>>> PAYSTAND-AMOUNT-GATE-HOLD-FAILED: order ' . $order->getIncrementId()
+                . ' was not invoiced and could not be held: ' . $e->getMessage() . ' ' . $comment
+            );
+            try {
+                CloudLogger::ship(CloudLogger::EVENT_PAYMENT_AMOUNT_HOLD_FAILED, [
+                    'quote_id' => (string)($order->getQuoteId() ?? ''),
+                    'payment_id' => $paymentId,
+                    'error_message' => $e->getMessage() . ' ' . $comment,
+                ]);
+            } catch (\Throwable $ignored) {
+                // CloudLogger failure — ignored
+            }
+            return self::OUTCOME_HOLD_FAILED;
+        }
+
+        $this->logger->warning('>>>>> PAYSTAND-AMOUNT-GATE: ' . $comment);
+        return self::OUTCOME_HELD;
+    }
 
     /**
      * @param mixed $paystandAdjustment Browser fee or discount. Not used when the payment has a fee split.
@@ -113,27 +183,26 @@ class PaymentAmountGate
     }
 
     /**
-     * Hold the order and record why. An order already on hold is left as it is.
+     * Hold the order and record why. An order already on hold keeps its hold and
+     * still gets the comment. Throws when the order cannot be saved.
      *
      * @param mixed $order Magento order
      * @param array{action:string,reason:string,charged:?float,expected:?float,currency:?string,orderTotal:?float} $decision
      */
     public function hold($order, array $decision, string $paymentId): void
     {
-        if ((string)$order->getState() === Order::STATE_HOLDED) {
-            return;
-        }
-
-        try {
-            if ($order->canHold()) {
-                $order->hold();
-            } else {
+        if ((string)$order->getState() !== Order::STATE_HOLDED) {
+            try {
+                if ($order->canHold()) {
+                    $order->hold();
+                } else {
+                    $order->setState(Order::STATE_HOLDED);
+                    $order->setStatus(Order::STATE_HOLDED);
+                }
+            } catch (\Throwable $e) {
                 $order->setState(Order::STATE_HOLDED);
                 $order->setStatus(Order::STATE_HOLDED);
             }
-        } catch (\Throwable $e) {
-            $order->setState(Order::STATE_HOLDED);
-            $order->setStatus(Order::STATE_HOLDED);
         }
 
         $comment = $this->comment($decision, $paymentId);
@@ -178,13 +247,14 @@ class PaymentAmountGate
                     $currency
                 );
             }
-            return $message . sprintf(' Payment %s. The order is on hold and was not invoiced.', $paymentId);
+            return $message . sprintf(' Payment %s. The order is on hold and was not invoiced.', $paymentId)
+                . self::MANUAL_INVOICE_WARNING;
         }
 
         return sprintf(
             'Paystand payment %s could not be checked against the order total. The order is on hold and was not invoiced.',
             $paymentId
-        );
+        ) . self::MANUAL_INVOICE_WARNING;
     }
 
     public static function centsApart(float $left, float $right): int

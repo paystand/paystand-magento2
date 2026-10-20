@@ -75,6 +75,16 @@ class CloudLogger
     // Paystand amount or currency could not be read. Hold, do not invoice.
     const EVENT_PAYMENT_AMOUNT_UNVERIFIED = 'payment_amount_unverified';
 
+    // The amount check failed and the hold could not be saved. Not invoiced, not held.
+    const EVENT_PAYMENT_AMOUNT_HOLD_FAILED = 'payment_amount_hold_failed';
+
+    // A paid webhook found the order on hold, complete or closed and left it as it is.
+    const EVENT_WEBHOOK_ORDER_NOT_OPEN = 'webhook_order_not_open';
+
+    // getquotedata restored a saved customer address but could not save it. The
+    // window charges tax for the restored address; placeOrder may not.
+    const EVENT_QUOTE_ADDRESS_RESTORE_FAILED = 'quote_address_restore_failed';
+
     /**
      * Resolve the merchant's customer ID from store config.
      * Falls back to publishable key if customer ID is not set.

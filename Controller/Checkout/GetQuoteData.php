@@ -16,6 +16,7 @@ use Magento\Customer\Api\AddressRepositoryInterface;
 use Magento\Customer\Api\CustomerRepositoryInterface;
 use Magento\Framework\Exception\NoSuchEntityException;
 use Magento\Framework\Exception\LocalizedException;
+use Magento\Quote\Model\ResourceModel\Quote\Address as QuoteAddressResource;
 use PayStand\PayStandMagento\Helper\CaptureSnapshot;
 use PayStand\PayStandMagento\Helper\CloudLogger;
 use PayStand\PayStandMagento\Helper\QuoteShipping;
@@ -31,6 +32,7 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
     private QuoteShipping $quoteShipping;
     private CaptureSnapshot $captureSnapshot;
     private AddressRepositoryInterface $addressRepository;
+    private QuoteAddressResource $quoteAddressResource;
 
     public function __construct(
         JsonFactory $resultJsonFactory,
@@ -40,7 +42,8 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
         LoggerInterface $logger,
         QuoteShipping $quoteShipping,
         CaptureSnapshot $captureSnapshot,
-        AddressRepositoryInterface $addressRepository
+        AddressRepositoryInterface $addressRepository,
+        QuoteAddressResource $quoteAddressResource
     ) {
         $this->resultJsonFactory = $resultJsonFactory;
         $this->checkoutSession = $checkoutSession;
@@ -50,6 +53,7 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
         $this->quoteShipping = $quoteShipping;
         $this->captureSnapshot = $captureSnapshot;
         $this->addressRepository = $addressRepository;
+        $this->quoteAddressResource = $quoteAddressResource;
     }
 
     /**
@@ -82,12 +86,14 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
      * Restore quote addresses from the saved address they point at, if this customer owns it.
      *
      * @param \Magento\Quote\Model\Quote $quote
+     * @return \Magento\Quote\Model\Quote\Address[] the addresses that changed
      */
-    private function restoreOwnedCustomerAddress($quote): void
+    private function restoreOwnedCustomerAddress($quote): array
     {
+        $restored = [];
         $customerId = (int)$quote->getCustomerId();
         if ($customerId <= 0) {
-            return;
+            return $restored;
         }
         foreach ([$quote->getBillingAddress(), $quote->getShippingAddress()] as $address) {
             if (!$address) {
@@ -100,6 +106,11 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
             try {
                 $saved = $this->addressRepository->getById($addressId);
             } catch (\Throwable $e) {
+                $this->logger->warning('[Paystand GetQuoteData] Saved address not read, quote address kept', [
+                    'quote_id' => $quote->getId(),
+                    'customer_address_id' => $addressId,
+                    'error' => $e->getMessage(),
+                ]);
                 continue;
             }
             if ((int)$saved->getCustomerId() !== $customerId) {
@@ -124,6 +135,39 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
             $address->setPostcode($saved->getPostcode());
             $address->setCountryId($saved->getCountryId());
             $address->setStreet($saved->getStreet());
+            $restored[] = $address;
+        }
+        return $restored;
+    }
+
+    /**
+     * placeOrder reloads the quote, so a restored address must be in the database for
+     * the order to carry the tax the window charges. A failed save is logged only.
+     *
+     * @param \Magento\Quote\Model\Quote $quote
+     * @param \Magento\Quote\Model\Quote\Address[] $addresses
+     */
+    private function saveRestoredAddresses($quote, array $addresses): void
+    {
+        foreach ($addresses as $address) {
+            try {
+                $this->quoteAddressResource->save($address);
+            } catch (\Throwable $e) {
+                $this->logger->error('[Paystand GetQuoteData] Restored address not saved', [
+                    'quote_id' => $quote->getId(),
+                    'address_type' => $address->getAddressType(),
+                    'error' => $e->getMessage(),
+                ]);
+                try {
+                    CloudLogger::ship(CloudLogger::EVENT_QUOTE_ADDRESS_RESTORE_FAILED, [
+                        'quote_id'      => (string)$quote->getId(),
+                        'error_message' => 'getquotedata ' . $address->getAddressType() . ' address not saved: '
+                            . $e->getMessage(),
+                    ]);
+                } catch (\Throwable $ignored) {
+                    // CloudLogger failure — silently ignored to protect the payment flow
+                }
+            }
         }
     }
 
@@ -152,11 +196,12 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
             // Drop the snapshot of an earlier open before pricing. If this request fails, the
             // browser prices the window itself and nothing restamps.
             $this->captureSnapshot->clearCheckoutIntent($quote);
-            $this->restoreOwnedCustomerAddress($quote);
+            $restoredAddresses = $this->restoreOwnedCustomerAddress($quote);
 
             // Clear totals_collected_flag so collectTotals() recalculates. The recollect can
             // clear the shipping selection, so QuoteShipping brackets it.
             $shipping = $this->quoteShipping->recollectPreservingShipping($quote, 'getquotedata');
+            $this->saveRestoredAddresses($quote, $restoredAddresses);
 
             $this->shipShippingBreadcrumb(
                 $quote,
@@ -248,6 +293,7 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
                     'base_grand_total' => $quote->getBaseGrandTotal(),
                     'subtotal' => $quote->getSubtotal(),
                     'currency_code' => $quote->getQuoteCurrencyCode(),
+                    'base_currency_code' => $quote->getBaseCurrencyCode(),
                     'items_count' => $quote->getItemsCount(),
                     'items_qty' => $quote->getItemsQty(),
                     'totals' => $totalsData

@@ -544,20 +544,7 @@ class AfterOrderPlaceObserver implements ObserverInterface
             return $this->createInvoice($order);
         }
 
-        $decision = $this->amountGate->decide(
-            $order->getGrandTotal(),
-            $order->getBaseGrandTotal(),
-            $order->getOrderCurrencyCode(),
-            $order->getBaseCurrencyCode(),
-            $order->getData('paystand_adjustment'),
-            true,
-            $paymentData
-        );
-        if ($decision['action'] !== PaymentAmountGate::ACTION_INVOICE) {
-            $this->amountGate->hold($order, $decision, (string)($paymentData['id'] ?? ''));
-            $this->_logger->warning(
-                '>>>>> PAYSTAND-AMOUNT-GATE: ' . $this->amountGate->comment($decision, (string)($paymentData['id'] ?? ''))
-            );
+        if ($this->amountGate->checkOrder($order, $paymentData) !== PaymentAmountGate::OUTCOME_INVOICE) {
             return null;
         }
 

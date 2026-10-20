@@ -7,15 +7,20 @@ use Magento\Sales\Model\Order;
 use PayStand\PayStandMagento\Model\PaymentAmountGate;
 use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
+use Psr\Log\LoggerInterface;
 
 class PaymentAmountGateTest extends TestCase
 {
     /** @var PaymentAmountGate */
     private $gate;
 
+    /** @var LoggerInterface|MockObject */
+    private $logger;
+
     protected function setUp(): void
     {
-        $this->gate = new PaymentAmountGate();
+        $this->logger = $this->createMock(LoggerInterface::class);
+        $this->gate = new PaymentAmountGate($this->logger);
     }
 
     public function testMatchingChargeIsInvoiced(): void
@@ -251,15 +256,155 @@ class PaymentAmountGateTest extends TestCase
         $this->gate->hold($order, $this->mismatch(), 'pay-1');
     }
 
-    public function testHoldLeavesAnOrderThatIsAlreadyOnHold(): void
+    public function testHoldKeepsAnExistingHoldAndStillRecordsTheAmounts(): void
     {
         $order = $this->buildOrder(Order::STATE_HOLDED);
         $order->expects($this->never())->method('hold');
         $order->expects($this->never())->method('setState');
-        $order->expects($this->never())->method('addCommentToStatusHistory');
-        $order->expects($this->never())->method('save');
+        $order->expects($this->once())->method('addCommentToStatusHistory')->with(
+            $this->callback(function ($comment) {
+                return strpos((string)$comment, 'Paystand charged 106.14 USD.') !== false;
+            }),
+            false
+        );
+        $order->expects($this->once())->method('save');
 
         $this->gate->hold($order, $this->mismatch(), 'pay-1');
+    }
+
+    public function testHoldThrowsWhenTheOrderCannotBeSaved(): void
+    {
+        $order = $this->buildOrder(Order::STATE_PROCESSING);
+        $order->method('canHold')->willReturn(true);
+        $order->method('save')->willThrowException(new \RuntimeException('deadlock'));
+
+        $this->expectException(\RuntimeException::class);
+        $this->gate->hold($order, $this->mismatch(), 'pay-1');
+    }
+
+    public function testBothCommentsWarnAboutAManualInvoice(): void
+    {
+        $unverified = $this->gate->decide(10, 10, 'USD', 'USD', 0, true, ['currency' => 'USD']);
+
+        foreach ([$this->mismatch(), $unverified] as $decision) {
+            $this->assertStringContainsString(
+                'A manual invoice bills the full order total. Check the amount in Paystand before you invoice.',
+                $this->gate->comment($decision, 'pay-1')
+            );
+        }
+    }
+
+    public function testTwoCentDifferenceHolds(): void
+    {
+        $decision = $this->gate->decide(109.63, 109.63, 'USD', 'USD', 0, true, [
+            'amount' => '109.65',
+            'currency' => 'USD',
+        ]);
+
+        $this->assertSame(PaymentAmountGate::ACTION_HOLD, $decision['action']);
+        $this->assertSame(PaymentAmountGate::REASON_MISMATCH, $decision['reason']);
+    }
+
+    /**
+     * @dataProvider zeroAmounts
+     */
+    public function testZeroAmountIsAMismatch($amount): void
+    {
+        $decision = $this->gate->decide(109.63, 109.63, 'USD', 'USD', 0, true, [
+            'amount' => $amount,
+            'currency' => 'USD',
+        ]);
+
+        $this->assertSame(PaymentAmountGate::ACTION_HOLD, $decision['action']);
+        $this->assertSame(PaymentAmountGate::REASON_MISMATCH, $decision['reason']);
+        $this->assertSame(0.0, $decision['charged']);
+    }
+
+    public static function zeroAmounts(): array
+    {
+        return ['integer string' => ['0'], 'decimal string' => ['0.00'], 'number' => [0]];
+    }
+
+    public function testEmptyAmountIsUnverified(): void
+    {
+        $decision = $this->gate->decide(109.63, 109.63, 'USD', 'USD', 0, true, [
+            'amount' => '',
+            'currency' => 'USD',
+        ]);
+
+        $this->assertSame(PaymentAmountGate::REASON_UNVERIFIED, $decision['reason']);
+        $this->assertNull($decision['charged']);
+    }
+
+    public function testCurrencyThatIsNeitherOrderNorBaseIsUnverified(): void
+    {
+        $decision = $this->gate->decide(100.00, 110.00, 'EUR', 'USD', 0, true, [
+            'amount' => '100.00',
+            'currency' => 'GBP',
+        ]);
+
+        $this->assertSame(PaymentAmountGate::ACTION_HOLD, $decision['action']);
+        $this->assertSame(PaymentAmountGate::REASON_UNVERIFIED, $decision['reason']);
+    }
+
+    public function testBaseCurrencyChargeIsComparedWithTheBaseTotal(): void
+    {
+        $decision = $this->gate->decide(100.00, 110.00, 'EUR', 'USD', 0, true, [
+            'amount' => '110.00',
+            'currency' => 'USD',
+        ]);
+
+        $this->assertSame(PaymentAmountGate::ACTION_INVOICE, $decision['action']);
+        $this->assertSame(110.00, $decision['expected']);
+    }
+
+    public function testBaseAmountLabelledWithTheOrderCurrencyHolds(): void
+    {
+        $decision = $this->gate->decide(100.00, 110.00, 'EUR', 'USD', 0, true, [
+            'amount' => '110.00',
+            'currency' => 'EUR',
+        ]);
+
+        $this->assertSame(PaymentAmountGate::REASON_MISMATCH, $decision['reason']);
+        $this->assertSame(100.00, $decision['expected']);
+    }
+
+    public function testCheckOrderReturnsInvoiceOnAMatchAndLeavesTheOrder(): void
+    {
+        $order = $this->buildOrder(Order::STATE_PROCESSING, 109.63);
+        $order->expects($this->never())->method('hold');
+        $order->expects($this->never())->method('save');
+
+        $outcome = $this->gate->checkOrder($order, ['id' => 'pay-1', 'amount' => '109.63', 'currency' => 'USD']);
+
+        $this->assertSame(PaymentAmountGate::OUTCOME_INVOICE, $outcome);
+    }
+
+    public function testCheckOrderHoldsAMismatchAndLogsIt(): void
+    {
+        $order = $this->buildOrder(Order::STATE_PROCESSING, 109.63);
+        $order->method('canHold')->willReturn(true);
+        $order->expects($this->once())->method('hold');
+        $order->expects($this->once())->method('save');
+        $this->logger->expects($this->once())->method('warning')
+            ->with($this->stringContains('PAYSTAND-AMOUNT-GATE: Paystand charged 106.14 USD'));
+
+        $outcome = $this->gate->checkOrder($order, ['id' => 'pay-1', 'amount' => '106.14', 'currency' => 'USD']);
+
+        $this->assertSame(PaymentAmountGate::OUTCOME_HELD, $outcome);
+    }
+
+    public function testCheckOrderReportsAHoldThatWasNotSaved(): void
+    {
+        $order = $this->buildOrder(Order::STATE_PROCESSING, 109.63);
+        $order->method('canHold')->willReturn(true);
+        $order->method('save')->willThrowException(new \RuntimeException('deadlock'));
+        $this->logger->expects($this->once())->method('error')
+            ->with($this->stringContains('PAYSTAND-AMOUNT-GATE-HOLD-FAILED: order 000000123'));
+
+        $outcome = $this->gate->checkOrder($order, ['id' => 'pay-1', 'amount' => '106.14', 'currency' => 'USD']);
+
+        $this->assertSame(PaymentAmountGate::OUTCOME_HOLD_FAILED, $outcome);
     }
 
     private function mismatch(): array
@@ -271,17 +416,24 @@ class PaymentAmountGateTest extends TestCase
     }
 
     /** @return Order|MockObject */
-    private function buildOrder(string $state)
+    private function buildOrder(string $state, float $grandTotal = 109.63)
     {
         $order = $this->getMockBuilder(Order::class)
             ->disableOriginalConstructor()
             ->onlyMethods([
                 'getState', 'canHold', 'hold', 'setState', 'setStatus',
-                'addCommentToStatusHistory', 'save', 'getQuoteId',
+                'addCommentToStatusHistory', 'save', 'getQuoteId', 'getIncrementId',
+                'getGrandTotal', 'getBaseGrandTotal', 'getOrderCurrencyCode', 'getBaseCurrencyCode', 'getData',
             ])
             ->getMock();
         $order->method('getState')->willReturn($state);
         $order->method('getQuoteId')->willReturn(4277928);
+        $order->method('getIncrementId')->willReturn('000000123');
+        $order->method('getGrandTotal')->willReturn($grandTotal);
+        $order->method('getBaseGrandTotal')->willReturn($grandTotal);
+        $order->method('getOrderCurrencyCode')->willReturn('USD');
+        $order->method('getBaseCurrencyCode')->willReturn('USD');
+        $order->method('getData')->willReturn(null);
         return $order;
     }
 }

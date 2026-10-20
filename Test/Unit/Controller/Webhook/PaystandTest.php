@@ -517,7 +517,7 @@ class PaystandTest extends TestCase
 
     public function testMismatchedOrderStaysOnHoldAndNotInvoicedThroughPostedThenPaid(): void
     {
-        $this->set('amountGate', new PaymentAmountGate());
+        $this->set('amountGate', new PaymentAmountGate($this->loggerMock));
         $this->wireTransactionBuilder();
         $invoiceService = $this->getMockBuilder(InvoiceService::class)->disableOriginalConstructor()->getMock();
         $invoiceService->expects($this->never())->method('prepareInvoice');
@@ -537,30 +537,38 @@ class PaystandTest extends TestCase
         $order->expects($this->once())->method('addCommentToStatusHistory');
         $this->controller->method('findOrder')->willReturn($order);
         $this->orderRepositoryMock->method('get')->willReturn($order);
-
-        $this->jsonResultMock->expects($this->exactly(2))
-            ->method('setHttpResponseCode')
-            ->with(200)
-            ->willReturnSelf();
+        $response = $this->captureResponse();
 
         $this->controller->execute();
         $this->assertSame(Order::STATE_HOLDED, $order->getState());
+        $this->assertSame([200], $response->codes);
+        $this->assertSame(
+            'Paystand amount not confirmed against the order total, order held and not invoiced',
+            (string)$response->data['success_message']
+        );
+        $this->assertArrayNotHasKey('order', $response->data);
 
         $status = 'paid';
         $this->controller->execute();
         $this->assertSame(Order::STATE_HOLDED, $order->getState());
+        $this->assertSame([200, 200], $response->codes);
     }
 
     /**
-     * A late paid webhook must not reopen or hold a complete order.
+     * A late paid webhook must not reopen or hold a complete or closed order.
+     *
+     * @dataProvider finishedStates
      */
-    public function testLeavesACompleteOrderAsItIs(): void
+    public function testLeavesAFinishedOrderAsItIs(string $state): void
     {
         $this->set('updateOrderOn', 'paid');
-        $gate = $this->getMockBuilder(PaymentAmountGate::class)->onlyMethods(['decide', 'hold'])->getMock();
-        $gate->expects($this->never())->method('decide');
-        $gate->expects($this->never())->method('hold');
+        $gate = $this->getMockBuilder(PaymentAmountGate::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['checkOrder'])
+            ->getMock();
+        $gate->expects($this->never())->method('checkOrder');
         $this->set('amountGate', $gate);
+        $warnings = $this->captureWarnings();
 
         $this->requestMock->method('getContent')
             ->willReturn($this->makeBody(['resource' => $this->paymentResource('paid', '106.14')]));
@@ -569,7 +577,7 @@ class PaystandTest extends TestCase
         $this->setupQuoteIdMask();
         $this->setupQuoteMock();
 
-        $order = $this->buildOrderMock(Order::STATE_COMPLETE);
+        $order = $this->buildOrderMock($state);
         $order->expects($this->never())->method('setState');
         $order->expects($this->never())->method('save');
         $this->controller->method('findOrder')->willReturn($order);
@@ -581,27 +589,231 @@ class PaystandTest extends TestCase
             ->willReturnSelf();
 
         $this->controller->execute();
+
+        $this->assertContains(
+            '>>>>> PAYSTAND-ORDER-NOT-OPEN: order 000000001 is ' . $state
+                . ', payment mp0m4r5x8ovwo0i1btgop38l paid not invoiced, recorded=no',
+            $warnings->list
+        );
+    }
+
+    public static function finishedStates(): array
+    {
+        return ['complete' => [Order::STATE_COMPLETE], 'closed' => [Order::STATE_CLOSED]];
+    }
+
+    /**
+     * A merchant or fraud hold stays. The payment and the amount check are recorded
+     * on the order once, and the order is not invoiced.
+     */
+    public function testMerchantHeldOrderRecordsThePaymentOnceAndStaysHeld(): void
+    {
+        $this->set('amountGate', new PaymentAmountGate($this->loggerMock));
+        $this->wireTransactionBuilder();
+        $invoiceService = $this->wireInvoicing($invoiceCount);
+        $invoiceService->expects($this->never())->method('prepareInvoice');
+
+        $status = 'posted';
+        $this->requestMock->method('getContent')->willReturnCallback(function () use (&$status) {
+            return $this->makeBody(['resource' => $this->paymentResource($status, '109.63')]);
+        });
+        $this->controller->method('getPaystandAccessToken')->willReturn('fake-token');
+        $this->controller->method('verifyPaystandEvent')->willReturn(true);
+        $this->setupQuoteIdMask();
+        $this->setupQuoteMock();
+        $warnings = $this->captureWarnings();
+
+        $order = $this->buildGatedOrderMock(Order::STATE_HOLDED, 109.63);
+        $order->expects($this->never())->method('hold');
+        $order->expects($this->once())->method('addCommentToStatusHistory')->with(
+            $this->callback(function ($comment) {
+                return (string)$comment === 'Paystand payment mp0m4r5x8ovwo0i1btgop38l matches the order total.'
+                    . ' The order was on hold, so it was not invoiced.';
+            }),
+            false
+        );
+        $this->controller->method('findOrder')->willReturn($order);
+        $this->orderRepositoryMock->method('get')->willReturn($order);
+
+        $this->controller->execute();
+        $status = 'paid';
+        $this->controller->execute();
+
+        $this->assertSame(Order::STATE_HOLDED, $order->getState());
+        $this->assertSame('mp0m4r5x8ovwo0i1btgop38l', $order->getPayment()->getLastTransId());
+        $this->assertContains(
+            '>>>>> PAYSTAND-ORDER-NOT-OPEN: order 1000763084 is holded, payment mp0m4r5x8ovwo0i1btgop38l'
+                . ' posted not invoiced, recorded=invoice',
+            $warnings->list
+        );
+        $this->assertContains(
+            '>>>>> PAYSTAND-ORDER-NOT-OPEN: order 1000763084 is holded, payment mp0m4r5x8ovwo0i1btgop38l'
+                . ' paid not invoiced, recorded=already',
+            $warnings->list
+        );
+    }
+
+    /**
+     * posted then paid for one payment creates one invoice, from either open state.
+     *
+     * @dataProvider openStates
+     */
+    public function testMatchingPaymentCreatesExactlyOneInvoice(string $state): void
+    {
+        $this->set('amountGate', new PaymentAmountGate($this->loggerMock));
+        $this->wireTransactionBuilder();
+        $invoiceService = $this->wireInvoicing($invoiceCount);
+
+        $status = 'posted';
+        $this->requestMock->method('getContent')->willReturnCallback(function () use (&$status) {
+            return $this->makeBody(['resource' => $this->paymentResource($status, '109.63')]);
+        });
+        $this->controller->method('getPaystandAccessToken')->willReturn('fake-token');
+        $this->controller->method('verifyPaystandEvent')->willReturn(true);
+        $this->setupQuoteIdMask();
+        $this->setupQuoteMock();
+        $response = $this->captureResponse();
+
+        $order = $this->buildGatedOrderMock($state, 109.63);
+        $order->expects($this->never())->method('hold');
+        $this->controller->method('findOrder')->willReturn($order);
+        $this->orderRepositoryMock->method('get')->willReturn($order);
+
+        $this->controller->execute();
+        $this->assertSame(1, $invoiceCount);
+        $this->assertSame(Order::STATE_PROCESSING, $order->getState());
+
+        $status = 'paid';
+        $this->controller->execute();
+        $this->assertSame(1, $invoiceCount);
+        $this->assertSame(
+            'Order already has invoice, no further action needed',
+            (string)$response->data['success_message']
+        );
+    }
+
+    public static function openStates(): array
+    {
+        return ['new' => ['new'], 'processing' => [Order::STATE_PROCESSING]];
+    }
+
+    public function testProcessingOrderInvoiceIsReported(): void
+    {
+        $this->set('amountGate', new PaymentAmountGate($this->loggerMock));
+        $this->wireTransactionBuilder();
+        $this->wireInvoicing($invoiceCount);
+        $response = $this->deliver(Order::STATE_PROCESSING, $this->paymentResource('posted', '109.63'));
+
+        $this->assertSame(1, $invoiceCount);
+        $this->assertSame('Invoice created for order', (string)$response->data['success_message']);
+    }
+
+    /**
+     * Order in EUR with a USD base. A USD payment is checked against the base total.
+     */
+    public function testBaseCurrencyPaymentMatchingTheBaseTotalIsInvoiced(): void
+    {
+        $this->set('amountGate', new PaymentAmountGate($this->loggerMock));
+        $this->wireTransactionBuilder();
+        $this->wireInvoicing($invoiceCount);
+
+        $this->deliver(
+            Order::STATE_PROCESSING,
+            $this->paymentResource('posted', '110.00'),
+            100.00,
+            'EUR',
+            110.00,
+            'USD'
+        );
+
+        $this->assertSame(1, $invoiceCount);
+    }
+
+    /**
+     * @dataProvider heldPayments
+     */
+    public function testPaymentThatCannotBeConfirmedIsHeldAndNotInvoiced(array $payment, string $comment): void
+    {
+        $this->set('amountGate', new PaymentAmountGate($this->loggerMock));
+        $this->wireTransactionBuilder();
+        $this->wireInvoicing($invoiceCount);
+
+        $order = null;
+        $response = $this->deliver(Order::STATE_PROCESSING, $payment, 100.00, 'EUR', 110.00, 'USD', $order, $comment);
+
+        $this->assertSame(0, $invoiceCount);
+        $this->assertSame(Order::STATE_HOLDED, $order->getState());
+        $this->assertSame(
+            'Paystand amount not confirmed against the order total, order held and not invoiced',
+            (string)$response->data['success_message']
+        );
+    }
+
+    public static function heldPayments(): array
+    {
+        $noAmount = self::paymentResource('posted', '110.00');
+        unset($noAmount['amount']);
+        $noCurrency = self::paymentResource('posted', '110.00');
+        unset($noCurrency['currency']);
+        $otherCurrency = self::paymentResource('posted', '110.00');
+        $otherCurrency['currency'] = 'GBP';
+        $otherCurrency['feeSplit']['currency'] = 'GBP';
+        // The base amount labelled with the order currency, which Luma sent before.
+        $baseAsOrder = self::paymentResource('posted', '110.00');
+        $baseAsOrder['currency'] = 'EUR';
+        $baseAsOrder['feeSplit']['currency'] = 'EUR';
+        $twoCents = self::paymentResource('posted', '110.02');
+        $twoCents['currency'] = 'USD';
+
+        $unverified = 'could not be checked against the order total';
+        return [
+            'no amount' => [$noAmount, $unverified],
+            'no currency' => [$noCurrency, $unverified],
+            'neither order nor base currency' => [$otherCurrency, $unverified],
+            'base amount labelled with the order currency' => [$baseAsOrder, 'Paystand charged 110.00 EUR. The order total is 100.00 EUR.'],
+            'two cents over the base total' => [$twoCents, 'Paystand charged 110.02 USD. The order total is 110.00 USD.'],
+        ];
+    }
+
+    /**
+     * A hold that cannot be saved still answers 200, so Paystand does not retry into
+     * an invoice, and nothing is invoiced.
+     */
+    public function testHoldThatIsNotSavedAnswersOkWithoutAnInvoice(): void
+    {
+        $gate = $this->getMockBuilder(PaymentAmountGate::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['checkOrder'])
+            ->getMock();
+        $gate->expects($this->once())->method('checkOrder')->willReturn(PaymentAmountGate::OUTCOME_HOLD_FAILED);
+        $this->set('amountGate', $gate);
+        $this->wireTransactionBuilder();
+        $this->wireInvoicing($invoiceCount);
+
+        $response = $this->deliver(Order::STATE_PROCESSING, $this->paymentResource('posted', '106.14'));
+
+        $this->assertSame(0, $invoiceCount);
+        $this->assertSame([200], $response->codes);
+        $this->assertSame(
+            'Paystand amount not confirmed against the order total, order not invoiced, hold not saved',
+            (string)$response->data['success_message']
+        );
     }
 
     public function testInvoicedOrderIsNotCheckedOrHeld(): void
     {
-        $gate = $this->getMockBuilder(PaymentAmountGate::class)->onlyMethods(['decide', 'hold'])->getMock();
-        $gate->expects($this->never())->method('decide');
-        $gate->expects($this->never())->method('hold');
-        $this->set('amountGate', $gate);
-
-        $invoice = $this->getMockBuilder(\Magento\Sales\Model\Order\Invoice::class)
+        $gate = $this->getMockBuilder(PaymentAmountGate::class)
             ->disableOriginalConstructor()
+            ->onlyMethods(['checkOrder'])
             ->getMock();
-        $invoiceRepository = $this->getMockBuilder(InvoiceRepositoryInterface::class)->getMockForAbstractClass();
-        $invoiceRepository->method('get')->with(9)->willReturn($invoice);
-        $this->set('_invoiceRepository', $invoiceRepository);
+        $gate->expects($this->never())->method('checkOrder');
+        $this->set('amountGate', $gate);
         $this->setupInvoiceCollection(1, 9);
 
         $method = new \ReflectionMethod(Paystand::class, 'invoiceWhenAmountMatches');
         $method->setAccessible(true);
 
-        $this->assertSame($invoice, $method->invoke(
+        $this->assertSame('invoiced', $method->invoke(
             $this->controller,
             $this->buildOrderMock(Order::STATE_PROCESSING),
             $this->paymentResource('paid', '106.14')
@@ -745,7 +957,7 @@ class PaystandTest extends TestCase
     /**
      * Payment resource fields that createTransaction() and the amount gate read.
      */
-    private function paymentResource(string $status, string $amount): array
+    private static function paymentResource(string $status, string $amount): array
     {
         return [
             'id'                 => 'mp0m4r5x8ovwo0i1btgop38l',
@@ -764,18 +976,24 @@ class PaystandTest extends TestCase
     }
 
     /**
-     * Order mock whose state follows setState() and hold().
+     * Order mock whose state follows setState() and hold(). The payment keeps
+     * last_trans_id, so a repeat delivery of the same payment can be seen.
      */
-    private function buildGatedOrderMock(string $state, float $grandTotal): MockObject
-    {
+    private function buildGatedOrderMock(
+        string $state,
+        float $grandTotal,
+        string $currency = 'USD',
+        ?float $baseGrandTotal = null,
+        string $baseCurrency = 'USD'
+    ): MockObject {
         $payment = $this->getMockBuilder(Order\Payment::class)
             ->disableOriginalConstructor()
             ->onlyMethods([
-                'setLastTransId', 'setTransactionId', 'setAdditionalInformation',
+                'setTransactionId', 'setAdditionalInformation',
                 'addTransactionCommentsToOrder', 'setParentTransactionId', 'save',
             ])
             ->getMock();
-        foreach (['setLastTransId', 'setTransactionId', 'setAdditionalInformation', 'setParentTransactionId', 'save'] as $method) {
+        foreach (['setTransactionId', 'setAdditionalInformation', 'setParentTransactionId', 'save'] as $method) {
             $payment->method($method)->willReturnSelf();
         }
 
@@ -785,19 +1003,21 @@ class PaystandTest extends TestCase
                 'getId', 'getState', 'getStatus', 'getIncrementId', 'getQuoteId',
                 'setState', 'setStatus', 'save', 'getPayment', 'getData',
                 'getGrandTotal', 'getBaseGrandTotal', 'getOrderCurrencyCode', 'getBaseCurrencyCode',
-                'canHold', 'hold', 'addCommentToStatusHistory',
+                'canHold', 'hold', 'addCommentToStatusHistory', 'canInvoice', 'addStatusHistoryComment',
             ])
             ->getMock();
         $current = ['state' => $state, 'status' => $state];
+        $order->method('canInvoice')->willReturn(true);
+        $order->method('addStatusHistoryComment')->willReturnSelf();
         $order->method('getId')->willReturn(1);
         $order->method('getIncrementId')->willReturn('1000763084');
         $order->method('getQuoteId')->willReturn(42);
         $order->method('getPayment')->willReturn($payment);
         $order->method('getData')->willReturn(null);
         $order->method('getGrandTotal')->willReturn($grandTotal);
-        $order->method('getBaseGrandTotal')->willReturn($grandTotal);
-        $order->method('getOrderCurrencyCode')->willReturn('USD');
-        $order->method('getBaseCurrencyCode')->willReturn('USD');
+        $order->method('getBaseGrandTotal')->willReturn($baseGrandTotal ?? $grandTotal);
+        $order->method('getOrderCurrencyCode')->willReturn($currency);
+        $order->method('getBaseCurrencyCode')->willReturn($baseCurrency);
         $order->method('save')->willReturnSelf();
         $order->method('getState')->willReturnCallback(function () use (&$current) {
             return $current['state'];
@@ -842,6 +1062,137 @@ class PaystandTest extends TestCase
         }
         $builder->method('build')->willReturn($transaction);
         $this->set('_builderInterface', $builder);
+    }
+
+    /**
+     * Sends one webhook for an order in $state and returns what the controller answered.
+     *
+     * @param MockObject|null $order set to the order mock used
+     * @param string|null $comment expected in the single hold comment
+     */
+    private function deliver(
+        string $state,
+        array $payment,
+        float $grandTotal = 109.63,
+        string $currency = 'USD',
+        ?float $baseGrandTotal = null,
+        string $baseCurrency = 'USD',
+        &$order = null,
+        ?string $comment = null
+    ): \stdClass {
+        $this->requestMock->method('getContent')->willReturn($this->makeBody(['resource' => $payment]));
+        $this->controller->method('getPaystandAccessToken')->willReturn('fake-token');
+        $this->controller->method('verifyPaystandEvent')->willReturn(true);
+        $this->setupQuoteIdMask();
+        $this->setupQuoteMock();
+        $response = $this->captureResponse();
+
+        $order = $this->buildGatedOrderMock($state, $grandTotal, $currency, $baseGrandTotal, $baseCurrency);
+        if ($comment !== null) {
+            $order->expects($this->once())->method('addCommentToStatusHistory')->with(
+                $this->callback(function ($text) use ($comment) {
+                    return strpos((string)$text, $comment) !== false;
+                }),
+                false
+            );
+        }
+        $this->controller->method('findOrder')->willReturn($order);
+        $this->orderRepositoryMock->method('get')->willReturn($order);
+
+        $this->controller->execute();
+        return $response;
+    }
+
+    /**
+     * Records each response code and the last response body.
+     */
+    private function captureResponse(): \stdClass
+    {
+        $response = new \stdClass();
+        $response->codes = [];
+        $response->data = null;
+        $this->jsonResultMock = $this->getMockBuilder(JsonResult::class)
+            ->disableOriginalConstructor()
+            ->getMock();
+        $this->jsonResultMock->method('setHttpResponseCode')->willReturnCallback(function ($code) use ($response) {
+            $response->codes[] = $code;
+            return $this->jsonResultMock;
+        });
+        $this->jsonResultMock->method('setData')->willReturnCallback(function ($data) use ($response) {
+            $response->data = $data;
+            return $this->jsonResultMock;
+        });
+        $factory = $this->getMockBuilder(JsonFactory::class)->disableOriginalConstructor()->getMock();
+        $factory->method('create')->willReturn($this->jsonResultMock);
+        $this->set('_jsonResultFactory', $factory);
+        return $response;
+    }
+
+    /**
+     * Collects every warning the controller and the gate log.
+     */
+    private function captureWarnings(): \stdClass
+    {
+        $warnings = new \stdClass();
+        $warnings->list = [];
+        $this->loggerMock->method('warning')->willReturnCallback(function ($message) use ($warnings) {
+            $warnings->list[] = (string)$message;
+        });
+        return $warnings;
+    }
+
+    /**
+     * Invoice service and collection that count invoices, so a second delivery
+     * sees the invoice the first one made.
+     *
+     * @param int|null $invoiceCount set to the number of invoices created
+     * @return InvoiceService|MockObject
+     */
+    private function wireInvoicing(&$invoiceCount)
+    {
+        $invoiceCount = 0;
+        $invoice = $this->getMockBuilder(\Magento\Sales\Model\Order\Invoice::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['register', 'getOrder'])
+            ->getMock();
+        $invoice->method('register')->willReturnSelf();
+        $invoice->method('getOrder')->willReturn(
+            $this->getMockBuilder(Order::class)->disableOriginalConstructor()->onlyMethods([])->getMock()
+        );
+
+        $invoiceService = $this->getMockBuilder(InvoiceService::class)->disableOriginalConstructor()->getMock();
+        $invoiceService->method('prepareInvoice')->willReturnCallback(function () use (&$invoiceCount, $invoice) {
+            $invoiceCount++;
+            return $invoice;
+        });
+        $this->set('_invoiceService', $invoiceService);
+
+        $saveTransaction = $this->getMockBuilder(\Magento\Framework\DB\Transaction::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['addObject', 'save'])
+            ->getMock();
+        $saveTransaction->method('addObject')->willReturnSelf();
+        $saveTransaction->method('save')->willReturnSelf();
+        $transactionFactory = $this->getMockBuilder(TransactionFactory::class)->disableOriginalConstructor()->getMock();
+        $transactionFactory->method('create')->willReturn($saveTransaction);
+        $this->set('_transactionFactory', $transactionFactory);
+
+        $select = $this->getMockBuilder(\Magento\Framework\DB\Select::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['limit'])
+            ->getMock();
+        $select->method('limit')->willReturnSelf();
+        $collection = $this->getMockBuilder(\Magento\Sales\Model\ResourceModel\Order\Invoice\Collection::class)
+            ->disableOriginalConstructor()
+            ->getMock();
+        $collection->method('addAttributeToFilter')->willReturnSelf();
+        $collection->method('count')->willReturnCallback(function () use (&$invoiceCount) {
+            return $invoiceCount;
+        });
+        $collection->method('getSelect')->willReturn($select);
+        $this->invoiceCollectionFactoryMock->method('create')->willReturn($collection);
+
+        return $invoiceService;
     }
 
     /**

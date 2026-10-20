@@ -56,7 +56,7 @@ class AfterOrderPlaceObserverTest extends TestCase
             $this->getMockBuilder(QuoteFactory::class)->disableOriginalConstructor()->getMock(),
             $this->cartRepositoryMock,
             $this->getMockBuilder(OrderRepositoryInterface::class)->getMockForAbstractClass(),
-            new PaymentAmountGate()
+            new PaymentAmountGate($this->loggerMock)
         );
     }
 

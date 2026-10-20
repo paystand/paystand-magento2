@@ -185,7 +185,12 @@ define(
                 serverQuote && serverQuote.base_grand_total,
                 clientTotals.base_grand_total
             );
+            // paymentAmount is the base grand total, so it goes with the base currency. The
+            // quote currency is used only when neither source has a base currency.
             const currencyCode = preferValue(
+                serverQuote && serverQuote.base_currency_code,
+                clientTotals.base_currency_code
+            ) || preferValue(
                 serverQuote && serverQuote.currency_code,
                 clientTotals.quote_currency_code
             );

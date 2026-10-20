@@ -46,6 +46,10 @@ class Paystand extends \Magento\Framework\App\Action\Action
      */
     const PAYMENT_STATUS_TIMEOUT_SECONDS = 5;
 
+    /** invoiceWhenAmountMatches() results, next to PaymentAmountGate's hold outcomes. */
+    private const INVOICED = 'invoiced';
+    private const NOT_INVOICEABLE = 'not_invoiceable';
+
     /** @var \Psr\Log\LoggerInterface */
     protected $_logger;
 
@@ -424,11 +428,27 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 return $result;
             }
 
-            // Do not release a hold or reopen a complete or closed order.
+            // A hold stays in place, whether a merchant, a fraud check or the amount check set it,
+            // and a complete or closed order is not reopened. A held order records the payment once.
             if (in_array($state, [Order::STATE_HOLDED, Order::STATE_COMPLETE, Order::STATE_CLOSED], true)) {
-                $this->_logger->debug(
-                    '>>>>> PAYSTAND-FINISH: Order is ' . $state . ', no further action needed'
-                );
+                $recorded = 'no';
+                $wouldInvoice = $psPaymentStatus == $updateOrderOn
+                    || $psPaymentStatus == 'paid' || $psPaymentStatus == 'posted';
+                if ($state === Order::STATE_HOLDED && $wouldInvoice) {
+                    $recorded = $this->recordPaymentOnHeldOrder($order, json_decode($body, true)['resource']);
+                }
+                $notOpen = 'order ' . $order->getIncrementId() . ' is ' . $state . ', payment '
+                    . ($json->resource->id ?? '') . ' ' . $psPaymentStatus . ' not invoiced, recorded=' . $recorded;
+                $this->_logger->warning('>>>>> PAYSTAND-ORDER-NOT-OPEN: ' . $notOpen);
+                try {
+                    CloudLogger::ship(CloudLogger::EVENT_WEBHOOK_ORDER_NOT_OPEN, [
+                        'quote_id'      => (string)($order->getQuoteId() ?? ''),
+                        'payment_id'    => $json->resource->id ?? '',
+                        'error_message' => $notOpen,
+                    ]);
+                } catch (\Throwable $e) {
+                    // CloudLogger failure — silently ignored to protect payment flow
+                }
                 $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
                 $result->setData([
                     'success_message' => __('Order is %1, no further action needed', $state)
@@ -461,19 +481,16 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 $this->_logger->debug('>>>>> PAYSTAND-PROCESSING: Creating transaction and invoice for paid order...');
                 $paymentResource = json_decode($body, true)['resource'];
                 $this->createTransaction($order, $paymentResource);
-                $this->invoiceWhenAmountMatches($order, $paymentResource);
-                
-                $this->_logger->debug('>>>>> PAYSTAND-PROCESSING: Transaction and invoice created successfully for order ' . $order->getIncrementId());
-                
-                // Finish and send back success response
+                $outcome = $this->invoiceWhenAmountMatches($order, $paymentResource);
+
                 $this->_logger->debug(
                     '>>>>> PAYSTAND-FINISH: Paystand payment status: "' . $psPaymentStatus
-                        . '", order state: "' . $state
-                        . '", order status: "' . $status . '", invoice created'
+                        . '", order ' . $order->getIncrementId() . ' state: "' . $order->getState()
+                        . '", outcome: ' . $outcome
                 );
                 $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
                 $result->setData([
-                    'success_message' => __('Invoice created for order')
+                    'success_message' => $this->invoiceOutcomeMessage($outcome)
                 ]);
                 return $result;
             }
@@ -514,15 +531,22 @@ class Paystand extends \Magento\Framework\App\Action\Action
             }
 
             // Only create transaction and invoice when the payment is on paid/posted status
+            $outcome = null;
             if ($psPaymentStatus == $updateOrderOn) {
                 $this->_logger->debug(">>>>> PAYSTAND-PROCESSING: Payment status matches configured updateOrderOn ('{$updateOrderOn}'), creating transaction and invoice...");
                 $paymentResource = json_decode($body, true)['resource'];
                 $this->createTransaction($order, $paymentResource);
-                $this->invoiceWhenAmountMatches($order, $paymentResource);
-                
-                $this->_logger->debug(">>>>> PAYSTAND-PROCESSING: Transaction and invoice created successfully for order " . $order->getIncrementId());
+                $outcome = $this->invoiceWhenAmountMatches($order, $paymentResource);
+                $this->_logger->debug(">>>>> PAYSTAND-PROCESSING: Order " . $order->getIncrementId() . " invoice outcome: " . $outcome);
             } else {
                 $this->_logger->debug(">>>>> PAYSTAND-PROCESSING: Payment status '{$psPaymentStatus}' does not match updateOrderOn '{$updateOrderOn}', skipping transaction/invoice creation");
+            }
+
+            // The amount check held the order or tried to. The gate already logged it.
+            if ($outcome === PaymentAmountGate::OUTCOME_HELD || $outcome === PaymentAmountGate::OUTCOME_HOLD_FAILED) {
+                $result->setHttpResponseCode(\Magento\Framework\Webapi\Response::HTTP_OK);
+                $result->setData(['success_message' => $this->invoiceOutcomeMessage($outcome)]);
+                return $result;
             }
 
             // Finish and send back success response
@@ -834,37 +858,76 @@ class Paystand extends \Magento\Framework\App\Action\Action
      *
      * @param \Magento\Sales\Model\Order $order
      * @param array<string, mixed> $paymentData
-     * @return \Magento\Sales\Model\Order\Invoice|null
+     * @return string self::INVOICED, self::NOT_INVOICEABLE, or a PaymentAmountGate hold outcome
      */
-    private function invoiceWhenAmountMatches($order, array $paymentData)
+    private function invoiceWhenAmountMatches($order, array $paymentData): string
     {
-        if (!$order || !$order->getId() || (string)$order->getState() === Order::STATE_HOLDED) {
-            return null;
-        }
-
-        // An invoiced order skips the check. createInvoice() returns its invoice.
+        // An invoiced order skips the check.
         if ($this->hasInvoice($order)) {
-            return $this->createInvoice($order);
+            return self::INVOICED;
         }
 
-        $decision = $this->amountGate->decide(
-            $order->getGrandTotal(),
-            $order->getBaseGrandTotal(),
-            $order->getOrderCurrencyCode(),
-            $order->getBaseCurrencyCode(),
-            $order->getData('paystand_adjustment'),
-            true,
-            $paymentData
-        );
-        if ($decision['action'] !== PaymentAmountGate::ACTION_INVOICE) {
-            $this->amountGate->hold($order, $decision, (string)($paymentData['id'] ?? ''));
-            $this->_logger->warning(
-                '>>>>> PAYSTAND-AMOUNT-GATE: ' . $this->amountGate->comment($decision, (string)($paymentData['id'] ?? ''))
-            );
-            return null;
+        $outcome = $this->amountGate->checkOrder($order, $paymentData);
+        if ($outcome !== PaymentAmountGate::OUTCOME_INVOICE) {
+            return $outcome;
         }
 
-        return $this->createInvoice($order);
+        return $this->createInvoice($order) ? self::INVOICED : self::NOT_INVOICEABLE;
+    }
+
+    private function invoiceOutcomeMessage(string $outcome)
+    {
+        switch ($outcome) {
+            case self::INVOICED:
+                return __('Invoice created for order');
+            case PaymentAmountGate::OUTCOME_HELD:
+                return __('Paystand amount not confirmed against the order total, order held and not invoiced');
+            case PaymentAmountGate::OUTCOME_HOLD_FAILED:
+                return __('Paystand amount not confirmed against the order total, order not invoiced, hold not saved');
+            default:
+                return __('Order cannot be invoiced, no invoice created');
+        }
+    }
+
+    /**
+     * Records the payment and the amount check on an order that is already on hold,
+     * once per payment. The hold stays, so the merchant decides when to invoice.
+     *
+     * @param \Magento\Sales\Model\Order $order
+     * @param array<string, mixed> $paymentData
+     * @return string what was done, for the log
+     */
+    private function recordPaymentOnHeldOrder($order, array $paymentData): string
+    {
+        $paymentId = (string)($paymentData['id'] ?? '');
+        $payment = $order->getPayment();
+        if ($paymentId === '' || !$payment) {
+            return 'no_payment';
+        }
+        // createTransaction() sets this, so the amount check has already run for this payment.
+        if ((string)$payment->getLastTransId() === $paymentId) {
+            return 'already';
+        }
+        if ($this->hasInvoice($order)) {
+            return self::INVOICED;
+        }
+
+        $this->createTransaction($order, $paymentData);
+        $outcome = $this->amountGate->checkOrder($order, $paymentData);
+        if ($outcome === PaymentAmountGate::OUTCOME_INVOICE) {
+            try {
+                $order->addCommentToStatusHistory(
+                    __('Paystand payment %1 matches the order total. The order was on hold, so it was not invoiced.', $paymentId),
+                    false
+                );
+                $order->save();
+            } catch (\Throwable $e) {
+                $this->_logger->error(
+                    '>>>>> PAYSTAND-ORDER-NOT-OPEN: comment not saved on order ' . $order->getIncrementId() . ': ' . $e->getMessage()
+                );
+            }
+        }
+        return $outcome;
     }
 
     /** @param \Magento\Sales\Model\Order $order */
