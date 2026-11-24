@@ -9,6 +9,7 @@ use Magento\Framework\Controller\Result\JsonFactory;
 use PayStand\PayStandMagento\Helper\CustomerPayerId;
 use PayStand\PayStandMagento\Helper\CloudLogger;
 use PayStand\PayStandMagento\Helper\QuoteAccess;
+use PayStand\PayStandMagento\Helper\PreauthStore;
 use PayStand\PayStandMagento\Helper\CaptureSnapshot;
 use PayStand\PayStandMagento\Helper\QuoteShipping;
 use PayStand\PayStandMagento\Model\Config\Source\PaymentStatus;
@@ -44,6 +45,9 @@ class SavePaymentData extends Action
 
     /** @var CaptureSnapshot */
     protected $captureSnapshot;
+
+    /** @var PreauthStore */
+    protected $preauthStore;
 
     /** @var ScopeConfigInterface */
     protected $scopeConfig;
@@ -103,7 +107,8 @@ class SavePaymentData extends Action
         QuoteAccess $quoteAccess,
         QuoteShipping $quoteShipping,
         ScopeConfigInterface $scopeConfig,
-        CaptureSnapshot $captureSnapshot
+        CaptureSnapshot $captureSnapshot,
+        PreauthStore $preauthStore
     ) {
         $this->logger = $logger;
         $this->resultJsonFactory = $resultJsonFactory;
@@ -113,6 +118,7 @@ class SavePaymentData extends Action
         $this->quoteShipping = $quoteShipping;
         $this->scopeConfig = $scopeConfig;
         $this->captureSnapshot = $captureSnapshot;
+        $this->preauthStore = $preauthStore;
         parent::__construct($context);
     }
 
@@ -188,6 +194,15 @@ class SavePaymentData extends Action
                 ]);
             }
             $realQuoteId = (int)$quote->getId();
+
+            if (!empty($data['preauthId'])) {
+                $this->preauthStore->applyHold($quote, $data);
+                $this->preauthStore->persistQuote($quote);
+                return $result->setData([
+                    'success' => true,
+                    'hold' => true
+                ]);
+            }
 
             // Before the payment id lands: clearing checks for one.
             $this->dropSnapshotFromEarlierOpen($quote, $windowPricedByServer, $paymentId);

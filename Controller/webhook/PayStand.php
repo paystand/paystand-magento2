@@ -959,7 +959,10 @@ class Paystand extends \Magento\Framework\App\Action\Action
                 }
 
                 $invoice = $this->_invoiceService->prepareInvoice($order);
-                $invoice->setRequestedCaptureCase(\Magento\Sales\Model\Order\Invoice::CAPTURE_ONLINE);
+                $captureCase = $order->getData('paystand_preauth_id')
+                    ? \Magento\Sales\Model\Order\Invoice::CAPTURE_OFFLINE
+                    : \Magento\Sales\Model\Order\Invoice::CAPTURE_ONLINE;
+                $invoice->setRequestedCaptureCase($captureCase);
                 $invoice->register();
                 $invoice->getOrder()->setCustomerNoteNotify(false);
                 $invoice->getOrder()->setIsInProcess(true);

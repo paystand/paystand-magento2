@@ -296,7 +296,9 @@
             "paymentMeta": {
                 "source": "magento 2",
                 "checkout": "hyva",
-                "quote": quote.quoteId,
+                "quote": String(quote.quoteId),
+                "checkoutProof": serverData.quote.checkout_proof_quote || '',
+                "checkoutClientId": serverData.quote.checkout_client_id || '',
                 "quoteDetails": (function(t) {
                     if (!t) return {};
                     // Strip large arrays not needed by the webhook controller
@@ -413,6 +415,39 @@
         window.psCheckout.onComplete(async function(paymentData) {
             
             const data = paymentData.response?.data || paymentData;
+
+            if (data.sourceContext === 'preAuthCheckout' && data.status === 'authorized') {
+                try {
+                    const holdResponse = {
+                        payerId: data.payerId || 'preauth',
+                        quote: data.meta && data.meta.quote,
+                        preauthId: data.preAuthId || data.id,
+                        preauthStatus: data.status,
+                        preauthAmount: data.amount,
+                        preauthAmountCaptured: data.amountCaptured || 0,
+                        preauthAmountRemaining: data.amount,
+                        preauthCurrency: data.currency,
+                        preauthExpiresAt: data.expiresAt || ''
+                    };
+                    const holdSave = await fetch('/paystandmagento/checkout/savepaymentdata', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(holdResponse)
+                    });
+                    if (!holdSave.ok) {
+                        setPaystandError('The authorization was not saved. Do not pay again.');
+                        return;
+                    }
+                    const mainComponent = Livewire.components.componentsById['hyva-checkout-main'];
+                    if (mainComponent) {
+                        await mainComponent.call('placeOrder');
+                    }
+                } catch (holdError) {
+                    console.error('[Paystand Hyva] Authorization was not saved:', holdError);
+                    setPaystandError('The authorization was not saved. Do not pay again.');
+                }
+                return;
+            }
             
             const response = {
                 payerId: data.payerId,
@@ -498,6 +533,19 @@
                 console.error('[Paystand Hyva] Failed to build checkout configuration');
                 setPaystandError('Error opening Paystand checkout. Please try again.');
                 return;
+            }
+
+            if (config.paymentMeta && config.paymentMeta.quote) {
+                const statusResponse = await fetch(
+                    '/paystandmagento/checkout/quotepaymentstatus?quote=' + encodeURIComponent(config.paymentMeta.quote)
+                );
+                if (statusResponse.ok) {
+                    const status = await statusResponse.json();
+                    if (status && (status.alreadyPaid || status.alreadyAuthorized)) {
+                        setPaystandError('This cart already has a Paystand authorization or payment.');
+                        return;
+                    }
+                }
             }
             
             let container = document.getElementById('ps_checkout');

@@ -157,6 +157,30 @@ class QuotePaymentStatusTest extends TestCase
         $this->assertSame('W001369548', $this->captured['incrementId']);
     }
 
+    public function testHoldOnlyQuoteIsAuthorizedAndNotPaid(): void
+    {
+        $this->requestMock->method('getParam')->with('quote')->willReturn('4189563');
+
+        $quoteMock = $this->getMockBuilder(Quote::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['getId', 'getData'])
+            ->getMock();
+        $quoteMock->method('getId')->willReturn(4189563);
+        $quoteMock->method('getData')->willReturnCallback(function ($key) {
+            if ($key === 'paystand_preauth_id') {
+                return 'preauth-1';
+            }
+            return null;
+        });
+        $this->quoteAccessMock->method('getAuthorizedQuote')->willReturn($quoteMock);
+        $this->quoteAccessMock->method('findOrderByQuoteId')->willReturn(null);
+
+        $this->controller->execute();
+
+        $this->assertFalse($this->captured['alreadyPaid']);
+        $this->assertTrue($this->captured['alreadyAuthorized']);
+    }
+
     public function testNotPaidWhenNoPaymentAndNoOrder(): void
     {
         $this->requestMock->method('getParam')->with('quote')->willReturn('4189563');
@@ -281,7 +305,12 @@ class QuotePaymentStatusTest extends TestCase
             ->onlyMethods(['getId', 'getData'])
             ->getMock();
         $quoteMock->method('getId')->willReturn($id);
-        $quoteMock->method('getData')->with('paystand_payment_id')->willReturn($paymentId);
+        $quoteMock->method('getData')->willReturnCallback(function ($key) use ($paymentId) {
+            if ($key === 'paystand_payment_id') {
+                return $paymentId;
+            }
+            return null;
+        });
         return $quoteMock;
     }
 

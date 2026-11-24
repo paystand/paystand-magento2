@@ -14,10 +14,13 @@ use Magento\Checkout\Model\Session as CheckoutSession;
 use Magento\Customer\Model\Session as CustomerSession;
 use Magento\Customer\Api\AddressRepositoryInterface;
 use Magento\Customer\Api\CustomerRepositoryInterface;
+use Magento\Framework\App\Config\ScopeConfigInterface;
 use Magento\Framework\Exception\NoSuchEntityException;
 use Magento\Framework\Exception\LocalizedException;
 use Magento\Quote\Model\ResourceModel\Quote\Address as QuoteAddressResource;
+use Magento\Store\Model\ScopeInterface;
 use PayStand\PayStandMagento\Helper\CaptureSnapshot;
+use PayStand\PayStandMagento\Helper\CheckoutProof;
 use PayStand\PayStandMagento\Helper\CloudLogger;
 use PayStand\PayStandMagento\Helper\QuoteShipping;
 use Psr\Log\LoggerInterface;
@@ -33,6 +36,8 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
     private CaptureSnapshot $captureSnapshot;
     private AddressRepositoryInterface $addressRepository;
     private QuoteAddressResource $quoteAddressResource;
+    private CheckoutProof $checkoutProof;
+    private ScopeConfigInterface $scopeConfig;
 
     public function __construct(
         JsonFactory $resultJsonFactory,
@@ -43,7 +48,9 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
         QuoteShipping $quoteShipping,
         CaptureSnapshot $captureSnapshot,
         AddressRepositoryInterface $addressRepository,
-        QuoteAddressResource $quoteAddressResource
+        QuoteAddressResource $quoteAddressResource,
+        CheckoutProof $checkoutProof,
+        ScopeConfigInterface $scopeConfig
     ) {
         $this->resultJsonFactory = $resultJsonFactory;
         $this->checkoutSession = $checkoutSession;
@@ -54,6 +61,21 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
         $this->captureSnapshot = $captureSnapshot;
         $this->addressRepository = $addressRepository;
         $this->quoteAddressResource = $quoteAddressResource;
+        $this->checkoutProof = $checkoutProof;
+        $this->scopeConfig = $scopeConfig;
+    }
+
+    private function proofFor(string $quoteId, $amount, string $currency): string
+    {
+        $secret = (string) $this->scopeConfig->getValue(
+            'payment/paystandmagento/client_secret',
+            ScopeInterface::SCOPE_STORE
+        );
+        if ($secret === '' || $quoteId === '') {
+            return '';
+        }
+
+        return $this->checkoutProof->sign($quoteId, $amount, $currency, $secret);
     }
 
     /**
@@ -294,6 +316,20 @@ class GetQuoteData implements HttpGetActionInterface, HttpPostActionInterface
                     'subtotal' => $quote->getSubtotal(),
                     'currency_code' => $quote->getQuoteCurrencyCode(),
                     'base_currency_code' => $quote->getBaseCurrencyCode(),
+                    'checkout_client_id' => (string) $this->scopeConfig->getValue(
+                        'payment/paystandmagento/client_id',
+                        ScopeInterface::SCOPE_STORE
+                    ),
+                    'checkout_proof_base' => $this->proofFor(
+                        (string) $quote->getId(),
+                        $quote->getBaseGrandTotal(),
+                        (string) $quote->getBaseCurrencyCode()
+                    ),
+                    'checkout_proof_quote' => $this->proofFor(
+                        (string) $quote->getId(),
+                        $quote->getGrandTotal(),
+                        (string) $quote->getQuoteCurrencyCode()
+                    ),
                     'items_count' => $quote->getItemsCount(),
                     'items_qty' => $quote->getItemsQty(),
                     'totals' => $totalsData

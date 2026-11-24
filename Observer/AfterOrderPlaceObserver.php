@@ -18,6 +18,7 @@ use Magento\Quote\Model\QuoteFactory;
 use Magento\Quote\Api\CartRepositoryInterface;
 use Magento\Sales\Api\OrderRepositoryInterface;
 use PayStand\PayStandMagento\Model\PaymentAmountGate;
+use PayStand\PayStandMagento\Helper\PreauthStore;
 
 class AfterOrderPlaceObserver implements ObserverInterface
 {
@@ -54,6 +55,9 @@ class AfterOrderPlaceObserver implements ObserverInterface
     /** @var PaymentAmountGate */
     private $amountGate;
 
+    /** @var PreauthStore */
+    private $preauthStore;
+
     /**
      * PayStand configuration paths
      */
@@ -84,7 +88,8 @@ class AfterOrderPlaceObserver implements ObserverInterface
         QuoteFactory $quoteFactory,
         CartRepositoryInterface $cartRepository,
         OrderRepositoryInterface $orderRepository,
-        PaymentAmountGate $amountGate
+        PaymentAmountGate $amountGate,
+        PreauthStore $preauthStore
     ) {
         $this->_logger = $logger;
         $this->scopeConfig = $scopeConfig;
@@ -97,6 +102,7 @@ class AfterOrderPlaceObserver implements ObserverInterface
         $this->_cartRepository = $cartRepository;
         $this->_orderRepository = $orderRepository;
         $this->amountGate = $amountGate;
+        $this->preauthStore = $preauthStore;
     }
 
     /**
@@ -283,6 +289,13 @@ class AfterOrderPlaceObserver implements ObserverInterface
 
                     if ($quote && $quote->getId()) {
                         $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER: Found quote ID: " . $quote->getId());
+
+                        if ($this->preauthStore->isHoldOnly($quote)) {
+                            $this->preauthStore->copyQuoteToOrder($quote, $order);
+                            $this->_orderRepository->save($order);
+                            $this->_logger->debug(">>>>> PAYSTAND-ORDER-OBSERVER: Hold only. No invoice.");
+                            return;
+                        }
 
                         // Get the payment object from the quote
                         $quotePayment = $quote->getPayment();

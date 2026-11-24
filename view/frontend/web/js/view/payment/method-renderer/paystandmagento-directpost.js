@@ -251,6 +251,14 @@ define(
                 config.paymentMeta.extCustomerId = customer.customerData.id
             }
 
+            if (serverQuote && serverQuote.checkout_proof_base && serverQuote.id) {
+                config.paymentAmount = String(serverQuote.base_grand_total);
+                config.paymentCurrency = serverQuote.base_currency_code;
+                config.paymentMeta.quote = String(serverQuote.id);
+                config.paymentMeta.checkoutProof = serverQuote.checkout_proof_base;
+                config.paymentMeta.checkoutClientId = serverQuote.checkout_client_id || '';
+            }
+
             return config;
         }
 
@@ -446,7 +454,7 @@ define(
                 }
                 // Parsed inside the armed window so a stalled body cannot hang.
                 const status = await resp.json();
-                return (status && status.alreadyPaid) ? status : null;
+                return (status && (status.alreadyPaid || status.alreadyAuthorized)) ? status : null;
             } catch (error) {
                 // Includes an abort once the timeout above fires.
                 cfLog('recharge_guard_error', qid, '', error && (error.message || String(error)));
@@ -469,12 +477,20 @@ define(
                 const qid = quote.getQuoteId();
 
                 // Re-charge guard: refuse to open the widget for a cart already paid.
-                const alreadyPaid = await fetchQuotePaymentStatus(qid);
-                if (alreadyPaid) {
-                    cfLog('recharge_blocked', qid, (alreadyPaid.paymentId || ''),
+                const prior = await fetchQuotePaymentStatus(qid);
+                if (prior && prior.alreadyPaid) {
+                    cfLog('recharge_blocked', qid, (prior.paymentId || ''),
                         'Quote already has a posted Paystand payment; blocking re-charge'
                     );
-                    showAlreadyPaidModal(alreadyPaid);
+                    showAlreadyPaidModal(prior);
+                    blocked = true;
+                    return;
+                }
+                if (prior && prior.alreadyAuthorized) {
+                    cfLog('recharge_blocked', qid, '',
+                        'Quote already has an open Paystand authorization; blocking a second hold'
+                    );
+                    showAlreadyPaidModal(prior);
                     blocked = true;
                     return;
                 }
@@ -653,6 +669,32 @@ define(
                             actions: { always: function () {} }
                         });
                     });
+                }
+
+                if (data.sourceContext === 'preAuthCheckout' && data.status === 'authorized') {
+                    const holdResponse = {
+                        payerId: data.payerId || 'preauth',
+                        quote: data.meta && data.meta.quote,
+                        preauthId: data.preAuthId || data.id,
+                        preauthStatus: data.status,
+                        preauthAmount: data.amount,
+                        preauthAmountCaptured: data.amountCaptured || 0,
+                        preauthAmountRemaining: data.amount,
+                        preauthCurrency: data.currency,
+                        preauthExpiresAt: data.expiresAt || ''
+                    };
+                    const holdSave = await fetch('/paystandmagento/checkout/savepaymentdata', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(holdResponse)
+                    });
+                    if (!holdSave.ok) {
+                        showErrorModal('The authorization was not saved. Do not pay again.');
+                        return;
+                    }
+                    markNavigation(qid, pid);
+                    $(submitTrigger).click();
+                    return;
                 }
 
                 cfLog('checkout_complete_fired', qid, pid,

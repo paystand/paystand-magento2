@@ -1,0 +1,34 @@
+<?php
+/** @var \PayStand\PayStandMagento\Block\Adminhtml\Order\Preauth $block */
+$order = $block->getOrder();
+if (!$order || !$order->getData('paystand_preauth_id')) {
+    return;
+}
+$status = strtolower((string) $order->getData('paystand_preauth_status'));
+$expiresAt = (string) $order->getData('paystand_preauth_expires_at');
+$expired = $expiresAt !== '' && strtotime($expiresAt) !== false && strtotime($expiresAt) < time();
+$canCapture = $status === 'authorized' && !$expired;
+?>
+<section class="admin__page-section">
+    <div class="admin__page-section-title">
+        <span class="title"><?= $block->escapeHtml(__('Paystand authorization')) ?></span>
+    </div>
+    <div class="admin__page-section-content">
+        <p><strong><?= $block->escapeHtml(__('Id')) ?>:</strong> <?= $block->escapeHtml($order->getData('paystand_preauth_id')) ?></p>
+        <p><strong><?= $block->escapeHtml(__('Status')) ?>:</strong> <?= $block->escapeHtml($status) ?></p>
+        <p><strong><?= $block->escapeHtml(__('Amount')) ?>:</strong> <?= $block->escapeHtml($order->getData('paystand_preauth_amount')) ?> <?= $block->escapeHtml($order->getData('paystand_preauth_currency')) ?></p>
+        <p><strong><?= $block->escapeHtml(__('Captured')) ?>:</strong> <?= $block->escapeHtml($order->getData('paystand_preauth_amount_captured')) ?></p>
+        <p><strong><?= $block->escapeHtml(__('Remaining')) ?>:</strong> <?= $block->escapeHtml($order->getData('paystand_preauth_amount_remaining')) ?></p>
+        <p><strong><?= $block->escapeHtml(__('Expires')) ?>:</strong> <?= $block->escapeHtml($expiresAt) ?></p>
+        <form method="post" action="<?= $block->escapeUrl($block->getUrl('paystandmagento/order/refresh', ['order_id' => $order->getId()])) ?>">
+            <input type="hidden" name="form_key" value="<?= $block->escapeHtmlAttr($block->getFormKey()) ?>"/>
+            <button type="submit" class="action-default scalable"><?= $block->escapeHtml(__('Refresh')) ?></button>
+        </form>
+        <?php if ($canCapture): ?>
+            <form method="post" action="<?= $block->escapeUrl($block->getUrl('paystandmagento/order/capture', ['order_id' => $order->getId()])) ?>">
+                <input type="hidden" name="form_key" value="<?= $block->escapeHtmlAttr($block->getFormKey()) ?>"/>
+                <button type="submit" class="action-default scalable"><?= $block->escapeHtml(__('Capture full authorization')) ?></button>
+            </form>
+        <?php endif; ?>
+    </div>
+</section>

@@ -119,16 +119,19 @@ class QuotePaymentStatus extends Action
         }
 
         $paymentId = $quote->getData('paystand_payment_id');
+        $preauthId = trim((string) $quote->getData('paystand_preauth_id'));
+        $alreadyAuthorized = $preauthId !== '' && empty($paymentId);
 
         $order = $this->quoteAccess->findOrderByQuoteId((int)$quote->getId());
         $orderExists = (bool)($order && $order->getId());
         $incrementId = $orderExists ? (string)$order->getIncrementId() : null;
 
-        $alreadyPaid = !empty($paymentId) || $orderExists;
+        $alreadyPaid = !empty($paymentId) || ($orderExists && !$alreadyAuthorized);
 
         return $result->setData([
             'success'     => true,
             'alreadyPaid' => $alreadyPaid,
+            'alreadyAuthorized' => $alreadyAuthorized,
             'paymentId'   => !empty($paymentId) ? (string)$paymentId : null,
             'orderExists' => $orderExists,
             'incrementId' => $incrementId
@@ -145,6 +148,7 @@ class QuotePaymentStatus extends Action
         return [
             'success'     => true,
             'alreadyPaid' => false,
+            'alreadyAuthorized' => false,
             'paymentId'   => null,
             'orderExists' => false,
             'incrementId' => null

@@ -56,7 +56,8 @@ class AfterOrderPlaceObserverTest extends TestCase
             $this->getMockBuilder(QuoteFactory::class)->disableOriginalConstructor()->getMock(),
             $this->cartRepositoryMock,
             $this->getMockBuilder(OrderRepositoryInterface::class)->getMockForAbstractClass(),
-            new PaymentAmountGate($this->loggerMock)
+            new PaymentAmountGate($this->loggerMock),
+            $this->createMock(\PayStand\PayStandMagento\Helper\PreauthStore::class)
         );
     }
 
