@@ -39,6 +39,18 @@ class PreauthStore
         return $preauthId !== '' && $paymentId === '';
     }
 
+    /**
+     * The stored hold in the shape PreauthCaptureGuard reads.
+     */
+    public function captureHold($entity): array
+    {
+        return [
+            'status' => $entity->getData('paystand_preauth_status'),
+            'remaining' => $entity->getData('paystand_preauth_amount_remaining'),
+            'expires_at' => $entity->getData('paystand_preauth_expires_at')
+        ];
+    }
+
     public function applyHold($quote, array $data): void
     {
         $captured = $data['preauthAmountCaptured'] ?? 0;

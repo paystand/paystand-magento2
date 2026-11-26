@@ -6,8 +6,7 @@ if (!$order || !$order->getData('paystand_preauth_id')) {
 }
 $status = strtolower((string) $order->getData('paystand_preauth_status'));
 $expiresAt = (string) $order->getData('paystand_preauth_expires_at');
-$expired = $expiresAt !== '' && strtotime($expiresAt) !== false && strtotime($expiresAt) < time();
-$canCapture = $status === 'authorized' && !$expired;
+$canCapture = $block->canCapture($order);
 ?>
 <section class="admin__page-section">
     <div class="admin__page-section-title">

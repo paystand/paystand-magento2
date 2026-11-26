@@ -55,16 +55,13 @@ class Capture extends Action
             $order = $this->orderRepository->get($orderId);
             $preauthId = (string) $order->getData('paystand_preauth_id');
             $remaining = $order->getData('paystand_preauth_amount_remaining');
-            $refusal = $this->guard->refusal([
-                'status' => $order->getData('paystand_preauth_status'),
-                'remaining' => $remaining,
-                'expires_at' => $order->getData('paystand_preauth_expires_at')
-            ], $remaining);
+            $refusal = $this->guard->refusal($this->preauthStore->captureHold($order), $remaining);
             if ($preauthId === '' || $refusal !== null) {
                 $this->messageManager->addErrorMessage($refusal ?: __('This order has no Paystand authorization.'));
                 return $redirect;
             }
 
+            // One call only: a rejection is shown and not retried.
             $result = $this->api->post('/preAuths/' . rawurlencode($preauthId) . '/capture', [
                 'amount' => $remaining
             ]);
@@ -73,15 +70,7 @@ class Capture extends Action
                 return $redirect;
             }
 
-            $body = $result['body'];
-            $paymentId = (string) ($body['paymentId'] ?? ($body['payment']['id'] ?? ''));
-            if ($paymentId === '' && isset($body['id']) && (string) $body['id'] !== $preauthId) {
-                $paymentId = (string) $body['id'];
-            }
-            $order->setData('paystand_payment_id', (string) $paymentId);
-            $order->setData('paystand_preauth_status', 'captured');
-            $order->setData('paystand_preauth_amount_captured', $order->getData('paystand_preauth_amount'));
-            $order->setData('paystand_preauth_amount_remaining', 0);
+            $this->applyCapture($order, $result['body']);
             $this->preauthStore->persistOrder($order);
             $this->messageManager->addSuccessMessage(
                 __('Capture sent. The payment webhook creates the invoice.')
@@ -91,5 +80,24 @@ class Capture extends Action
         }
 
         return $redirect;
+    }
+
+    /**
+     * Roadrunner returns the updated PreAuth, or { preAuth, payment }.
+     */
+    private function applyCapture($order, array $body): void
+    {
+        $record = is_array($body['preAuth'] ?? null) ? $body['preAuth'] : $body;
+        $paymentId = (string) ($body['payment']['id'] ?? ($record['paymentId'] ?? ''));
+
+        if (isset($record['status'], $record['amount'])) {
+            $this->preauthStore->applyRecord($order, $record, $paymentId);
+            return;
+        }
+
+        $order->setData('paystand_payment_id', $paymentId);
+        $order->setData('paystand_preauth_status', 'captured');
+        $order->setData('paystand_preauth_amount_captured', $order->getData('paystand_preauth_amount'));
+        $order->setData('paystand_preauth_amount_remaining', 0);
     }
 }

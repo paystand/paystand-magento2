@@ -4,6 +4,7 @@ namespace PayStand\PayStandMagento\Test\Unit\Controller\Checkout;
 
 use PayStand\PayStandMagento\Controller\Checkout\GetQuoteData;
 use PayStand\PayStandMagento\Helper\CaptureSnapshot;
+use PayStand\PayStandMagento\Helper\CheckoutProof;
 use PayStand\PayStandMagento\Helper\QuoteShipping;
 use PHPUnit\Framework\TestCase;
 use PHPUnit\Framework\MockObject\MockObject;
@@ -14,6 +15,7 @@ use Magento\Customer\Api\AddressRepositoryInterface;
 use Magento\Customer\Api\CustomerRepositoryInterface;
 use Magento\Customer\Api\Data\AddressInterface;
 use Magento\Customer\Api\Data\RegionInterface;
+use Magento\Framework\App\Config\ScopeConfigInterface;
 use Magento\Framework\Controller\Result\JsonFactory;
 use Magento\Framework\Controller\Result\Json as JsonResult;
 use Magento\Quote\Model\Quote;
@@ -107,6 +109,9 @@ class GetQuoteDataTest extends TestCase
             ->onlyMethods(['save'])
             ->getMock();
         $this->set('quoteAddressResource', $this->addressResource);
+        $this->set('checkoutProof', new CheckoutProof());
+        $this->set('scopeConfig', $this->getMockBuilder(ScopeConfigInterface::class)
+            ->getMockForAbstractClass());
     }
 
     /** @return RateFactory|MockObject */
